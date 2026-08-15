@@ -36,6 +36,14 @@ type Config struct {
 	// MaxOrdersPerTick — reconcile 한 번에 낼 수 있는 주문 수 상한 (폭주 차단).
 	MaxOrdersPerTick int
 
+	// Broker — paper | kiwoom. 기본 paper.
+	Broker string
+	// KiwoomMock — 모의투자 도메인.
+	KiwoomMock bool
+	// SlotCapitalDefault — 슬롯별 자본이 따로 없을 때 쓰는 값 (원).
+	// ★ 서버는 비중만 보낸다. 얼마를 걸지는 사용자가 정한다.
+	SlotCapitalDefault float64
+
 	Policy protocol.Policy
 
 	// modeFlag — Bind 와 Finish 사이의 임시 저장소 (플래그는 파싱 후에야 값이 찬다).
@@ -51,6 +59,7 @@ func Default() Config {
 		ReconcileInterval: 5 * time.Second,
 		HeartbeatInterval: 20 * time.Second,
 		MaxOrdersPerTick:  5,
+		Broker:            "paper",
 		Policy:            protocol.DefaultPolicy(),
 	}
 }
@@ -75,6 +84,10 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 	fs.BoolVar(&c.Policy.AcceptUnsignedDerisk, "accept-unsigned-derisk", c.Policy.AcceptUnsignedDerisk,
 		"서명 없는 de-risk 를 수용할지 (★ 진입은 어느 쪽이든 서명 필수)")
 	fs.DurationVar(&c.Policy.MaxSkew, "max-skew", c.Policy.MaxSkew, "허용 시계 오차")
+	fs.StringVar(&c.Broker, "broker", c.Broker, "paper | kiwoom")
+	fs.BoolVar(&c.KiwoomMock, "kiwoom-mock", c.KiwoomMock, "키움 모의투자 도메인 사용")
+	fs.Float64Var(&c.SlotCapitalDefault, "slot-capital", c.SlotCapitalDefault, "슬롯당 자본 (원)")
+	fs.DurationVar(&c.ReconcileInterval, "reconcile-interval", c.ReconcileInterval, "집행 루프 주기")
 
 	// mode 는 파싱 후에 반영해야 해서 포인터를 잡아둔다.
 	c.modeFlag = &mode
@@ -92,6 +105,17 @@ func (c *Config) applyEnv() {
 	if v := os.Getenv("COCKPIT_MODE"); v != "" {
 		c.Mode = protocol.Mode(v)
 	}
+	if v := os.Getenv("COCKPIT_BROKER"); v != "" {
+		c.Broker = v
+	}
+}
+
+// KiwoomCreds 는 키움 자격증명을 **환경변수에서만** 읽는다.
+//
+// ★ 플래그로 받지 않는 이유: 커맨드라인은 같은 PC 의 다른 프로세스에서 그대로 보인다
+// (ps / 작업관리자). 증권사 앱키가 거기 찍히면 그 순간 유출이다.
+func KiwoomCreds() (appKey, secret string) {
+	return os.Getenv("COCKPIT_KIWOOM_APPKEY"), os.Getenv("COCKPIT_KIWOOM_SECRET")
 }
 
 // Finish 는 플래그 파싱 후 검증한다.
@@ -103,6 +127,15 @@ func (c *Config) Finish() error {
 	case protocol.ModePaper, protocol.ModeLive:
 	default:
 		return fmt.Errorf("mode 는 paper 또는 live 여야 한다 (받은 값 %q)", c.Mode)
+	}
+	switch c.Broker {
+	case "paper", "kiwoom":
+	default:
+		return fmt.Errorf("broker 는 paper 또는 kiwoom 이어야 한다 (받은 값 %q)", c.Broker)
+	}
+	// ★ live 모드인데 paper 브로커면 실주문이 안 나간다. 그 상태를 "돌고 있다" 로 보이게 두지 않는다.
+	if c.Mode == protocol.ModeLive && c.Broker == "paper" {
+		return fmt.Errorf("mode=live 인데 broker=paper 다 — 실주문이 나가지 않는다. broker=kiwoom 을 지정하거나 mode=paper 로 둘 것")
 	}
 	if c.Port <= 0 || c.Port > 65535 {
 		return fmt.Errorf("포트가 범위 밖이다: %d", c.Port)

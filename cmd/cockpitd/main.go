@@ -19,10 +19,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kh-ssong/yovel-cockpit/internal/broker"
+	"github.com/kh-ssong/yovel-cockpit/internal/broker/kiwoom"
+	"github.com/kh-ssong/yovel-cockpit/internal/broker/paper"
 	"github.com/kh-ssong/yovel-cockpit/internal/config"
 	"github.com/kh-ssong/yovel-cockpit/internal/engine"
+	"github.com/kh-ssong/yovel-cockpit/internal/executor"
 	"github.com/kh-ssong/yovel-cockpit/internal/httpapi"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
+	"github.com/kh-ssong/yovel-cockpit/internal/quotes"
+	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
 	"github.com/kh-ssong/yovel-cockpit/internal/store"
 	"github.com/kh-ssong/yovel-cockpit/internal/version"
 )
@@ -74,16 +80,27 @@ func run() error {
 	}
 	defer st.Close()
 
-	// ★ 브로커가 아직 없다 = 참조가를 모른다 = 진입 계획이 E_SYMBOL 로 거절된다.
-	// 그게 맞는 동작이다. 가짜 가격을 채워 "계획이 나오는 것처럼" 보이게 두면,
+	br, err := buildBroker(cfg, log)
+	if err != nil {
+		return err
+	}
+	// ★ 시세원이 없으면 참조가를 모르고, 그러면 진입 계획이 E_SYMBOL 로 거절된다.
+	// 그게 맞는 동작이다 — 가짜 가격을 채워 "계획이 나오는 것처럼" 보이게 두면
 	// 배선이 빠진 상태와 정상 상태가 같아 보인다.
+	qs := quotes.New(br, 3*time.Second, func() time.Time { return time.Now().UTC() })
+
 	eng := engine.New(engine.Config{
 		Mode:         cfg.Mode,
 		Policy:       cfg.Policy,
 		TargetMaxAge: cfg.TargetMaxAge,
 		MaxOrders:    cfg.MaxOrdersPerTick,
-		SlotCapital:  func(string) float64 { return 0 },
-		Store:        st,
+		// ★ 자본은 사용자가 정한다. 서버는 비중만 보낸다.
+		SlotCapital: func(string) float64 { return cfg.SlotCapitalDefault },
+		Price:       qs.Price,
+		Market: func(s protocol.Symbol) sizing.Market {
+			return sizing.Market{LotSize: br.LotSize(s), MinOrderValue: br.MinOrderValue(s)}
+		},
+		Store: st,
 	}, started)
 
 	// ★ 재시작 복구를 건너뛰면 걸어둔 pause 가 풀리고, 이미 끝난 목표로 재진입한다.
@@ -107,6 +124,7 @@ func run() error {
 		"version", v.Version, "sha", v.SHA, "dirty", v.Dirty,
 		"mode", cfg.Mode, "addr", srv.Addr(), "data_dir", cfg.DataDir,
 		"restored_positions", len(snap.Positions), "paused", snap.Guards.Paused,
+		"broker", br.Name(), "slot_capital", cfg.SlotCapitalDefault,
 		"trusted_keys", len(cfg.Policy.TrustedKeys),
 		"accept_unsigned_derisk", cfg.Policy.AcceptUnsignedDerisk,
 	)
@@ -125,8 +143,15 @@ func run() error {
 		log.Warn("이전 세션의 de-risk 가 아직 걸려 있다 — resume 전까지 신규 진입 없음")
 	}
 
+	exec := executor.New(executor.Deps{
+		Broker: br, Store: st, Engine: eng, Mode: cfg.Mode, DaemonSHA: v.SHA, Log: log,
+	})
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go runLoop(ctx, exec, cfg.ReconcileInterval, log)
+
 	<-ctx.Done()
 
 	log.Info("종료 신호 수신, 정리 중")
@@ -137,4 +162,69 @@ func run() error {
 	}
 	log.Info("cockpitd 종료", "uptime_sec", int64(time.Since(started).Seconds()))
 	return nil
+}
+
+// buildBroker — mode 와 broker 설정에 따라 드라이버를 고른다.
+//
+// ★ paper 브로커라도 시세는 진짜를 쓰는 게 낫다. 키움 자격증명이 있으면 시세만 키움에서
+// 받아 페이퍼로 체결시킨다 — 가짜 가격으로 만든 페이퍼 성과는 아무것도 증명하지 못한다.
+func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
+	appKey, secret := config.KiwoomCreds()
+
+	if cfg.Broker == "kiwoom" {
+		if appKey == "" || secret == "" {
+			return nil, fmt.Errorf("키움 자격증명이 없다 — COCKPIT_KIWOOM_APPKEY / COCKPIT_KIWOOM_SECRET 환경변수로 줄 것 (★ 플래그로 주면 ps 에 노출된다)")
+		}
+		return kiwoom.New(kiwoom.Config{
+			AppKey: appKey, SecretKey: secret, DataDir: cfg.DataDir, Mock: cfg.KiwoomMock,
+		})
+	}
+
+	pcfg := paper.Config{
+		Cash: cfg.SlotCapitalDefault, Lot: 1,
+		// 편도 비용. ★ 0 으로 두지 않는다 — 비용 0 시뮬은 손익분기 근처 전략의 판정을 뒤집는다.
+		FeeBp: 15, SlipBp: 10,
+	}
+	if appKey != "" && secret != "" {
+		kw, err := kiwoom.New(kiwoom.Config{
+			AppKey: appKey, SecretKey: secret, DataDir: cfg.DataDir, Mock: cfg.KiwoomMock,
+		})
+		if err == nil {
+			log.Info("paper 브로커에 키움 실시세를 물린다")
+			src := quotes.New(kw, 3*time.Second, func() time.Time { return time.Now().UTC() })
+			pcfg.Price = src.Price
+		} else {
+			log.Warn("키움 시세원 연결 실패 — 가격 없이 돈다 (진입 계획은 E_SYMBOL 로 거절된다)", "err", err)
+		}
+	} else {
+		log.Warn("시세원이 없다 — 진입 계획은 항상 E_SYMBOL 로 거절된다")
+	}
+	return paper.New(pcfg), nil
+}
+
+// runLoop — 집행 루프. ★ 목표 수신과 무관하게 주기적으로 돈다.
+// 목표가 안 와도 브로커 실상태는 바뀔 수 있고(TP 체결·수동 매도), 그걸 못 보면 장부가 썩는다.
+func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duration, log *slog.Logger) {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			res := exec.Tick(ctx, time.Now().UTC())
+			// 아무 일도 없었으면 조용히 넘긴다 — 5초마다 로그를 찍으면 진짜 사건이 묻힌다.
+			if res.Entered+res.Exited+res.StopsArmed+res.TpPlaced+res.ClosedByBroker == 0 &&
+				len(res.Errors) == 0 && len(res.Mismatch) == 0 {
+				continue
+			}
+			log.Info("집행", "entered", res.Entered, "exited", res.Exited,
+				"stops", res.StopsArmed, "tp", res.TpPlaced, "closed_by_broker", res.ClosedByBroker,
+				"mismatch", res.Mismatch, "errors", res.Errors)
+		}
+	}
 }

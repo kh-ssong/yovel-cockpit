@@ -95,6 +95,10 @@ pin 한다. 릴레이는 암호문을 나르기만 하므로 **릴레이를 장�
 ```
 cmd/cockpitd/        데몬 진입점
 internal/protocol/   와이어 타입 + 서명 검증 + 수용 규칙   ← 계약의 Go 측 구현
+internal/broker/     증권사 경계 — paper/ (기본) · kiwoom/ (REST 드라이버)
+internal/executor/   계획 → 실제 주문. ★ 주문을 내는 유일한 지점
+internal/quotes/     기준가 공급 (사이징과 stop 평가가 같은 값을 보도록)
+internal/ids/        ULID (멱등키 = 원장 정렬 키)
 internal/store/      로컬 SQLite — 원장 · intent 매핑 · 가드 영속 · 업링크 큐
 internal/config/     로컬 설정 · pin 된 pitwall 공개키
 internal/httpapi/    로컬 API (토큰 · Host · Origin 가드)
@@ -109,9 +113,26 @@ schema/v1/           ★ 같은 계약의 JSON Schema (npm test 로 예제 검�
 ui/                  Svelte SPA — 산출물 ui/dist 를 데몬이 서빙하다가 Tauri 가 번들 (미착수)
 ```
 
-**아직 없는 것**: 브로커 드라이버 · 릴레이(MQTT) 연결 · 주문을 실제로 내는 실행 루프 · UI.
-그래서 지금 계획은 항상 `E_SYMBOL`(참조가를 모름) 로 끝난다 — 그게 맞는 동작이다.
-가짜 가격을 채워 계획이 나오는 것처럼 보이게 두면 **배선이 빠진 상태와 정상 상태가 같아 보인다.**
+**아직 없는 것**: 릴레이(MQTT) 연결 · UI. 목표는 지금 `POST /v1/downlink` 로만 들어온다.
+
+### 브로커
+
+| | |
+|---|---|
+| `--broker paper` (기본) | 실주문 없음. 키움 자격증명이 있으면 **시세만 실시간**으로 받아 페이퍼 체결한다 — 가짜 가격으로 만든 페이퍼 성과는 아무것도 증명하지 못한다 |
+| `--broker kiwoom` | 키움 REST. `--kiwoom-mock` 으로 모의투자 도메인 |
+
+```bash
+# ★ 자격증명은 환경변수로만. 플래그로 주면 같은 PC 의 다른 프로세스에서 ps 로 그대로 보인다.
+export COCKPIT_KIWOOM_APPKEY=... COCKPIT_KIWOOM_SECRET=...
+./bin/cockpitd-<plat> --broker kiwoom --mode paper --slot-capital 1000000
+```
+
+★ `--mode live` + `--broker paper` 조합은 **기동을 거부한다.** 실주문이 안 나가는 상태를
+"돌고 있다" 로 보이게 두지 않기 위해서다.
+
+집행 루프는 `--reconcile-interval`(기본 5초)마다 돈다. 목표가 안 와도 도는 이유는,
+목표와 무관하게 브로커 실상태가 바뀌기 때문이다 (TP 체결 · 사용자의 수동 매도).
 
 ```bash
 go test ./...            # Go
