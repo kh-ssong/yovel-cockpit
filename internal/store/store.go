@@ -179,28 +179,37 @@ func (s *Store) TerminalIntents(ctx context.Context) (map[string]struct{}, error
 
 // ── orders (매매기록 원장) ──────────────────────────────────────────────────
 
+// Order 는 원장 한 줄.
+//
+// ★ json 태그는 장식이 아니다 — 이 구조체는 /v1/ledger 로 그대로 나간다. 태그가 없으면
+// 이 엔드포인트만 Go 필드명(PascalCase)으로 나가서, 와이어 전체가 snake_case 라는 규약이
+// 한 곳에서 깨진다 (reconcile.Plan 이 같은 이유로 태그를 달고 있다).
+// 필드 이름은 protocol.EventOrder(업링크 event.order)와 맞춘다 — 같은 사건을 로컬 API 와
+// 릴레이가 다른 이름으로 부르면 UI 가 규약 두 벌을 다뤄야 한다.
 type Order struct {
-	ID            string // ULID. 멱등키
-	IntentID      string
-	Phase         string
-	Symbol        protocol.Symbol
-	Side          string
-	Qty           float64
-	Price         float64
-	BrokerOrderID string
-	SignalTS      *time.Time
-	SubmittedAt   *time.Time
-	FilledAt      *time.Time
-	SlippageBp    float64
-	FeeKRW        float64
-	ExitReason    string
-	RealizedPct   float64
-	BrokerCode    string
-	Detail        string
-	Mode          protocol.Mode // ★ paper | live. 빈 값 금지
-	Source        Source        // ★ bot | manual
-	DaemonSHA     string
-	CreatedAt     time.Time
+	ID            string          `json:"id"` // ULID. 멱등키 = 원장 정렬 키
+	IntentID      string          `json:"intent_id"`
+	Phase         string          `json:"phase"`
+	Symbol        protocol.Symbol `json:"symbol"`
+	Side          string          `json:"side"`
+	Qty           float64         `json:"qty"`
+	Price         float64         `json:"price"`
+	BrokerOrderID string          `json:"broker_order_id,omitempty"`
+	SignalTS      *time.Time      `json:"signal_ts,omitempty"`
+	SubmittedAt   *time.Time      `json:"submitted_at,omitempty"`
+	FilledAt      *time.Time      `json:"filled_at,omitempty"`
+	SlippageBp    float64         `json:"slippage_bp,omitempty"`
+	FeeKRW        float64         `json:"fee_krw,omitempty"`
+	ExitReason    string          `json:"exit_reason,omitempty"`
+	RealizedPct   float64         `json:"realized_pct,omitempty"`
+	BrokerCode    string          `json:"broker_code,omitempty"`
+	Detail        string          `json:"detail,omitempty"`
+	// ★ Mode·Source 에는 omitempty 를 붙이지 않는다. 빈 값이 사라지면 "paper 인지 live 인지",
+	// "봇이 낸 건지 사람이 낸 건지" 를 화면이 조용히 모르게 된다 — 둘 다 오인의 대가가 크다.
+	Mode      protocol.Mode `json:"mode"`   // paper | live
+	Source    Source        `json:"source"` // bot | manual
+	DaemonSHA string        `json:"daemon_sha,omitempty"`
+	CreatedAt time.Time     `json:"created_at"`
 }
 
 // Source — 이 주문을 누가 냈는가.

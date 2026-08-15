@@ -2,6 +2,8 @@
 //
 // ★ 데몬은 HTML 을 모른다 — JSON 만 낸다. 서버가 HTML 조각을 반환하는 구조로 시작하면
 // 나중에 Tauri 셸로 옮길 때 UI 를 전부 다시 쓰게 된다.
+// (Options.UI 로 정적 번들을 통째로 얹는 건 별개다 — 데몬이 파일을 나르는 것이지 화면을
+// 만드는 게 아니라서, Tauri 가 같은 번들을 그대로 가져가면 서버 쪽은 손댈 게 없다.)
 //
 // ★ 그리고 이 서버는 UI 의 사이드카가 아니다. 창을 닫아도 데몬은 계속 돈다 —
 // 이 봇이 일하는 시간이 하필 사용자가 화면을 안 보는 시간(장 시작 직후·새벽)이라서다.
@@ -53,6 +55,14 @@ type Options struct {
 	// 스캘핑처럼 수명이 분 단위인 신호에서는 그 5초가 신호를 통째로 무의미하게 만든다.
 	// 논블로킹이어야 한다 — 여기서 막히면 다운링크 응답이 늦어진다.
 	Wake func()
+
+	// UI — 로컬 대시보드(정적 번들). nil 이면 안 서빙한다.
+	//
+	// ★ 이 경로만 Bearer 검사에서 빠진다 (needsToken). 브라우저의 최초 내비게이션에는
+	// Authorization 헤더를 붙일 수단이 없어서다. 대신 Host·Origin 가드는 그대로 걸리고,
+	// CORS 헤더를 하나도 안 내보내므로 다른 출처의 페이지는 응답을 **읽을 수 없다**.
+	// 자격은 페이지에 주입돼 이후 /v1/* 호출에 Bearer 로 쓰인다 (webui.Boot).
+	UI http.Handler
 }
 
 type Server struct {
@@ -76,6 +86,11 @@ func New(opt Options, eng Engine) *Server {
 	// 이 엔드포인트를 두드릴 수 있어도 서명키 없이는 주문을 만들 수 없다.
 	mux.HandleFunc("POST /v1/downlink", s.handleDownlink)
 	mux.HandleFunc("GET /v1/ledger", s.handleLedger)
+
+	// 대시보드는 마지막에 건다 — 남는 경로 전부(`/`, `/assets/...`)를 받는다.
+	if opt.UI != nil {
+		mux.Handle("GET /", opt.UI)
+	}
 
 	s.http = &http.Server{
 		// ★ 127.0.0.1 에만 붙는다. 0.0.0.0 이면 같은 와이파이의 아무나 접근할 수 있다.
@@ -122,13 +137,26 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			return
 		}
 		// 3) 토큰 — 위 둘을 통과해도 자격은 따로 본다.
-		if !s.authorized(r) {
+		if needsToken(r.URL.Path) && !s.authorized(r) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// needsToken — 자격이 필요한 경로.
+//
+// ★ 화이트리스트가 아니라 "/v1/ 이면 필요" 로 쓴 이유: 앞으로 추가되는 엔드포인트가
+// 기본적으로 **보호받는 쪽**에 떨어져야 한다. 목록을 두면 새 엔드포인트를 목록에 넣는 걸
+// 잊는 순간 그게 곧 무인증 구멍이고, 그 실수는 조용하다.
+//
+// 정적 대시보드(그 외 전부)는 토큰 없이 나간다. 브라우저 내비게이션에 헤더를 붙일 수단이
+// 없어서다. 이건 자격을 푼 게 아니라 자격을 **전달하는 방법**을 바꾼 것이다 —
+// 페이지가 토큰을 받아 가고, 그 페이지에 닿으려면 이미 Host·Origin 가드를 통과해야 한다.
+func needsToken(path string) bool {
+	return strings.HasPrefix(path, "/v1/")
 }
 
 func (s *Server) authorized(r *http.Request) bool {

@@ -17,8 +17,12 @@ vendor/
 
 # ── node / ui ──
 node_modules/
-ui/dist/
 .vite/
+# ★ UI 산출물은 커밋하지 않는다 (vite outDir). 저장소에 두면 "소스는 고쳤는데 embed 된 건
+#   옛 번들" 이라는 조용한 드리프트가 생긴다 — 이 프로젝트가 sha 스탬프까지 박아 막는 실패 모양이다.
+#   .gitkeep 한 장만 남겨 npm 없이도 //go:embed all:dist 가 컴파일되게 한다.
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
 *.tsbuildinfo
 
 # ── tauri ──

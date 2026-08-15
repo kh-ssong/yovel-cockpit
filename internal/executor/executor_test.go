@@ -336,3 +336,33 @@ func TestOneFailureDoesNotBlockTheRest(t *testing.T) {
 		t.Fatalf("청산이 안 됐다: %+v", res)
 	}
 }
+
+// signal_ts 는 "신호가 나온 시각" 이라 체결보다 **앞서야** 한다.
+//
+// ★ 회귀 가드인 이유: 예전엔 entry.not_after(진입 마감시각, 미래)를 대신 실어서
+// filled_at − signal_ts 가 음수로 나왔다. 부호가 뒤집힌 지연은 "지연 없음" 보다 나쁘다 —
+// 값이 채워져 있으니 아무도 다시 안 본다. 이 저장소가 존재하는 이유의 절반이 체결 지연 측정이다.
+func TestSignalTSPrecedesFill(t *testing.T) {
+	h := newHarness(t)
+	now := base.Add(time.Second)
+
+	h.apply(t, h.target(t, 1, protocol.WantOpen, 900, 0))
+	if res := h.x.Tick(ctx, now); res.Entered != 1 {
+		t.Fatalf("진입 실패: %+v", res)
+	}
+
+	rows := h.ledger(t)
+	if len(rows) != 1 {
+		t.Fatalf("원장=%+v", rows)
+	}
+	o := rows[0]
+	if o.SignalTS == nil || o.FilledAt == nil {
+		t.Fatalf("시각이 비었다: signal=%v filled=%v", o.SignalTS, o.FilledAt)
+	}
+	if !o.SignalTS.Equal(base) {
+		t.Errorf("signal_ts=%v — 목표 스냅샷의 as_of_bar(%v)여야 한다", o.SignalTS, base)
+	}
+	if d := o.FilledAt.Sub(*o.SignalTS); d < 0 {
+		t.Fatalf("지연이 음수다 (%v) — signal_ts 에 미래 시각이 실렸다", d)
+	}
+}

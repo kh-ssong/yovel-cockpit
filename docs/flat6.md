@@ -136,7 +136,9 @@ Content-Type: application/json
 2. 콕핏 `trusted_keys.json` 에 flat6 공개키 등록
 3. 콕핏을 `--broker paper --kiwoom-token-file <flat6 파일>` 로 띄운다
    (paper 지만 시세·토큰은 진짜를 쓴다)
-4. flat6 를 **집행 없는 모드**로 돌려 목표만 POST → 콕핏 `/v1/plan` · `/v1/ledger?mode=paper` 로 확인
+4. flat6 를 **집행 없는 모드**로 돌려 목표만 POST → 콕핏 대시보드(`http://127.0.0.1:7737/`)로 확인.
+   목표가 계획이 됐는지, 안 됐으면 무엇이 막았는지(E_SYMBOL · E_TERMINAL · E_EXPIRED)가 한 화면에 나온다.
+   같은 것을 curl 로도 본다: `/v1/plan` · `/v1/ledger?mode=paper`
 5. 하루치 대조: flat6 가 낸 목표 수 ↔ 콕핏 ack 수 ↔ 원장 건수
 6. 그 다음에야 `--broker kiwoom --mode live` + 소액
 

@@ -42,6 +42,12 @@ type TpUpdate struct {
 
 // Plan 은 이번 틱에 할 일 전부.
 type Plan struct {
+	// AsOfBar — 이 계획이 근거한 목표 스냅샷의 기준봉 시각 (= 신호가 나온 시각).
+	//
+	// ★ 원장의 signal_ts 가 여기서 나온다. 이게 없으면 "신호 → 체결" 지연을 잴 근거가
+	// 계획 안에 하나도 없고, 그러면 대신 손에 잡히는 값(entry.not_after 같은 것)을 쓰게 되는데
+	// 그건 **미래 시각**이라 지연이 음수로 나온다 — 조용히, 그리고 계속.
+	AsOfBar     time.Time    `json:"as_of_bar"`
 	Enters      []EnterOrder `json:"enters"`
 	Exits       []ExitOrder  `json:"exits"`
 	StopUpdates []StopUpdate `json:"stop_updates"`
@@ -113,6 +119,7 @@ func (o Options) entryBlocked() protocol.RejectCode {
 // 서버가 상태를 한 번 잘못 계산하거나 스냅샷이 잘리면 사용자의 수동 보유분까지 털어버린다.
 func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options) Plan {
 	var plan Plan
+	plan.AsOfBar = target.AsOfBar
 
 	have := make(map[string]protocol.Position, len(actual))
 	for _, p := range actual {

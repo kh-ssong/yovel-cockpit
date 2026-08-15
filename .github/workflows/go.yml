@@ -7,7 +7,9 @@ name: go
 on:
   push:
   pull_request:
-    paths: ["**.go", "go.mod", "go.sum", "scripts/**", ".github/workflows/go.yml"]
+    # ★ ui/** 도 포함한다 — 대시보드가 바이너리에 embed 되므로 UI 변경은 Go 빌드 산출물을 바꾼다.
+    paths:
+      ["**.go", "go.mod", "go.sum", "scripts/**", "ui/**", ".github/workflows/go.yml"]
 
 jobs:
   test:
@@ -37,6 +39,12 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
+      # 대시보드는 매 빌드마다 새로 짓는다 (산출물을 커밋하지 않으므로 npm 이 필수다).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
       - run: ./scripts/build.sh cross
       - name: 버전 스탬프 확인
         run: |
@@ -47,3 +55,19 @@ jobs:
             echo "sha 가 비었다 — 드리프트 감지가 죽는다"
             exit 1
           fi
+      # ★ "빌드가 통과했다" 와 "화면이 실제로 뜬다" 는 다른 말이다. embed 가 비어도,
+      #   토큰 주입이 깨져도 Go 빌드는 초록이다 — 그래서 진짜 바이너리를 띄워 눈으로 볼 것을 본다.
+      - name: 대시보드가 바이너리에서 실제로 뜨는지
+        run: |
+          ./bin/cockpitd-linux-amd64 --port 7738 --data-dir "$RUNNER_TEMP/cockpit" &
+          pid=$!
+          for _ in $(seq 1 20); do
+            curl -sf -o /dev/null http://127.0.0.1:7738/ && break
+            sleep 0.5
+          done
+          body=$(curl -s http://127.0.0.1:7738/ || true)
+          kill $pid || true
+          echo "$body" | grep -q "assets/" \
+            || { echo "UI 산출물이 안 박혔다 (npm 빌드가 건너뛰어졌나)"; exit 1; }
+          echo "$body" | grep -q "window.__COCKPIT__" \
+            || { echo "부팅 정보 주입 실패 — 화면은 뜨지만 모든 API 호출이 401 이 된다"; exit 1; }

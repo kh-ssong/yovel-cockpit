@@ -1,8 +1,8 @@
 // cockpitd — yovel cockpit 집행 데몬.
 //
-// ★ 아직 브로커도 릴레이도 없다. 있는 것: 설정 · 로컬 API(토큰·Host·Origin 가드) ·
-// 다운링크 판정 · 계획 산출 · 버전 노출 · 깨끗한 종료.
-// 빠진 것은 "그 계획을 실제로 내는 손"과 "목표를 실어 오는 transport" 다.
+// 있는 것: 설정 · 로컬 API(토큰·Host·Origin 가드) · 다운링크 판정 · 계획 산출 ·
+// 브로커 집행(paper/kiwoom) · 로컬 원장 · 대시보드 · 버전 노출 · 깨끗한 종료.
+// ★ 아직 없는 것은 "목표를 실어 오는 transport"(릴레이) 하나다.
 //
 // 이 순서인 이유: 이 데몬이 나중에 실주문을 내므로 "누가 이 프로세스에 명령할 수 있는가" 를
 // 기능보다 먼저 못박아야 한다. 그리고 계약은 transport 없이도 루프백으로 완결시킬 수 있다
@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -31,6 +32,7 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
 	"github.com/kh-ssong/yovel-cockpit/internal/store"
 	"github.com/kh-ssong/yovel-cockpit/internal/version"
+	"github.com/kh-ssong/yovel-cockpit/internal/webui"
 )
 
 func main() {
@@ -112,6 +114,13 @@ func run() error {
 	// 버퍼 1 + 논블로킹 송신이라 연달아 와도 쌓이지 않는다 (한 번 돌면 최신 목표가 반영된다).
 	wake := make(chan struct{}, 1)
 
+	// ★ 토큰을 페이지에 실어 준다. 브라우저의 최초 내비게이션에는 Authorization 헤더를 붙일
+	// 수단이 없어서다 — 자격을 푼 게 아니라 전달 방법이 다른 것이다 (webui.Boot 주석 참조).
+	var ui http.Handler
+	if cfg.UI {
+		ui = webui.Handler(webui.Boot{Token: token, Mode: string(cfg.Mode)})
+	}
+
 	srv := httpapi.New(httpapi.Options{
 		Port:      cfg.Port,
 		Token:     token,
@@ -124,6 +133,7 @@ func run() error {
 			default:
 			}
 		},
+		UI: ui,
 	}, eng)
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("로컬 API 기동 실패: %w", err)
@@ -147,6 +157,17 @@ func run() error {
 	}
 	if cfg.Mode == protocol.ModeLive {
 		log.Warn("live 모드 — 실주문이 나갈 수 있다")
+	}
+	switch {
+	case !cfg.UI:
+	case webui.Built():
+		// ★ 토큰은 안 찍는다 — 로그는 수집·전송될 수 있고, 주소만 있으면 페이지가 알아서 받아 간다.
+		log.Info("대시보드", "url", fmt.Sprintf("http://127.0.0.1:%d/", cfg.Port))
+	default:
+		// 화면이 안 뜨는 이유를 데몬이 먼저 말한다. 브라우저에서 빈 화면을 만나고 나서
+		// 원인을 찾게 두면, 그건 배선 문제인지 빌드 문제인지 구분이 안 된다.
+		log.Warn("대시보드 산출물이 이 바이너리에 없다 — ui/ 에서 npm ci && npm run build 후 scripts/build.sh",
+			"url", fmt.Sprintf("http://127.0.0.1:%d/", cfg.Port))
 	}
 	// ★ 복구된 pause 를 조용히 두면, 사용자는 봇이 도는 줄 알고 기다린다.
 	if snap.Guards.Paused {

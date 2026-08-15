@@ -12,9 +12,11 @@ yovel-flat6      독립 · 초단타 스캘핑      엔진 = 무전 안 기다�
 
 ## 상태
 
-★ **설계 단계 — 실행 코드 없음.** 현재 이 저장소에 있는 것은 설계 계약과 위생 설정뿐이다.
-아래 「네트워크 계약」은 구현할 때 지킬 **약속**이지, 지금 그렇게 동작한다는 서술이 아니다.
-코드가 들어오면 이 문단을 지운다.
+데몬은 돈다 — 계약 검증 · 다운링크 판정 · reconcile · 키움/페이퍼 집행 · 로컬 원장 ·
+대시보드까지. **아직 없는 것은 릴레이(MQTT)** 하나뿐이고, 그때까지 목표는
+`POST /v1/downlink` 로만 들어온다 (같은 PC 의 flat6 에는 릴레이가 애초에 필요 없다).
+
+아래 「네트워크 계약」 중 릴레이 행은 아직 **약속**이다.
 
 와이어 프로토콜 계약 = **[`docs/protocol.md`](docs/protocol.md)** + [`schema/v1/`](schema/v1)
 (JSON Schema, `cd schema && npm test` 로 예제 검증).
@@ -101,7 +103,8 @@ internal/quotes/     기준가 공급 (사이징과 stop 평가가 같은 값을
 internal/ids/        ULID (멱등키 = 원장 정렬 키)
 internal/store/      로컬 SQLite — 원장 · intent 매핑 · 가드 영속 · 업링크 큐
 internal/config/     로컬 설정 · pin 된 pitwall 공개키
-internal/httpapi/    로컬 API (토큰 · Host · Origin 가드)
+internal/httpapi/    로컬 API (토큰 · Host · Origin 가드) + 대시보드 정적 마운트
+internal/webui/      대시보드 embed — dist 는 커밋하지 않는다 (.gitkeep 만)
 internal/version/    버전 · SHA (드리프트 감지)
 internal/engine/     상태 소유 · 다운링크 적용 · 스냅샷
 internal/reconcile/  목표 ↔ 실상태 차이 → 계획 (순수 함수, 주문을 내지 않는다)
@@ -112,10 +115,39 @@ docs/protocol.md     ★ 와이어 계약 SSOT
 docs/flat6.md        flat6(판단) ↔ 콕핏(집행) 연결 절차
 schema/v1/           ★ 같은 계약의 JSON Schema (npm test 로 예제 검증)
 schema/fixtures/     Go ↔ Python 서명 적합성 픽스처
-ui/                  Svelte SPA — 산출물 ui/dist 를 데몬이 서빙하다가 Tauri 가 번들 (미착수)
+ui/                  Svelte SPA — 산출물을 데몬이 서빙하고, 나중에 Tauri 가 같은 번들을 번들링
 ```
 
-**아직 없는 것**: 릴레이(MQTT) 연결 · UI. 목표는 지금 `POST /v1/downlink` 로만 들어온다.
+**아직 없는 것**: 릴레이(MQTT) 연결. 목표는 지금 `POST /v1/downlink` 로만 들어온다.
+
+### 대시보드
+
+데몬이 켜져 있으면 브라우저로 `http://127.0.0.1:<port>/` 를 열면 끝이다 — 토큰을 붙여넣을
+필요가 없다. 상태·계획·유령·원장을 2 초마다 새로 읽고, 끊기면 **지우지도 그대로 두지도 않고**
+흐린 채로 "마지막으로 진짜였던 시각" 을 붙인다.
+
+```bash
+cd ui && npm ci && npm run build   # → internal/webui/dist (커밋 안 함)
+scripts/build.sh                    # UI 를 먼저 짓고 그걸 embed 한다
+./bin/cockpitd-<plat> --ui=false    # 헤드리스로 돌리려면
+```
+
+세 가지가 의도된 선택이다:
+
+- **토큰을 페이지에 주입한다.** 브라우저의 최초 내비게이션에는 Authorization 헤더를 붙일
+  수단이 없다. 그래서 정적 경로만 Bearer 검사에서 빼고, 대신 Host·Origin 가드는 그대로 걸고
+  CORS 헤더는 하나도 내보내지 않는다 — 다른 출처의 페이지는 응답을 **읽을 수 없다**.
+  자격을 푼 게 아니라 전달 방법을 바꾼 것이고, 이 토큰에 닿을 수 있는 프로세스는 어차피
+  `{data-dir}/api-token` 을 직접 읽을 수 있다.
+- **minify 를 끈다.** §1 이 성립하려면 바이너리에 박히는 코드를 사람이 읽을 수 있어야 한다.
+  번들이 압축 덩어리면 그 확인이 UI 에서 끊긴다 — 몇십 KB 보다 그게 비싸다.
+- **산출물을 커밋하지 않는다.** 커밋해 두면 "소스는 고쳤는데 embed 된 건 옛 번들" 이 조용히
+  생긴다. 그래서 `scripts/build.sh` 가 매번 새로 짓고, npm 이 없으면 멈춘다
+  (`COCKPIT_SKIP_UI=1` 로 명시해야 넘어간다). UI 가 안 박힌 바이너리는 빈 화면 대신
+  **안내 페이지를 503 으로** 낸다 — "UI 가 없는 것" 과 "UI 가 깨진 것" 이 같아 보이면 안 된다.
+
+★ 아직 화면에서 주문을 내거나 de-risk 를 걸 수는 없다 (읽기 전용). `cmd.derisk` 를 붙이려면
+릴레이 없이도 되지만, 그건 "화면이 봇을 멈출 수 있다" 는 새 권한이라 따로 결정한다.
 
 ### 브로커
 

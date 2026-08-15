@@ -290,3 +290,65 @@ func TestBlockedDownlinkDoesNotWake(t *testing.T) {
 	default:
 	}
 }
+
+// ── 대시보드 정적 서빙 ──────────────────────────────────────────────────────
+
+func uiServer() *Server {
+	return New(Options{
+		Port: 7737, Token: tok, Mode: protocol.ModePaper, StartedAt: time.Now(),
+		UI: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte("<!doctype html><title>ui</title>" + r.URL.Path))
+		}),
+	}, &fakeEngine{})
+}
+
+func uiReq(t *testing.T, path string, mutate func(*http.Request)) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.Host = "127.0.0.1:7737"
+	if mutate != nil {
+		mutate(r)
+	}
+	w := httptest.NewRecorder()
+	uiServer().Handler().ServeHTTP(w, r)
+	return w
+}
+
+// 브라우저의 최초 내비게이션에는 Authorization 헤더를 붙일 수단이 없다.
+// 정적 경로가 토큰을 요구하면 화면은 영원히 401 이다.
+func TestUIServedWithoutToken(t *testing.T) {
+	for _, p := range []string{"/", "/assets/index-abc.js"} {
+		w := uiReq(t, p, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: code=%d body=%s", p, w.Code, w.Body)
+		}
+	}
+}
+
+// ★ 토큰 면제는 정적 경로에만이다. API 가 같이 풀리면 그건 인증을 없앤 것이다.
+func TestAPIStillNeedsTokenWhenUIMounted(t *testing.T) {
+	for _, p := range []string{"/v1/state", "/v1/health", "/v1/ledger?mode=paper", "/v1/nope"} {
+		w := uiReq(t, p, nil)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: code=%d — 토큰 없이 통과했다", p, w.Code)
+		}
+	}
+}
+
+// ★ 정적 경로에도 Origin 가드는 그대로 걸린다. 이게 없으면 아무 웹페이지나
+// 127.0.0.1 의 index.html 을 읽어 주입된 토큰을 가져갈 수 있다.
+func TestUIRejectsForeignOrigin(t *testing.T) {
+	w := uiReq(t, "/", func(r *http.Request) { r.Header.Set("Origin", "https://evil.example") })
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("code=%d — 외부 출처가 대시보드를 읽었다", w.Code)
+	}
+}
+
+// UI 를 안 붙였으면 정적 경로는 없어야 한다 (헤드리스 상주).
+func TestNoUIMeansNoStaticRoute(t *testing.T) {
+	w := do(t, "/", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("code=%d — UI 를 끄지 않았다", w.Code)
+	}
+}

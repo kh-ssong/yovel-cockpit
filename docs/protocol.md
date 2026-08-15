@@ -278,6 +278,11 @@ PC 가 꺼지는 순간 마지막 상태 스냅샷을 덮어써 지워버린다.
 ★ `submitted_at` / `filled_at` / `signal_ts` 3종을 전부 싣는다 —
 **신호 시각 → 체결 시각** 이 곧 이 프로젝트가 없애려는 지연의 크기다. 못 재면 개선도 증명 못 한다.
 
+★ `signal_ts` = 그 목표 스냅샷의 **`as_of_bar`** 다. `entry.not_after` 를 대신 쓰면 안 된다 —
+그건 진입 **마감시각(미래)** 이라 `filled_at − signal_ts` 가 음수로 나온다. 부호가 뒤집힌 지연은
+비어 있는 것보다 나쁘다: 값이 채워져 있으니 아무도 다시 보지 않는다.
+(실측 사고 2026-08-15 — 회귀 gate `TestSignalTSPrecedesFill`.)
+
 ### 5.3 `heartbeat`
 
 `{ seq, ts, daemon_sha, uptime_sec, broker_ws: "up"|"down", clock_skew_ms }`
