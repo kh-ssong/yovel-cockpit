@@ -108,12 +108,22 @@ func run() error {
 		return fmt.Errorf("상태 복구 실패: %w", err)
 	}
 
+	// wake — 목표가 도착하면 다음 틱을 기다리지 않고 즉시 집행한다.
+	// 버퍼 1 + 논블로킹 송신이라 연달아 와도 쌓이지 않는다 (한 번 돌면 최신 목표가 반영된다).
+	wake := make(chan struct{}, 1)
+
 	srv := httpapi.New(httpapi.Options{
 		Port:      cfg.Port,
 		Token:     token,
 		Mode:      cfg.Mode,
 		StartedAt: started,
 		Log:       log,
+		Wake: func() {
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+		},
 	}, eng)
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("로컬 API 기동 실패: %w", err)
@@ -150,7 +160,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go runLoop(ctx, exec, cfg.ReconcileInterval, log)
+	go runLoop(ctx, exec, cfg.ReconcileInterval, wake, log)
 
 	<-ctx.Done()
 
@@ -177,6 +187,7 @@ func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
 		}
 		return kiwoom.New(kiwoom.Config{
 			AppKey: appKey, SecretKey: secret, DataDir: cfg.DataDir, Mock: cfg.KiwoomMock,
+			TokenFile: cfg.KiwoomTokenFile,
 		})
 	}
 
@@ -188,6 +199,7 @@ func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
 	if appKey != "" && secret != "" {
 		kw, err := kiwoom.New(kiwoom.Config{
 			AppKey: appKey, SecretKey: secret, DataDir: cfg.DataDir, Mock: cfg.KiwoomMock,
+			TokenFile: cfg.KiwoomTokenFile,
 		})
 		if err == nil {
 			log.Info("paper 브로커에 키움 실시세를 물린다")
@@ -204,7 +216,8 @@ func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
 
 // runLoop — 집행 루프. ★ 목표 수신과 무관하게 주기적으로 돈다.
 // 목표가 안 와도 브로커 실상태는 바뀔 수 있고(TP 체결·수동 매도), 그걸 못 보면 장부가 썩는다.
-func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duration, log *slog.Logger) {
+func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duration,
+	wake <-chan struct{}, log *slog.Logger) {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
@@ -215,16 +228,19 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 		select {
 		case <-ctx.Done():
 			return
+		case <-wake: // 목표 도착 — 틱을 기다리지 않는다
 		case <-t.C:
-			res := exec.Tick(ctx, time.Now().UTC())
-			// 아무 일도 없었으면 조용히 넘긴다 — 5초마다 로그를 찍으면 진짜 사건이 묻힌다.
-			if res.Entered+res.Exited+res.StopsArmed+res.TpPlaced+res.ClosedByBroker == 0 &&
-				len(res.Errors) == 0 && len(res.Mismatch) == 0 {
-				continue
-			}
-			log.Info("집행", "entered", res.Entered, "exited", res.Exited,
-				"stops", res.StopsArmed, "tp", res.TpPlaced, "closed_by_broker", res.ClosedByBroker,
-				"mismatch", res.Mismatch, "errors", res.Errors)
 		}
+
+		res := exec.Tick(ctx, time.Now().UTC())
+
+		// 아무 일도 없었으면 조용히 넘긴다 — 5초마다 로그를 찍으면 진짜 사건이 묻힌다.
+		if res.Entered+res.Exited+res.StopsArmed+res.TpPlaced+res.ClosedByBroker == 0 &&
+			len(res.Errors) == 0 && len(res.Mismatch) == 0 {
+			continue
+		}
+		log.Info("집행", "entered", res.Entered, "exited", res.Exited,
+			"stops", res.StopsArmed, "tp", res.TpPlaced, "closed_by_broker", res.ClosedByBroker,
+			"mismatch", res.Mismatch, "errors", res.Errors)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -539,3 +540,71 @@ func TestBuyableQueryFailureIsFailOpen(t *testing.T) {
 
 // 이 드라이버가 broker.Broker 계약을 만족하는지 컴파일 타임에 고정.
 var _ broker.Broker = (*Broker)(nil)
+
+// ★ flat6 와 같은 앱키를 쓸 때의 핵심 성질: 토큰 파일을 공유하면 **한 쪽만 발급한다**.
+// 각자 발급하면 1계정 1토큰이라 서로의 토큰을 죽이고, 증상은 "가끔 8005" 가 아니라
+// 상대 세션이 통째로 유실되는 형태로 나타난다.
+func TestSharedTokenFileMeansOneIssuance(t *testing.T) {
+	f := newFake()
+	f.on(apiQuote, func(map[string]any) any {
+		return map[string]any{"return_code": 0, "cur_prc": "1000"}
+	})
+	srv := f.start(t)
+	shared := t.TempDir() + "/kiwoom_token.json"
+	cl := &clock{t: time.Date(2026, 8, 15, 9, 5, 0, 0, time.Local)}
+
+	mk := func() *Broker {
+		b, err := New(Config{
+			AppKey: "k", SecretKey: "s", DataDir: t.TempDir(), TokenFile: shared,
+			APIURL: srv.URL, HTTP: srv.Client(), Now: cl.now,
+			Sleep: func(time.Duration) {}, FillTimeout: time.Second, FillPoll: time.Millisecond,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+
+	first, second := mk(), mk() // 콕핏과 flat6 를 흉내낸 두 프로세스
+	if _, err := first.Quote(ctx, sym); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Quote(ctx, sym); err != nil {
+		t.Fatal(err)
+	}
+	if f.tokens != 1 {
+		t.Fatalf("★ 토큰 발급 %d회 — 두 프로세스가 서로의 토큰을 죽인다", f.tokens)
+	}
+}
+
+// flat6 가 쓰는 표기(expires_dt)를 읽을 수 있어야 파일 공유가 성립한다.
+func TestReadsFlat6TokenFormat(t *testing.T) {
+	f := newFake()
+	f.on(apiQuote, func(map[string]any) any {
+		return map[string]any{"return_code": 0, "cur_prc": "1000"}
+	})
+	srv := f.start(t)
+	cl := &clock{t: time.Date(2026, 8, 15, 9, 5, 0, 0, time.Local)}
+
+	path := t.TempDir() + "/kiwoom_token.json"
+	// flat6 가 이미 발급해 둔 상태를 흉내낸다.
+	if err := os.WriteFile(path, []byte(
+		`{"token":"flat6-issued","expires_dt":"20260816235959"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := New(Config{
+		AppKey: "k", SecretKey: "s", DataDir: t.TempDir(), TokenFile: path,
+		APIURL: srv.URL, HTTP: srv.Client(), Now: cl.now,
+		Sleep: func(time.Duration) {}, FillTimeout: time.Second, FillPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Quote(ctx, sym); err != nil {
+		t.Fatal(err)
+	}
+	if f.tokens != 0 {
+		t.Fatalf("★ flat6 가 발급해 둔 토큰을 못 읽고 %d회 재발급했다", f.tokens)
+	}
+}

@@ -47,6 +47,12 @@ type Options struct {
 	Mode      protocol.Mode
 	StartedAt time.Time
 	Log       *slog.Logger
+	// Wake — 다운링크를 처리한 직후 호출된다.
+	//
+	// ★ 이게 없으면 목표가 도착해도 다음 집행 틱(기본 5초)까지 기다린다.
+	// 스캘핑처럼 수명이 분 단위인 신호에서는 그 5초가 신호를 통째로 무의미하게 만든다.
+	// 논블로킹이어야 한다 — 여기서 막히면 다운링크 응답이 늦어진다.
+	Wake func()
 }
 
 type Server struct {
@@ -226,6 +232,11 @@ func (s *Server) handleDownlink(w http.ResponseWriter, r *http.Request) {
 	// 릴레이(MQTT)에는 상태코드라는 게 없다 — 두 경로가 다른 모양이면 그게 곧 배선 버그가 된다.
 	writeJSON(w, http.StatusOK, ack)
 	s.opt.Log.Info("다운링크 처리", "typ", ack.RefTyp, "status", ack.Status, "codes", ack.Codes)
+
+	// ★ 응답을 보낸 뒤에 깨운다. 집행을 기다렸다 응답하면 발행자가 그만큼 붙들린다.
+	if s.opt.Wake != nil {
+		s.opt.Wake()
+	}
 }
 
 type ledgerResponse struct {

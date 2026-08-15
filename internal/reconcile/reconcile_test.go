@@ -284,3 +284,31 @@ func TestWithoutTerminalGuardItReenters(t *testing.T) {
 		t.Fatalf("Terminal 미배선 시 동작이 바뀌었다: %+v", p)
 	}
 }
+
+// ★ 신호를 낸 쪽이 기준가를 실어 보내면 클라는 시세를 다시 조회하지 않는다.
+// 왕복이 줄기도 하지만, 진짜 이유는 **신호를 낸 가격과 사이징한 가격이 갈리지 않는 것**이다.
+func TestRefPriceIsUsedInsteadOfQuote(t *testing.T) {
+	o := opts()
+	o.Price = func(protocol.Symbol) (float64, bool) {
+		t.Fatal("ref_price 가 있는데 시세를 조회했다")
+		return 0, false
+	}
+	tg := openTarget("a", "005930")
+	tg.Entry.RefPrice = 500 // 신호 시점 가격
+
+	p := Build(book(tg), nil, o)
+	if len(p.Enters) != 1 {
+		t.Fatalf("%+v", p)
+	}
+	if p.Enters[0].Price != 500 || p.Enters[0].Qty != 1000 { // 50만 / 500
+		t.Fatalf("%+v", p.Enters[0])
+	}
+}
+
+// ref_price 가 없으면 예전처럼 조회한다 (선택 필드라 옛 발행자도 그대로 동작).
+func TestWithoutRefPriceFallsBackToQuote(t *testing.T) {
+	p := Build(book(openTarget("a", "005930")), nil, opts())
+	if len(p.Enters) != 1 || p.Enters[0].Price != 1000 {
+		t.Fatalf("%+v", p.Enters)
+	}
+}

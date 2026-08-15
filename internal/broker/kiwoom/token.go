@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -37,14 +36,37 @@ type tokenStore struct {
 // expiryBuffer — 만료 이만큼 전이면 갱신 대상. 서버측 조기 무효화 사례가 있어 넉넉히 잡는다.
 const expiryBuffer = time.Hour
 
+// tokenFile — ★ flat6(Python)와 **같은 파일·같은 포맷**을 쓴다.
+//
+// 같은 앱키를 쓰는 두 프로세스가 각자 발급하면 서로의 토큰을 죽인다(1계정 1토큰).
+// 포맷이 다르면 파일을 공유해도 서로의 기록을 못 읽어 결국 각자 발급하게 되므로,
+// 포맷 통일이 곧 공유의 전제다. flat6: {"token", "expires_dt": "%Y%m%d%H%M%S"}.
 type tokenFile struct {
 	Token     string `json:"token"`
-	ExpiresAt string `json:"expires_at"` // RFC3339
+	ExpiresDt string `json:"expires_dt"`           // "20260815235959" (키움 원본 표기)
+	ExpiresAt string `json:"expires_at,omitempty"` // 구 콕핏 포맷 — 읽기만 지원
 }
 
-func newTokenStore(dataDir, appKey, secret, apiURL string, hc *http.Client, now func() time.Time) *tokenStore {
+const kiwoomExpiryLayout = "20060102150405"
+
+// parsedExpiry 는 두 표기를 모두 받아준다 (한쪽만 지원하면 상대 기록을 못 읽는다).
+func (f tokenFile) parsedExpiry() (time.Time, bool) {
+	if f.ExpiresDt != "" {
+		if v, err := time.ParseInLocation(kiwoomExpiryLayout, strings.TrimSpace(f.ExpiresDt), time.Local); err == nil {
+			return v, true
+		}
+	}
+	if f.ExpiresAt != "" {
+		if v, err := time.Parse(time.RFC3339, f.ExpiresAt); err == nil {
+			return v, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func newTokenStore(path, appKey, secret, apiURL string, hc *http.Client, now func() time.Time) *tokenStore {
 	return &tokenStore{
-		path:   filepath.Join(dataDir, "kiwoom_token.json"),
+		path:   path,
 		appKey: appKey, secret: secret, apiURL: apiURL,
 		http: hc, now: now,
 	}
@@ -64,13 +86,13 @@ func (t *tokenStore) get(ctx context.Context, force bool) (string, error) {
 	}
 
 	if f, err := t.readFile(); err == nil && f.Token != "" {
-		exp, perr := time.Parse(time.RFC3339, f.ExpiresAt)
+		exp, ok := f.parsedExpiry()
 		switch {
 		case force && f.Token != t.token:
 			// 남이 이미 갱신했다. 발급하지 않고 갈아탄다.
 			t.token, t.expires = f.Token, exp
 			return t.token, nil
-		case !force && perr == nil && t.now().Add(expiryBuffer).Before(exp):
+		case !force && ok && t.now().Add(expiryBuffer).Before(exp):
 			t.token, t.expires = f.Token, exp
 			return t.token, nil
 		}
@@ -103,13 +125,16 @@ func (t *tokenStore) issue(ctx context.Context) (string, error) {
 	}
 
 	exp := t.now().Add(12 * time.Hour) // expires_dt 가 없을 때의 보수적 기본값
-	if v, err := time.ParseInLocation("20060102150405", strings.TrimSpace(resp.ExpiresDt), time.Local); err == nil {
+	raw := strings.TrimSpace(resp.ExpiresDt)
+	if v, err := time.ParseInLocation(kiwoomExpiryLayout, raw, time.Local); err == nil {
 		exp = v
+	} else {
+		raw = exp.Format(kiwoomExpiryLayout)
 	}
 	t.token, t.expires = resp.Token, exp
 
 	// 파일 기록 실패는 치명적이지 않다 — ★ fail-open: 공유가 안 될 뿐 이번 요청은 살린다.
-	_ = t.writeFile(tokenFile{Token: resp.Token, ExpiresAt: exp.Format(time.RFC3339)})
+	_ = t.writeFile(tokenFile{Token: resp.Token, ExpiresDt: raw})
 	return t.token, nil
 }
 

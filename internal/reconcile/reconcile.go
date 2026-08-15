@@ -214,12 +214,20 @@ func applyOrderCap(plan *Plan, max int) {
 }
 
 func buildEnter(t protocol.Target, opt Options) (EnterOrder, []protocol.RejectCode) {
-	if opt.Price == nil {
-		return EnterOrder{}, []protocol.RejectCode{protocol.CodeSymbol}
-	}
-	price, ok := opt.Price(t.Symbol)
-	if !ok || price <= 0 {
-		return EnterOrder{}, []protocol.RejectCode{protocol.CodeSymbol}
+	// ★ 신호를 낸 쪽이 기준가를 실어 보냈으면 그걸 쓴다. 여기서 다시 조회하면
+	// 신호를 낸 가격과 사이징한 가격이 갈리고, 종목 수만큼 왕복이 늘어난다.
+	var price float64
+	if t.Entry != nil && t.Entry.RefPrice > 0 {
+		price = t.Entry.RefPrice
+	} else {
+		if opt.Price == nil {
+			return EnterOrder{}, []protocol.RejectCode{protocol.CodeSymbol}
+		}
+		p, ok := opt.Price(t.Symbol)
+		if !ok || p <= 0 {
+			return EnterOrder{}, []protocol.RejectCode{protocol.CodeSymbol}
+		}
+		price = p
 	}
 	if t.Entry != nil && t.Entry.Mode == "limit" && t.Entry.LimitPrice > 0 {
 		price = t.Entry.LimitPrice

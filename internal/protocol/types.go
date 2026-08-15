@@ -130,7 +130,10 @@ type Entry struct {
 	Mode       string    `json:"mode"` // market | limit
 	LimitPrice float64   `json:"limit_price,omitempty"`
 	NotAfter   time.Time `json:"not_after"` // ★ 필수. 넘으면 진입만 포기한다.
-	MaxSlipBp  int       `json:"max_slip_bp,omitempty"`
+	// RefPrice — 사이징 기준가. ★ 신호를 낸 쪽이 아는 값을 실어 보내면
+	// "신호를 낸 가격" 과 "사이징한 가격" 이 갈리지 않는다 (그리고 시세 왕복이 사라진다).
+	RefPrice  float64 `json:"ref_price,omitempty"`
+	MaxSlipBp int     `json:"max_slip_bp,omitempty"`
 }
 
 type Exit struct {
