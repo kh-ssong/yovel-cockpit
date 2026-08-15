@@ -4,17 +4,19 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
+	"github.com/kh-ssong/yovel-cockpit/internal/reconcile"
 )
 
 const tok = "test-token-0123456789abcdef"
 
-type fakeState struct{}
+type fakeEngine struct{ applied [][]byte }
 
-func (fakeState) Snapshot() protocol.StateSnapshot {
+func (f *fakeEngine) Snapshot() protocol.StateSnapshot {
 	return protocol.StateSnapshot{
 		AsOf:      time.Now().UTC(),
 		Mode:      protocol.ModePaper,
@@ -23,13 +25,26 @@ func (fakeState) Snapshot() protocol.StateSnapshot {
 	}
 }
 
-func newTestServer() *Server {
+func (f *fakeEngine) Apply(raw []byte, _ time.Time) protocol.Ack {
+	f.applied = append(f.applied, raw)
+	return protocol.Ack{
+		RefID:  "01J9Z8QK3M7X2ABCDEFGHJKMNP",
+		Status: "rejected",
+		Codes:  []protocol.RejectCode{protocol.CodeSig},
+	}
+}
+
+func (f *fakeEngine) Plan(time.Time) reconcile.Plan { return reconcile.Plan{} }
+
+func newTestServer() *Server { return newTestServerWith(&fakeEngine{}) }
+
+func newTestServerWith(eng Engine) *Server {
 	return New(Options{
 		Port:      7737,
 		Token:     tok,
 		Mode:      protocol.ModePaper,
 		StartedAt: time.Now(),
-	}, fakeState{})
+	}, eng)
 }
 
 func do(t *testing.T, path string, mutate func(*http.Request)) *httptest.ResponseRecorder {
@@ -146,6 +161,48 @@ func TestStateEndpoint(t *testing.T) {
 	}
 	if snap.Mode == "" {
 		t.Fatal("mode 없는 스냅샷 — paper/live 합산 사고의 입구다")
+	}
+}
+
+// 다운링크 엔드포인트도 같은 가드를 받는다 — 그리고 거절은 HTTP 오류가 아니라 ack 로 나온다.
+func TestDownlinkGoesThroughGuardsAndReturnsAck(t *testing.T) {
+	eng := &fakeEngine{}
+	srv := newTestServerWith(eng)
+
+	post := func(mutate func(*http.Request)) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/v1/downlink", strings.NewReader(`{"v":1}`))
+		r.Host = "127.0.0.1:7737"
+		r.Header.Set("Authorization", "Bearer "+tok)
+		if mutate != nil {
+			mutate(r)
+		}
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		return w
+	}
+
+	if w := post(func(r *http.Request) { r.Header.Del("Authorization") }); w.Code != http.StatusUnauthorized {
+		t.Fatalf("무토큰 code=%d", w.Code)
+	}
+	if len(eng.applied) != 0 {
+		t.Fatal("가드를 못 통과한 요청이 엔진까지 갔다")
+	}
+
+	w := post(nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body)
+	}
+	var ack protocol.Ack
+	if err := json.Unmarshal(w.Body.Bytes(), &ack); err != nil {
+		t.Fatal(err)
+	}
+	// ★ 거절을 HTTP 4xx 로 표현하지 않는다. MQTT 에는 상태코드가 없어서,
+	// 두 경로가 다른 모양이면 그게 곧 배선 버그가 된다.
+	if ack.Status != "rejected" || len(ack.Codes) == 0 {
+		t.Fatalf("ack=%+v", ack)
+	}
+	if len(eng.applied) != 1 {
+		t.Fatalf("엔진 호출 %d회", len(eng.applied))
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,13 +21,21 @@ import (
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
+	"github.com/kh-ssong/yovel-cockpit/internal/reconcile"
 	"github.com/kh-ssong/yovel-cockpit/internal/version"
 )
 
-// StateProvider 는 데몬이 들고 있는 현재 상태를 준다. 상태는 데몬 소유, UI 는 stateless.
-type StateProvider interface {
+// Engine 은 데몬이 들고 있는 상태와 판정. 상태는 데몬 소유, UI 는 stateless.
+type Engine interface {
 	Snapshot() protocol.StateSnapshot
+	// Apply 는 다운링크 한 통을 판정해 반영한다. 반환값이 곧 업링크 ack.
+	Apply(raw []byte, now time.Time) protocol.Ack
+	// Plan 은 지금 무엇을 할지 계산한다 (주문은 내지 않는다).
+	Plan(now time.Time) reconcile.Plan
 }
+
+// maxDownlinkBytes — 목표 스냅샷은 포지션 수백 개여도 수십 KB 다.
+const maxDownlinkBytes = 1 << 20
 
 type Options struct {
 	Port      int
@@ -37,20 +46,25 @@ type Options struct {
 }
 
 type Server struct {
-	opt   Options
-	state StateProvider
-	http  *http.Server
+	opt  Options
+	eng  Engine
+	http *http.Server
 }
 
-func New(opt Options, state StateProvider) *Server {
+func New(opt Options, eng Engine) *Server {
 	if opt.Log == nil {
 		opt.Log = slog.Default()
 	}
-	s := &Server{opt: opt, state: state}
+	s := &Server{opt: opt, eng: eng}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("GET /v1/state", s.handleState)
+	mux.HandleFunc("GET /v1/plan", s.handlePlan)
+	// ★ 릴레이가 붙기 전까지 다운링크를 흘려 넣는 루프백 경로.
+	// 위험해 보이지만 실제로는 아니다: 진입 intent 는 pitwall 서명이 있어야만 통과하므로,
+	// 이 엔드포인트를 두드릴 수 있어도 서명키 없이는 주문을 만들 수 없다.
+	mux.HandleFunc("POST /v1/downlink", s.handleDownlink)
 
 	s.http = &http.Server{
 		// ★ 127.0.0.1 에만 붙는다. 0.0.0.0 이면 같은 와이파이의 아무나 접근할 수 있다.
@@ -176,9 +190,35 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
-	if s.state == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "상태 제공자가 아직 없다"})
+	if s.eng == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "엔진이 아직 없다"})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.state.Snapshot())
+	writeJSON(w, http.StatusOK, s.eng.Snapshot())
+}
+
+func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
+	if s.eng == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "엔진이 아직 없다"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.eng.Plan(time.Now().UTC()))
+}
+
+func (s *Server) handleDownlink(w http.ResponseWriter, r *http.Request) {
+	if s.eng == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "엔진이 아직 없다"})
+		return
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxDownlinkBytes))
+	if err != nil {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": err.Error()})
+		return
+	}
+	ack := s.eng.Apply(raw, time.Now().UTC())
+
+	// ★ 거절도 200 으로 준다. HTTP 상태코드가 아니라 ack 가 프로토콜의 결과 표현이고,
+	// 릴레이(MQTT)에는 상태코드라는 게 없다 — 두 경로가 다른 모양이면 그게 곧 배선 버그가 된다.
+	writeJSON(w, http.StatusOK, ack)
+	s.opt.Log.Info("다운링크 처리", "typ", ack.RefTyp, "status", ack.Status, "codes", ack.Codes)
 }
