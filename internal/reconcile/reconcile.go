@@ -74,6 +74,15 @@ type Options struct {
 	Price func(protocol.Symbol) (float64, bool)
 	// Market — 종목별 주문 제약. nil 이면 주식 기본값.
 	Market func(protocol.Symbol) sizing.Market
+
+	// Terminal — 이미 종결된 intent_id 인가 (로컬 원장이 답한다).
+	// ★ nil 이면 재진입 방지가 꺼진다. retained 목표는 재접속마다 그대로 다시 오므로,
+	// stop 에 털린 자리에 같은 목표로 곧바로 재진입하게 된다.
+	Terminal func(intentID string) bool
+}
+
+func (o Options) terminal(id string) bool {
+	return o.Terminal != nil && o.Terminal(id)
 }
 
 func (o Options) market(s protocol.Symbol) sizing.Market {
@@ -147,6 +156,10 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 
 		case action != protocol.ActionEnter:
 			plan.Acks = append(plan.Acks, ack(t.IntentID, statusFor(codes), codes))
+
+		case opt.terminal(t.IntentID):
+			// 이미 끝난 목표다. 에러는 아니지만 침묵도 아니다 — 왜 안 샀는지 남긴다.
+			plan.Acks = append(plan.Acks, ack(t.IntentID, "noop", []protocol.RejectCode{protocol.CodeTerminal}))
 
 		case bookHalted:
 			plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{protocol.CodeLocalGuard}))

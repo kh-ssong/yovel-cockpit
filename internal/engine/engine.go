@@ -7,6 +7,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"time"
@@ -14,10 +15,26 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/reconcile"
 	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
+	"github.com/kh-ssong/yovel-cockpit/internal/store"
 	"github.com/kh-ssong/yovel-cockpit/internal/version"
 )
 
+// Store 는 엔진이 필요로 하는 영속 조각만 추린 것.
+//
+// ★ nil 이어도 엔진은 돈다 — 단, 그러면 재시작에 가드가 풀리고 종결된 목표로 재진입한다.
+// 그 상태를 정상처럼 보이게 두지 않으려고 인터페이스로 드러낸다.
+type Store interface {
+	LoadGuards(context.Context) (store.GuardState, error)
+	SaveGuards(context.Context, store.GuardState) error
+	TerminalIntents(context.Context) (map[string]struct{}, error)
+	OpenIntents(context.Context) ([]protocol.Position, error)
+	Ledger(context.Context, store.LedgerQuery) ([]store.Order, error)
+}
+
 type Config struct {
+	// Store — 영속. nil 이면 메모리에만 산다.
+	Store Store
+
 	Mode         protocol.Mode
 	Policy       protocol.Policy
 	TargetMaxAge time.Duration
@@ -49,6 +66,9 @@ type Engine struct {
 	circuitBreaker  bool
 	// liquidateAll — de-risk liquidate 가 걸린 상태. 새 목표가 와도 유지된다.
 	liquidateAll bool
+
+	// terminal — 이미 끝난 intent_id 캐시 (원장에서 복원).
+	terminal map[string]struct{}
 }
 
 func New(cfg Config, now time.Time) *Engine {
@@ -60,6 +80,7 @@ func New(cfg Config, now time.Time) *Engine {
 		startedAt: now,
 		guard:     protocol.NewGuard(),
 		positions: map[string]protocol.Position{},
+		terminal:  map[string]struct{}{},
 	}
 }
 
@@ -124,6 +145,74 @@ func (e *Engine) applyDerisk(c protocol.CmdDerisk) {
 		e.blockEntryUntil = nil
 		e.liquidateAll = false
 	}
+	e.persistGuardsLocked(c.Reason)
+}
+
+// persistGuardsLocked — ★ 재시작하면 풀리는 일시정지는 안전장치가 아니다.
+func (e *Engine) persistGuardsLocked(reason string) {
+	if e.cfg.Store == nil {
+		return
+	}
+	_ = e.cfg.Store.SaveGuards(context.Background(), store.GuardState{
+		Paused:          e.paused,
+		BlockEntryUntil: e.blockEntryUntil,
+		CircuitBreaker:  e.circuitBreaker,
+		LiquidateAll:    e.liquidateAll,
+		Reason:          reason,
+	})
+}
+
+// Restore 는 재시작 후 로컬 원장에서 상태를 되살린다.
+//
+// ★ 이걸 건너뛰면 두 가지가 동시에 터진다: 걸어둔 pause 가 풀리고,
+// 이미 끝난 목표로 재진입한다 (retained 목표가 그대로 다시 오므로).
+func (e *Engine) Restore(ctx context.Context) error {
+	if e.cfg.Store == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	g, err := e.cfg.Store.LoadGuards(ctx)
+	if err != nil {
+		return err
+	}
+	e.paused, e.blockEntryUntil = g.Paused, g.BlockEntryUntil
+	e.circuitBreaker, e.liquidateAll = g.CircuitBreaker, g.LiquidateAll
+
+	term, err := e.cfg.Store.TerminalIntents(ctx)
+	if err != nil {
+		return err
+	}
+	e.terminal = term
+
+	// ★ 여기서 복원하는 포지션은 "브로커가 이럴 것이다" 라는 우리 기억이지 진실이 아니다.
+	// 브로커가 붙으면 조회 결과로 덮어써야 한다 (SSOT 는 브로커).
+	open, err := e.cfg.Store.OpenIntents(ctx)
+	if err != nil {
+		return err
+	}
+	e.positions = make(map[string]protocol.Position, len(open))
+	for _, p := range open {
+		e.positions[p.IntentID] = p
+	}
+	return nil
+}
+
+// MarkClosed 는 목표를 종결 처리한다 (청산 체결 후 호출).
+func (e *Engine) MarkClosed(intentID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.terminal[intentID] = struct{}{}
+	delete(e.positions, intentID)
+}
+
+// Ledger 는 매매기록을 준다. ★ mode 없이는 조회할 수 없다 (합산 = 허위 표시).
+func (e *Engine) Ledger(ctx context.Context, mode protocol.Mode, limit int) ([]store.Order, error) {
+	if e.cfg.Store == nil {
+		return nil, nil
+	}
+	return e.cfg.Store.Ledger(ctx, store.LedgerQuery{Mode: mode, Limit: limit})
 }
 
 // SetPositions 는 브로커 조회 결과를 반영한다 (브로커가 붙기 전에는 테스트가 쓴다).
@@ -172,7 +261,13 @@ func (e *Engine) planLocked(now time.Time) reconcile.Plan {
 		SlotCapital:     e.cfg.SlotCapital,
 		Price:           e.cfg.Price,
 		Market:          e.cfg.Market,
+		Terminal:        e.isTerminalLocked,
 	})
+}
+
+func (e *Engine) isTerminalLocked(intentID string) bool {
+	_, ok := e.terminal[intentID]
+	return ok
 }
 
 // entryAllowedLocked — 진입이 살아 있는 조건 두 가지를 모두 본다:

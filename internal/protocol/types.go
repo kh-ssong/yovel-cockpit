@@ -46,6 +46,10 @@ const (
 	CodeBroker          RejectCode = "E_BROKER"
 	CodeOrphan          RejectCode = "E_ORPHAN"
 	CodeRate            RejectCode = "E_RATE"
+	// CodeTerminal — 이미 종결된 intent_id 로 다시 진입하려 했다.
+	// ★ retained 목표는 재접속마다 그대로 다시 오므로, 이 코드가 없으면 stop 에 털린 자리에
+	// 같은 목표로 곧바로 재진입한다.
+	CodeTerminal RejectCode = "E_TERMINAL"
 )
 
 // Envelope 는 모든 메시지가 공유하는 껍데기.
