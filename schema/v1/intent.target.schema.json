@@ -66,6 +66,11 @@
           "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
           "description": "★ 필수. 이 시각을 넘으면 진입만 포기한다 — 청산·stop 은 계속 유효."
         },
+        "ref_price": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "사이징 기준가. ★ 신호를 낸 쪽이 이미 아는 값이면 실어 보낸다 — 클라가 종목마다 시세를 다시 조회하면 왕복·유량이 늘고, 무엇보다 신호를 낸 가격과 사이징한 가격이 달라진다. 없으면 클라가 조회한다."
+        },
         "max_slip_bp": {
           "type": "integer",
           "minimum": 0,

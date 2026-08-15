@@ -248,3 +248,45 @@ func TestLedgerRequiresMode(t *testing.T) {
 		})
 	}
 }
+
+// ★ 목표가 도착하면 다음 집행 틱을 기다리지 않는다.
+// 스캘핑처럼 수명이 분 단위인 신호에서는 5초 대기가 신호를 통째로 무의미하게 만든다.
+func TestDownlinkWakesExecutor(t *testing.T) {
+	woke := make(chan struct{}, 1)
+	srv := New(Options{
+		Port: 7737, Token: tok, Mode: protocol.ModePaper, StartedAt: time.Now(),
+		Wake: func() { woke <- struct{}{} },
+	}, &fakeEngine{})
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/downlink", strings.NewReader(`{"v":1}`))
+	r.Host = "127.0.0.1:7737"
+	r.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+
+	select {
+	case <-woke:
+	default:
+		t.Fatal("다운링크를 처리하고도 집행을 깨우지 않았다")
+	}
+}
+
+// 가드에 막힌 요청은 엔진에도 안 가고 집행도 안 깨운다.
+func TestBlockedDownlinkDoesNotWake(t *testing.T) {
+	woke := make(chan struct{}, 1)
+	srv := New(Options{
+		Port: 7737, Token: tok, Mode: protocol.ModePaper, StartedAt: time.Now(),
+		Wake: func() { woke <- struct{}{} },
+	}, &fakeEngine{})
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/downlink", strings.NewReader(`{"v":1}`))
+	r.Host = "evil.com"
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+
+	select {
+	case <-woke:
+		t.Fatal("가드에 막힌 요청이 집행을 깨웠다")
+	default:
+	}
+}

@@ -109,7 +109,9 @@ internal/guard/      네트워크 없이 도는 청산 층 (stop · 시간청산
 internal/sizing/     비중 → 수량 (whole-share 내림과 그 왜곡 보고)
 cmd/devsign/         개발용 서명 도구 — 릴레이 없이 계약을 굴려보기 위한 것 (pitwall 아님)
 docs/protocol.md     ★ 와이어 계약 SSOT
+docs/flat6.md        flat6(판단) ↔ 콕핏(집행) 연결 절차
 schema/v1/           ★ 같은 계약의 JSON Schema (npm test 로 예제 검증)
+schema/fixtures/     Go ↔ Python 서명 적합성 픽스처
 ui/                  Svelte SPA — 산출물 ui/dist 를 데몬이 서빙하다가 Tauri 가 번들 (미착수)
 ```
 

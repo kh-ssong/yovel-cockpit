@@ -40,6 +40,12 @@ type Config struct {
 	Broker string
 	// KiwoomMock — 모의투자 도메인.
 	KiwoomMock bool
+	// KiwoomTokenFile — 토큰 파일 경로.
+	//
+	// ★ flat6 와 **같은 앱키**를 쓴다면 반드시 flat6 의 파일을 가리켜야 한다
+	// (`../yovel-flat6/data/kiwoom_token.json`). 각자 발급하면 1계정 1토큰이라
+	// 서로의 토큰을 죽인다 — 증상은 "가끔 8005" 가 아니라 상대 세션 통째 유실이다.
+	KiwoomTokenFile string
 	// SlotCapitalDefault — 슬롯별 자본이 따로 없을 때 쓰는 값 (원).
 	// ★ 서버는 비중만 보낸다. 얼마를 걸지는 사용자가 정한다.
 	SlotCapitalDefault float64
@@ -86,6 +92,8 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 	fs.DurationVar(&c.Policy.MaxSkew, "max-skew", c.Policy.MaxSkew, "허용 시계 오차")
 	fs.StringVar(&c.Broker, "broker", c.Broker, "paper | kiwoom")
 	fs.BoolVar(&c.KiwoomMock, "kiwoom-mock", c.KiwoomMock, "키움 모의투자 도메인 사용")
+	fs.StringVar(&c.KiwoomTokenFile, "kiwoom-token-file", c.KiwoomTokenFile,
+		"토큰 파일 경로 (★ flat6 와 같은 앱키면 flat6 의 파일을 가리킬 것)")
 	fs.Float64Var(&c.SlotCapitalDefault, "slot-capital", c.SlotCapitalDefault, "슬롯당 자본 (원)")
 	fs.DurationVar(&c.ReconcileInterval, "reconcile-interval", c.ReconcileInterval, "집행 루프 주기")
 
@@ -107,6 +115,9 @@ func (c *Config) applyEnv() {
 	}
 	if v := os.Getenv("COCKPIT_BROKER"); v != "" {
 		c.Broker = v
+	}
+	if v := os.Getenv("COCKPIT_KIWOOM_TOKEN_FILE"); v != "" {
+		c.KiwoomTokenFile = v
 	}
 }
 

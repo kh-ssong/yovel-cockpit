@@ -1,0 +1,177 @@
+{
+  "note": "yovel v1 서명 적합성 픽스처. 양쪽 구현(Go/Python)이 같은 바이트를 만드는지 확인한다. 키는 저장하지 않고 seed_source 에서 유도한다: ed25519_seed = sha256(seed_source).",
+  "seed_source": "yovel-jcs-fixture-v1",
+  "public_key_b64": "mrjWEr7GqoUwub8IYFUPxKHKFxOfPSMyDBXIvqZbP7Y=",
+  "kid": "fixture-1",
+  "cases": [
+    {
+      "name": "basic-target",
+      "why": "평범한 목표 스냅샷. 여기서 갈리면 나머지는 볼 것도 없다.",
+      "message": {
+        "acct": "acc_7f3a",
+        "body": {
+          "as_of_bar": "2026-08-15T09:05:00+09:00",
+          "book_state": "normal",
+          "targets": [
+            {
+              "entry": {
+                "max_slip_bp": 80,
+                "mode": "market",
+                "not_after": "2026-08-15T00:06:00.000Z"
+              },
+              "exit": {
+                "stop_price": 71200,
+                "tp_delegate": true,
+                "tp_price": 78400
+              },
+              "intent_id": "01J9Z8QK3M7X2ABCDEFGHJKMNQ",
+              "side": "long",
+              "slot": "gapdown_a",
+              "symbol": {
+                "code": "005930",
+                "exchange": "KRX"
+              },
+              "want": "open",
+              "weight": 0.14
+            }
+          ]
+        },
+        "exp": "2026-08-15T00:06:00.000Z",
+        "id": "01J9Z8QK3M7X2ABCDEFGHJKMNP",
+        "nonce": "b7d1e2f0",
+        "seq": 10432,
+        "ts": "2026-08-15T00:05:00.000Z",
+        "typ": "intent.target",
+        "v": 1
+      },
+      "signing_input": "{\"acct\":\"acc_7f3a\",\"body\":{\"as_of_bar\":\"2026-08-15T09:05:00+09:00\",\"book_state\":\"normal\",\"targets\":[{\"entry\":{\"max_slip_bp\":80,\"mode\":\"market\",\"not_after\":\"2026-08-15T00:06:00.000Z\"},\"exit\":{\"stop_price\":71200,\"tp_delegate\":true,\"tp_price\":78400},\"intent_id\":\"01J9Z8QK3M7X2ABCDEFGHJKMNQ\",\"side\":\"long\",\"slot\":\"gapdown_a\",\"symbol\":{\"code\":\"005930\",\"exchange\":\"KRX\"},\"want\":\"open\",\"weight\":0.14}]},\"exp\":\"2026-08-15T00:06:00.000Z\",\"id\":\"01J9Z8QK3M7X2ABCDEFGHJKMNP\",\"nonce\":\"b7d1e2f0\",\"seq\":10432,\"ts\":\"2026-08-15T00:05:00.000Z\",\"typ\":\"intent.target\",\"v\":1}",
+      "signing_input_sha256": "IkHP/jP68EoS12onu8UV4AMEytFvIlR+YbbxEjZNzMM=",
+      "signature": "iq45upn1x6RTr2FUs10gk00LKdighqDAwkrQ8/XzCTCb51jjCIALmvKDwtSBcZY9Ksb1+UkG6MYajgtT+oyBDQ=="
+    },
+    {
+      "name": "key-order-and-whitespace",
+      "why": "키 순서를 뒤집고 공백을 넣었다. JCS 가 제 일을 하면 basic-target 과 같은 바이트가 나와야 한다.",
+      "message": {
+        "acct": "acc_7f3a",
+        "body": {
+          "as_of_bar": "2026-08-15T09:05:00+09:00",
+          "book_state": "normal",
+          "targets": [
+            {
+              "entry": {
+                "max_slip_bp": 80,
+                "mode": "market",
+                "not_after": "2026-08-15T00:06:00.000Z"
+              },
+              "exit": {
+                "stop_price": 71200,
+                "tp_delegate": true,
+                "tp_price": 78400
+              },
+              "intent_id": "01J9Z8QK3M7X2ABCDEFGHJKMNQ",
+              "side": "long",
+              "slot": "gapdown_a",
+              "symbol": {
+                "code": "005930",
+                "exchange": "KRX"
+              },
+              "want": "open",
+              "weight": 0.14
+            }
+          ]
+        },
+        "exp": "2026-08-15T00:06:00.000Z",
+        "id": "01J9Z8QK3M7X2ABCDEFGHJKMNP",
+        "nonce": "b7d1e2f0",
+        "seq": 10432,
+        "ts": "2026-08-15T00:05:00.000Z",
+        "typ": "intent.target",
+        "v": 1
+      },
+      "signing_input": "{\"acct\":\"acc_7f3a\",\"body\":{\"as_of_bar\":\"2026-08-15T09:05:00+09:00\",\"book_state\":\"normal\",\"targets\":[{\"entry\":{\"max_slip_bp\":80,\"mode\":\"market\",\"not_after\":\"2026-08-15T00:06:00.000Z\"},\"exit\":{\"stop_price\":71200,\"tp_delegate\":true,\"tp_price\":78400},\"intent_id\":\"01J9Z8QK3M7X2ABCDEFGHJKMNQ\",\"side\":\"long\",\"slot\":\"gapdown_a\",\"symbol\":{\"code\":\"005930\",\"exchange\":\"KRX\"},\"want\":\"open\",\"weight\":0.14}]},\"exp\":\"2026-08-15T00:06:00.000Z\",\"id\":\"01J9Z8QK3M7X2ABCDEFGHJKMNP\",\"nonce\":\"b7d1e2f0\",\"seq\":10432,\"ts\":\"2026-08-15T00:05:00.000Z\",\"typ\":\"intent.target\",\"v\":1}",
+      "signing_input_sha256": "IkHP/jP68EoS12onu8UV4AMEytFvIlR+YbbxEjZNzMM=",
+      "signature": "iq45upn1x6RTr2FUs10gk00LKdighqDAwkrQ8/XzCTCb51jjCIALmvKDwtSBcZY9Ksb1+UkG6MYajgtT+oyBDQ=="
+    },
+    {
+      "name": "korean-and-escapes",
+      "why": "한글·이모지·따옴표·역슬래시. ★ 여기가 두 구현이 제일 잘 갈리는 지점이다 — JCS 는 \\u 이스케이프를 풀고 UTF-8 로 쓰며, 제어문자만 이스케이프한다.",
+      "message": {
+        "acct": "acc_7f3a",
+        "body": {
+          "action": "pause",
+          "reason": "운영자: 슬리피지 \"이상\" 확인 중 \\ 경로 · 탭\t줄바꿈\n★",
+          "scope": "all"
+        },
+        "exp": "2026-08-15T02:15:00.000Z",
+        "id": "01J9Z8QK3M7X2ABCDEFGHJKMNS",
+        "nonce": "9a1c77de",
+        "ts": "2026-08-15T02:10:00.000Z",
+        "typ": "cmd.derisk",
+        "v": 1
+      },
+      "signing_input": "{\"acct\":\"acc_7f3a\",\"body\":{\"action\":\"pause\",\"reason\":\"운영자: 슬리피지 \\\"이상\\\" 확인 중 \\\\ 경로 · 탭\\t줄바꿈\\n★\",\"scope\":\"all\"},\"exp\":\"2026-08-15T02:15:00.000Z\",\"id\":\"01J9Z8QK3M7X2ABCDEFGHJKMNS\",\"nonce\":\"9a1c77de\",\"ts\":\"2026-08-15T02:10:00.000Z\",\"typ\":\"cmd.derisk\",\"v\":1}",
+      "signing_input_sha256": "WhiKrXalPLodqtaeHZIIN0yD3cdB1gS5YUQTVFXI0Pk=",
+      "signature": "jxOubRm5iNtrG6Qc7MO/QtGIQiVtYhA5GRUsL6tLtrthf1l99MLodBmMcJZYGIpILmNYSOUuRBG3OPuvKdVPDg=="
+    },
+    {
+      "name": "numbers",
+      "why": "정수·소수·0·음수·큰 수. ★ 숫자 표기는 ES6 규칙을 따른다 (71200.0 은 71200 으로 쓴다).",
+      "message": {
+        "acct": "acc_7f3a",
+        "body": {
+          "big": 1234567890123,
+          "fee_krw": 2490,
+          "intent_id": "01J9Z8QK3M7X2ABCDEFGHJKMNQ",
+          "phase": "exit_filled",
+          "price": 71180,
+          "qty": 14,
+          "realized_pct": -0.0128,
+          "side": "sell",
+          "slippage_bp": -2.8,
+          "symbol": {
+            "code": "005930",
+            "exchange": "KRX"
+          },
+          "zero": 0
+        },
+        "id": "01J9Z8QK3M7X2ABCDEFGHJKMNV",
+        "ts": "2026-08-15T02:31:44.900Z",
+        "typ": "event.order",
+        "v": 1
+      },
+      "signing_input": "{\"acct\":\"acc_7f3a\",\"body\":{\"big\":1234567890123,\"fee_krw\":2490,\"intent_id\":\"01J9Z8QK3M7X2ABCDEFGHJKMNQ\",\"phase\":\"exit_filled\",\"price\":71180,\"qty\":14,\"realized_pct\":-0.0128,\"side\":\"sell\",\"slippage_bp\":-2.8,\"symbol\":{\"code\":\"005930\",\"exchange\":\"KRX\"},\"zero\":0},\"id\":\"01J9Z8QK3M7X2ABCDEFGHJKMNV\",\"ts\":\"2026-08-15T02:31:44.900Z\",\"typ\":\"event.order\",\"v\":1}",
+      "signing_input_sha256": "3mhOM8BU/a1Fsb89rlUqr6h9R+IJijFcvyZ0ESoF+xQ=",
+      "signature": "TAheeWuhdFoLEMtFAYyQ9ywv1XMw3VHFZ8+r5rEqbQD4jlLxUlciwPuS8DtBQQCnOBVftHGbSCgBVFh1pRm+CA=="
+    },
+    {
+      "name": "unknown-fields",
+      "why": "서버가 나중에 늘린 필드. 옛 클라가 몰라도 서명은 살아야 한다 — 구조체로 왕복시켜 서명 입력을 만들면 이 케이스가 깨진다.",
+      "message": {
+        "acct": "acc_7f3a",
+        "body": {
+          "broker_ws": "up",
+          "daemon_sha": "a1b2c3d",
+          "future_nested": {
+            "a": [
+              1,
+              2,
+              {
+                "b": null
+              }
+            ],
+            "c": true
+          },
+          "seq": 5821
+        },
+        "future_top": "모르는 값",
+        "id": "01J9Z8QK3M7X2ABCDEFGHJKMNW",
+        "ts": "2026-08-15T02:32:00.000Z",
+        "typ": "heartbeat",
+        "v": 1
+      },
+      "signing_input": "{\"acct\":\"acc_7f3a\",\"body\":{\"broker_ws\":\"up\",\"daemon_sha\":\"a1b2c3d\",\"future_nested\":{\"a\":[1,2,{\"b\":null}],\"c\":true},\"seq\":5821},\"future_top\":\"모르는 값\",\"id\":\"01J9Z8QK3M7X2ABCDEFGHJKMNW\",\"ts\":\"2026-08-15T02:32:00.000Z\",\"typ\":\"heartbeat\",\"v\":1}",
+      "signing_input_sha256": "fCudaTZg25iH3NXENWpoXS0VX8i/qqG53tbCOOa+2hs=",
+      "signature": "OykmOEqd9Cm/N4KkSDaCvNUKs6N0oSIcwdJtC+n6B8ryOk4I9bhd4V+4fEr2P07pCTRp/K/LVqmWSvkoJtd9Bg=="
+    }
+  ]
+}
