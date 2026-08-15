@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>yovel cockpit</title>
+    <!--
+      ★ 바로 아래 마커는 데몬이 부팅 정보(토큰·모드)를 심는 자리다 (internal/webui/webui.go).
+      지우면 데몬이 head 닫는 태그 앞에 폴백 주입한다 — 동작은 하지만 위치가 밀린다.
+      ★ 이 주석 안에 head 닫는 태그를 문자 그대로 쓰지 말 것: vite 는 그 문자열을 찾아
+      자산 태그를 끼워 넣으므로, 주석 안에서 끝난 것으로 읽혀 스크립트가 통째로 주석 처리된다
+      (실측 — 화면이 빈 채로 뜨고 콘솔에도 아무 흔적이 없다).
+    -->
+    <!--cockpit-boot-->
+    <script type="module" src="./src/main.js"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

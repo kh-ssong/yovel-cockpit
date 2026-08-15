@@ -50,6 +50,11 @@ type Config struct {
 	// ★ 서버는 비중만 보낸다. 얼마를 걸지는 사용자가 정한다.
 	SlotCapitalDefault float64
 
+	// UI — 로컬 대시보드를 서빙할지. 기본 켜짐.
+	// ★ 끌 수 있게 둔 이유는 헤드리스 상주다 (서버·CI). 화면이 없어야 하는 자리에서
+	// 화면이 떠 있으면, 그 포트로 무엇이 열려 있는지 사용자가 매번 다시 확인해야 한다.
+	UI bool
+
 	Policy protocol.Policy
 
 	// modeFlag — Bind 와 Finish 사이의 임시 저장소 (플래그는 파싱 후에야 값이 찬다).
@@ -66,6 +71,7 @@ func Default() Config {
 		HeartbeatInterval: 20 * time.Second,
 		MaxOrdersPerTick:  5,
 		Broker:            "paper",
+		UI:                true,
 		Policy:            protocol.DefaultPolicy(),
 	}
 }
@@ -96,6 +102,7 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 		"토큰 파일 경로 (★ flat6 와 같은 앱키면 flat6 의 파일을 가리킬 것)")
 	fs.Float64Var(&c.SlotCapitalDefault, "slot-capital", c.SlotCapitalDefault, "슬롯당 자본 (원)")
 	fs.DurationVar(&c.ReconcileInterval, "reconcile-interval", c.ReconcileInterval, "집행 루프 주기")
+	fs.BoolVar(&c.UI, "ui", c.UI, "로컬 대시보드 서빙 (--ui=false 로 끔)")
 
 	// mode 는 파싱 후에 반영해야 해서 포인터를 잡아둔다.
 	c.modeFlag = &mode

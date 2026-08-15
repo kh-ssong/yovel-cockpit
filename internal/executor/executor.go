@@ -90,7 +90,7 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 
 	// ④ 진입은 마지막.
 	for _, e := range plan.Enters {
-		x.doEnter(ctx, now, e.Target, e.Qty, e.Price, &res)
+		x.doEnter(ctx, now, plan.AsOfBar, e.Target, e.Qty, e.Price, &res)
 	}
 
 	if plan.DroppedEnters > 0 {
@@ -198,7 +198,8 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 	res.Exited++
 }
 
-func (x *Executor) doEnter(ctx context.Context, now time.Time, t protocol.Target, qty, ref float64, res *Result) {
+func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protocol.Target,
+	qty, ref float64, res *Result) {
 	req := broker.OrderRequest{
 		IntentID: t.IntentID, Symbol: t.Symbol, Qty: qty, RefPrice: ref,
 	}
@@ -215,11 +216,15 @@ func (x *Executor) doEnter(ctx context.Context, now time.Time, t protocol.Target
 		return
 	}
 
+	// signal_ts = 신호가 나온 봉의 시각. 원장에서 재는 것이 "신호 → 체결" 지연이라 여기가 기준점이다.
+	//
+	// ★ 예전엔 entry.not_after 를 대신 썼는데 그건 **진입 마감시각(미래)** 이라
+	// filled_at − signal_ts 가 음수로 나왔다 (실측 −4분). 부호가 뒤집힌 지연은
+	// "지연이 없다" 보다 나쁘다 — 있는 값이라 아무도 다시 안 본다.
 	var signalTS *time.Time
-	if t.Entry != nil && !t.Entry.NotAfter.IsZero() {
-		// 신호가 나온 봉을 근사한다. 정확한 as_of_bar 는 목표 스냅샷에 있고,
-		// 원장에서 재는 것은 "신호 → 체결" 이므로 이 근사로도 방향은 맞는다.
-		signalTS = &t.Entry.NotAfter
+	if !asOfBar.IsZero() {
+		bar := asOfBar
+		signalTS = &bar
 	}
 
 	x.recordOrder(ctx, store.Order{
