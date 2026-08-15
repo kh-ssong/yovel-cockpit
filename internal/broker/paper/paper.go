@@ -1,0 +1,247 @@
+// Package paper 는 실주문 없이 도는 브로커다.
+//
+// ★ 장난감이 아니라 기본값이다. 데몬의 기본 모드가 paper 이므로, 라이브로 넘어가기 전
+// 모든 배선(계획 → 주문 → 원장 → 종결)이 여기서 먼저 완결된다.
+//
+// ★ 다만 이 브로커의 체결은 **낙관적**이다: 원하는 수량이 원하는 가격 근처에서 다 채워진다.
+// 라이브에서는 부분체결·거부·잔고 잠김이 실재하므로, 여기서 통과했다고 라이브가 통과하는 게
+// 아니다. 그래서 슬리피지·수수료는 0 이 아니라 **설정된 값으로 물린다** — 비용이 0 인 시뮬은
+// 손익분기 근처 전략의 판정을 통째로 뒤집는다.
+package paper
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/kh-ssong/yovel-cockpit/internal/broker"
+	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
+)
+
+type Config struct {
+	// Cash — 시작 예수금.
+	Cash float64
+	// FeeBp — 편도 수수료 (bp). 왕복이 아니라 편도다.
+	FeeBp float64
+	// SlipBp — 시장가 체결이 기준가에서 밀리는 정도 (bp). 매수는 비싸게, 매도는 싸게.
+	SlipBp float64
+	// Lot — 최소 주문 단위.
+	Lot float64
+	// MinOrderValue — 최소 주문 금액.
+	MinOrderValue float64
+	// Now — 시각 주입 (테스트용). nil 이면 time.Now().
+	Now func() time.Time
+	// Price — 기준가 공급. 없으면 Quote 가 실패한다.
+	Price func(protocol.Symbol) (float64, bool)
+}
+
+type Broker struct {
+	mu       sync.Mutex
+	cfg      Config
+	cash     float64
+	holdings map[string]*broker.Holding
+	tpOrders map[string]tpOrder
+	seq      int
+}
+
+type tpOrder struct {
+	symbol protocol.Symbol
+	qty    float64
+	price  float64
+}
+
+func New(cfg Config) *Broker {
+	if cfg.Lot <= 0 {
+		cfg.Lot = 1
+	}
+	if cfg.Now == nil {
+		cfg.Now = func() time.Time { return time.Now().UTC() }
+	}
+	return &Broker{
+		cfg:      cfg,
+		cash:     cfg.Cash,
+		holdings: map[string]*broker.Holding{},
+		tpOrders: map[string]tpOrder{},
+	}
+}
+
+func (b *Broker) Name() string { return "paper" }
+
+func key(s protocol.Symbol) string { return s.Exchange + ":" + s.Code }
+
+func (b *Broker) Positions(context.Context) ([]broker.Holding, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]broker.Holding, 0, len(b.holdings))
+	for _, h := range b.holdings {
+		out = append(out, *h)
+	}
+	return out, nil
+}
+
+func (b *Broker) Cash(context.Context) (broker.Cash, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// paper 에서는 두 층이 같다. ★ 라이브에서는 절대 같지 않다는 걸 잊지 말 것.
+	return broker.Cash{Deposit: b.cash, Orderable: b.cash, Currency: "KRW"}, nil
+}
+
+func (b *Broker) Quote(_ context.Context, s protocol.Symbol) (broker.Quote, error) {
+	if b.cfg.Price == nil {
+		return broker.Quote{}, broker.ErrUnknownSymbol
+	}
+	p, ok := b.cfg.Price(s)
+	if !ok || p <= 0 {
+		return broker.Quote{}, fmt.Errorf("%w: %s", broker.ErrUnknownSymbol, s.Code)
+	}
+	return broker.Quote{Symbol: s, Price: p, AsOf: b.cfg.Now()}, nil
+}
+
+func (b *Broker) LotSize(protocol.Symbol) float64       { return b.cfg.Lot }
+func (b *Broker) MinOrderValue(protocol.Symbol) float64 { return b.cfg.MinOrderValue }
+
+// fillPrice — 지정가면 그대로, 시장가면 기준가에서 SlipBp 만큼 불리하게.
+func (b *Broker) fillPrice(req broker.OrderRequest, side string, ref float64) float64 {
+	if req.LimitPrice > 0 {
+		return req.LimitPrice
+	}
+	slip := ref * b.cfg.SlipBp / 10000
+	if side == "buy" {
+		return ref + slip
+	}
+	return ref - slip
+}
+
+func (b *Broker) refPrice(req broker.OrderRequest) (float64, error) {
+	if req.RefPrice > 0 {
+		return req.RefPrice, nil
+	}
+	q, err := b.Quote(context.Background(), req.Symbol)
+	if err != nil {
+		return 0, err
+	}
+	return q.Price, nil
+}
+
+func (b *Broker) Buy(_ context.Context, req broker.OrderRequest) (broker.Fill, error) {
+	ref, err := b.refPrice(req)
+	if err != nil {
+		return broker.Fill{}, err
+	}
+	price := b.fillPrice(req, "buy", ref)
+	notional := price * req.Qty
+	fee := notional * b.cfg.FeeBp / 10000
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if notional+fee > b.cash {
+		return broker.Fill{}, fmt.Errorf("%w: 필요 %.0f, 가용 %.0f", broker.ErrInsufficient, notional+fee, b.cash)
+	}
+	b.cash -= notional + fee
+
+	h := b.holdings[key(req.Symbol)]
+	if h == nil {
+		h = &broker.Holding{Symbol: req.Symbol}
+		b.holdings[key(req.Symbol)] = h
+	}
+	total := h.AvgPrice*h.Qty + notional
+	h.Qty += req.Qty
+	h.Sellable = h.Qty
+	h.AvgPrice = total / h.Qty
+
+	now := b.cfg.Now()
+	b.seq++
+	return broker.Fill{
+		BrokerOrderID: fmt.Sprintf("paper-%d", b.seq),
+		Qty:           req.Qty,
+		Price:         price,
+		SubmittedAt:   now,
+		FilledAt:      now,
+		FeeKRW:        fee,
+		SlippageBp:    broker.SlippageBp("buy", ref, price),
+	}, nil
+}
+
+func (b *Broker) Sell(_ context.Context, req broker.OrderRequest) (broker.Fill, error) {
+	ref, err := b.refPrice(req)
+	if err != nil {
+		return broker.Fill{}, err
+	}
+	price := b.fillPrice(req, "sell", ref)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	h := b.holdings[key(req.Symbol)]
+	if h == nil || h.Sellable < req.Qty {
+		have := 0.0
+		if h != nil {
+			have = h.Sellable
+		}
+		return broker.Fill{}, fmt.Errorf("%w: 요청 %.0f, 보유 %.0f", broker.ErrNotEnoughShare, req.Qty, have)
+	}
+
+	notional := price * req.Qty
+	fee := notional * b.cfg.FeeBp / 10000
+	b.cash += notional - fee
+
+	h.Qty -= req.Qty
+	h.Sellable = h.Qty
+	if h.Qty <= 0 {
+		delete(b.holdings, key(req.Symbol))
+	}
+
+	now := b.cfg.Now()
+	b.seq++
+	return broker.Fill{
+		BrokerOrderID: fmt.Sprintf("paper-%d", b.seq),
+		Qty:           req.Qty,
+		Price:         price,
+		SubmittedAt:   now,
+		FilledAt:      now,
+		FeeKRW:        fee,
+		SlippageBp:    broker.SlippageBp("sell", ref, price),
+	}, nil
+}
+
+// PlaceTP — paper 에서는 주문서만 기억한다. ★ 자동 체결시키지 않는다.
+// 지정가가 언제 체결되는지는 시세를 봐야 알고, 그걸 낙관적으로 흉내내면
+// "백테는 TP 가 다 맞았는데 라이브는 아니다" 를 만든다.
+func (b *Broker) PlaceTP(_ context.Context, s protocol.Symbol, qty, price float64) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	h := b.holdings[key(s)]
+	if h == nil || h.Qty < qty {
+		return "", broker.ErrNotEnoughShare
+	}
+	b.seq++
+	id := fmt.Sprintf("paper-tp-%d", b.seq)
+	b.tpOrders[id] = tpOrder{symbol: s, qty: qty, price: price}
+	// 지정가가 걸리면 그만큼은 팔 수 없다 — 라이브의 잔고 잠김을 흉내낸다.
+	h.Sellable = h.Qty - qty
+	if h.Sellable < 0 {
+		h.Sellable = 0
+	}
+	return id, nil
+}
+
+func (b *Broker) CancelOrder(_ context.Context, s protocol.Symbol, orderID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	o, ok := b.tpOrders[orderID]
+	if !ok {
+		return nil // 이미 없는 주문을 취소하는 건 성공으로 친다 (멱등)
+	}
+	delete(b.tpOrders, orderID)
+	if h := b.holdings[key(o.symbol)]; h != nil {
+		h.Sellable = h.Qty
+	}
+	return nil
+}
+
+// OpenTPOrders 는 테스트·진단용.
+func (b *Broker) OpenTPOrders() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.tpOrders)
+}

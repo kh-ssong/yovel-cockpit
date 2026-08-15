@@ -226,6 +226,13 @@ func (e *Engine) SetPositions(ps []protocol.Position) {
 	}
 }
 
+// UpsertPosition 은 포지션 하나를 갱신한다 (브로커 조회 결과 또는 방금 체결된 진입).
+func (e *Engine) UpsertPosition(p protocol.Position) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.positions[p.IntentID] = p
+}
+
 // Plan 은 지금 무엇을 할지 계산한다. 주문을 내지는 않는다.
 func (e *Engine) Plan(now time.Time) reconcile.Plan {
 	e.mu.Lock()
