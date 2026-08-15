@@ -1,0 +1,18 @@
+name: gitleaks
+
+# 공개 저장소라 유출은 되돌릴 수 없다 (force-push 해도 캐시·포크에 남는다).
+# 그래서 차단은 push 시점에 건다.
+on:
+  push:
+  pull_request:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 히스토리 전체를 봐야 과거 커밋의 유출도 잡힌다
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

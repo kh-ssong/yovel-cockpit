@@ -1,0 +1,47 @@
+# ── 시크릿 (★ 공개 저장소 — 한 번 push 되면 캐시·포크에 영구히 남는다) ──
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+config.local.*
+
+# ── go ──
+/bin/
+*.exe
+*.exe~
+*.test
+*.out
+vendor/
+
+# ── node / ui ──
+node_modules/
+ui/dist/
+.vite/
+*.tsbuildinfo
+
+# ── tauri ──
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# ── 로컬 데이터 ──
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+
+# ── editor / os ──
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ── claude ──
+# ★ `.claude/` 를 통째로 무시하면 훅이 워크트리에 안 따라간다 (git 규칙: 부모를 제외하면 `!` 로 재포함 불가)
+.claude/*
+!.claude/settings.json
+# 로컬 경로·개인 정보가 들어가는 파일 (공개 저장소에 노출 금지)
+CLAUDE.local.md
