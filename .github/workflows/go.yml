@@ -1,8 +1,11 @@
 name: go
 
+# ★ push 에는 paths 필터를 걸지 않는다 (2026-08-15 실측).
+#   브랜치를 **처음 만드는 push** 에서는 비교 기준(before)이 0000... 이라 GitHub 이
+#   변경 파일을 못 구하고, 그러면 잡이 아예 안 돈다. "빨간불" 보다 나쁜 게 "안 돈 줄 모르는 것" 이다.
+#   PR 에서는 필터가 정상 동작하므로 그쪽만 남긴다.
 on:
   push:
-    paths: ["**.go", "go.mod", "go.sum", "scripts/**", ".github/workflows/go.yml"]
   pull_request:
     paths: ["**.go", "go.mod", "go.sum", "scripts/**", ".github/workflows/go.yml"]
 
