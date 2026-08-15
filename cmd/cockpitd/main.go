@@ -1,10 +1,12 @@
 // cockpitd — yovel cockpit 집행 데몬.
 //
-// ★ 현재는 골격이다. 브로커 연결도, 릴레이 연결도, reconcile 루프도 아직 없다.
-// 있는 것: 설정 · 로컬 API(토큰·Host·Origin 가드) · 버전 노출 · 깨끗한 종료.
+// ★ 아직 브로커도 릴레이도 없다. 있는 것: 설정 · 로컬 API(토큰·Host·Origin 가드) ·
+// 다운링크 판정 · 계획 산출 · 버전 노출 · 깨끗한 종료.
+// 빠진 것은 "그 계획을 실제로 내는 손"과 "목표를 실어 오는 transport" 다.
 //
-// 골격을 먼저 세우는 이유는 순서 때문이다. 이 데몬이 나중에 실주문을 내므로,
-// "누가 이 프로세스에 명령할 수 있는가" 를 기능보다 먼저 못박아야 한다.
+// 이 순서인 이유: 이 데몬이 나중에 실주문을 내므로 "누가 이 프로세스에 명령할 수 있는가" 를
+// 기능보다 먼저 못박아야 한다. 그리고 계약은 transport 없이도 루프백으로 완결시킬 수 있다
+// (POST /v1/downlink) — 그렇게 하면 MQTT 배선 버그와 계약 버그가 섞이지 않는다.
 package main
 
 import (
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/config"
+	"github.com/kh-ssong/yovel-cockpit/internal/engine"
 	"github.com/kh-ssong/yovel-cockpit/internal/httpapi"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/version"
@@ -63,7 +66,17 @@ func run() error {
 	}
 
 	started := time.Now()
-	state := &stubState{cfg: cfg, started: started}
+
+	// ★ 브로커가 아직 없다 = 참조가를 모른다 = 진입 계획이 E_SYMBOL 로 거절된다.
+	// 그게 맞는 동작이다. 가짜 가격을 채워 "계획이 나오는 것처럼" 보이게 두면,
+	// 배선이 빠진 상태와 정상 상태가 같아 보인다.
+	eng := engine.New(engine.Config{
+		Mode:         cfg.Mode,
+		Policy:       cfg.Policy,
+		TargetMaxAge: cfg.TargetMaxAge,
+		MaxOrders:    cfg.MaxOrdersPerTick,
+		SlotCapital:  func(string) float64 { return 0 },
+	}, started)
 
 	srv := httpapi.New(httpapi.Options{
 		Port:      cfg.Port,
@@ -71,7 +84,7 @@ func run() error {
 		Mode:      cfg.Mode,
 		StartedAt: started,
 		Log:       log,
-	}, state)
+	}, eng)
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("로컬 API 기동 실패: %w", err)
 	}
@@ -105,32 +118,4 @@ func run() error {
 	}
 	log.Info("cockpitd 종료", "uptime_sec", int64(time.Since(started).Seconds()))
 	return nil
-}
-
-// stubState 는 아직 아무 데도 연결되지 않은 상태 제공자다.
-//
-// ★ 빈 스냅샷을 "포지션 없음" 으로 보이게 두면 안 된다 — 실제로는 "아직 아무것도 안 봤음" 이다.
-// 그래서 guards.target_stale 을 true 로 둔다: 목표를 받은 적이 없으므로 진입 금지 상태가 맞다.
-type stubState struct {
-	cfg     config.Config
-	started time.Time
-}
-
-func (s *stubState) Snapshot() protocol.StateSnapshot {
-	v := version.Get()
-	return protocol.StateSnapshot{
-		AsOf: time.Now().UTC(),
-		Daemon: protocol.DaemonInfo{
-			Version:   v.Version,
-			SHA:       v.SHA,
-			StartedAt: &s.started,
-		},
-		Mode: s.cfg.Mode,
-		Guards: protocol.Guards{
-			Paused:      true, // 배선이 없으므로 아무것도 하지 않는다
-			TargetStale: true,
-		},
-		Positions: []protocol.Position{},
-		Orphans:   []protocol.Symbol{},
-	}
 }

@@ -98,10 +98,19 @@ internal/protocol/   와이어 타입 + 서명 검증 + 수용 규칙   ← 계�
 internal/config/     로컬 설정 · pin 된 pitwall 공개키
 internal/httpapi/    로컬 API (토큰 · Host · Origin 가드)
 internal/version/    버전 · SHA (드리프트 감지)
+internal/engine/     상태 소유 · 다운링크 적용 · 스냅샷
+internal/reconcile/  목표 ↔ 실상태 차이 → 계획 (순수 함수, 주문을 내지 않는다)
+internal/guard/      네트워크 없이 도는 청산 층 (stop · 시간청산)
+internal/sizing/     비중 → 수량 (whole-share 내림과 그 왜곡 보고)
+cmd/devsign/         개발용 서명 도구 — 릴레이 없이 계약을 굴려보기 위한 것 (pitwall 아님)
 docs/protocol.md     ★ 와이어 계약 SSOT
 schema/v1/           ★ 같은 계약의 JSON Schema (npm test 로 예제 검증)
 ui/                  Svelte SPA — 산출물 ui/dist 를 데몬이 서빙하다가 Tauri 가 번들 (미착수)
 ```
+
+**아직 없는 것**: 브로커 드라이버 · 릴레이(MQTT) 연결 · 주문을 실제로 내는 실행 루프.
+그래서 지금 계획은 항상 `E_SYMBOL`(참조가를 모름) 로 끝난다 — 그게 맞는 동작이다.
+가짜 가격을 채워 계획이 나오는 것처럼 보이게 두면 **배선이 빠진 상태와 정상 상태가 같아 보인다.**
 
 ```bash
 go test ./...            # Go
@@ -111,6 +120,25 @@ scripts/build.sh cross   # macOS(arm64/amd64) + Windows + Linux 를 한 번에
 ./bin/cockpitd-<plat> --port 7737 --data-dir ./.cockpit
 curl -H "Authorization: Bearer $(cat .cockpit/api-token)" http://127.0.0.1:7737/v1/health
 ```
+
+### 릴레이 없이 계약 굴려보기 (루프백)
+
+`POST /v1/downlink` 가 릴레이 자리를 대신한다. 위험해 보이지만 아니다 —
+진입 intent 는 pitwall 서명이 있어야만 통과하므로, 이 엔드포인트를 두드릴 수 있어도
+**서명키 없이는 주문을 만들 수 없다.**
+
+```bash
+go run ./cmd/devsign keygen --kid dev-1 --out dev-key.json
+# 출력된 JSON 을 {data-dir}/trusted_keys.json 에 저장 후 데몬 기동
+
+go run ./cmd/devsign sign --key dev-key.json < target.json > signed.json
+curl -X POST -H "Authorization: Bearer $TOK" --data-binary @signed.json \
+     http://127.0.0.1:7737/v1/downlink      # → ack
+curl -H "Authorization: Bearer $TOK" http://127.0.0.1:7737/v1/plan
+```
+
+같은 목표를 서명 없이 보내면 `{"status":"rejected","codes":["E_SIG"]}`,
+서명본을 두 번 보내면 `{"status":"ignored"}` — retained 재수신은 정상 동작이지 에러가 아니다.
 
 - 데몬 언어 = **Go**. 이유는 성능이 아니라 크로스컴파일 — 윈도우 PC 한 대에서 macOS ARM/Intel 바이너리까지 낸다.
 - ★ **빌드는 반드시 `scripts/build.sh` 로.** go 의 자동 VCS 스탬프는 **git worktree 에서 동작하지 않아**
