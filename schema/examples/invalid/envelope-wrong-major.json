@@ -1,0 +1,9 @@
+{
+  "_why": "봉투 v 가 2 인데 v1 스키마로 검증 중. 메이저가 다르면 추측 해석하지 않고 E_SCHEMA 로 거절한다 (§11).",
+  "v": 2,
+  "typ": "heartbeat",
+  "id": "01J9Z8QK3M7X2ABCDEFGHJKMNW",
+  "acct": "acc_7f3a",
+  "ts": "2026-08-15T02:32:00.000Z",
+  "body": { "seq": 1, "daemon_sha": "a1b2c3d", "broker_ws": "up" }
+}

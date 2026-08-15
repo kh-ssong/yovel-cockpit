@@ -1,0 +1,12 @@
+{
+  "_why": "거절인데 사유 코드가 없다. 침묵과 실패가 같아 보이면 서버가 원인을 영영 구분 못 한다 (§5.5).",
+  "v": 1,
+  "typ": "ack",
+  "id": "01J9Z8QK3M7X2ABCDEFGHJKMNY",
+  "acct": "acc_7f3a",
+  "ts": "2026-08-15T00:06:02.000Z",
+  "body": {
+    "ref_id": "01J9Z8QK3M7X2ABCDEFGHJKMNP",
+    "status": "rejected"
+  }
+}

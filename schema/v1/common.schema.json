@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yovel:v1:common",
+  "title": "yovel v1 — 공용 정의",
+  "$defs": {
+    "Ulid": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "ULID. 멱등키로 쓰인다."
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339. 와이어는 UTC(Z) 밀리초 권장."
+    },
+    "AccountHandle": {
+      "type": "string",
+      "pattern": "^acc_[a-z0-9]{4,32}$",
+      "description": "릴레이가 발급한 불투명 핸들. ★ 증권사 계좌번호를 해시한 값이 아니다."
+    },
+    "SlotName": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]{1,48}$"
+    },
+    "Symbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exchange", "code"],
+      "properties": {
+        "exchange": { "enum": ["KRX", "NXT", "UPBIT", "NASDAQ", "NYSE", "AMEX"] },
+        "code": { "type": "string", "minLength": 1, "maxLength": 32 }
+      }
+    },
+    "Signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "kid", "val"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "val": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{86}==$",
+          "description": "base64(64바이트 Ed25519 서명). 대상 = sig 를 제외한 봉투의 RFC 8785 JCS 정규화 바이트."
+        }
+      }
+    },
+    "RejectCode": {
+      "enum": [
+        "E_SIG",
+        "E_EXPIRED",
+        "E_SKEW",
+        "E_REPLAY",
+        "E_SCHEMA",
+        "E_UNSUPPORTED_TYPE",
+        "E_MODE",
+        "E_PAUSED",
+        "E_MARKET_CLOSED",
+        "E_SYMBOL",
+        "E_CAPITAL",
+        "E_LOCAL_GUARD",
+        "E_BROKER",
+        "E_ORPHAN",
+        "E_RATE"
+      ]
+    },
+    "MessageType": {
+      "enum": [
+        "intent.target",
+        "intent.position",
+        "cmd.derisk",
+        "state.snapshot",
+        "event.order",
+        "heartbeat",
+        "presence",
+        "ack"
+      ]
+    }
+  }
+}

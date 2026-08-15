@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yovel:v1:cmd.derisk",
+  "title": "cmd.derisk — 나가는 방향만 (서버 → 클라)",
+  "description": "★ allow-list. 진입 명령은 이 타입에 존재하지 않으며, de-risk 는 항상 intent 를 이긴다. 디스크에 영속한다 — 재시작하면 풀리는 pause 는 안전장치가 아니다.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["action", "scope"],
+  "properties": {
+    "action": {
+      "enum": ["liquidate", "pause", "block_entry", "resume"],
+      "description": "liquidate=전량 시장가 청산 / pause=신규 진입만 중단(로컬 exit 은 계속 동작) / block_entry=until 까지 자동 해제되는 pause / resume=해제"
+    },
+    "scope": { "enum": ["all", "slot", "position"] },
+    "slot": { "$ref": "urn:yovel:v1:common#/$defs/SlotName" },
+    "intent_id": { "$ref": "urn:yovel:v1:common#/$defs/Ulid" },
+    "until": {
+      "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
+      "description": "block_entry 전용 자동 해제 시각. ★ 그 외 해제는 사람의 명시적 resume 으로만."
+    },
+    "reason": { "type": "string", "maxLength": 200 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "scope": { "const": "slot" } }, "required": ["scope"] },
+      "then": { "required": ["slot"] }
+    },
+    {
+      "if": { "properties": { "scope": { "const": "position" } }, "required": ["scope"] },
+      "then": { "required": ["intent_id"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "block_entry" } }, "required": ["action"] },
+      "then": { "required": ["until"] }
+    }
+  ]
+}

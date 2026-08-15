@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yovel:v1:heartbeat",
+  "title": "heartbeat — 생존 신호 (클라 → 서버)",
+  "description": "주기 기본 20초. 서버는 3회 연속 미수신(60초)이면 긴급 알림.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["seq", "daemon_sha", "broker_ws"],
+  "properties": {
+    "seq": { "type": "integer", "minimum": 0 },
+    "daemon_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+    "uptime_sec": { "type": "integer", "minimum": 0 },
+    "broker_ws": {
+      "enum": ["up", "down", "degraded"],
+      "description": "★ 데몬은 살아있는데 증권사 WS 구독만 끊긴 상태가 실재한다. 그러면 봉 기반 exit 이 전부 조용히 정지하는데 heartbeat 는 '정상'으로 보인다 — 그래서 따로 싣는다."
+    },
+    "clock_skew_ms": {
+      "type": "integer",
+      "description": "서버 시각 대비 추정 오차. 지속되면 거절이 아니라 알림 대상."
+    },
+    "mode": { "enum": ["paper", "live"] }
+  }
+}

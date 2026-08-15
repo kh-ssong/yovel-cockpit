@@ -1,0 +1,37 @@
+{
+  "v": 1,
+  "typ": "state.snapshot",
+  "id": "01J9Z8QK3M7X2ABCDEFGHJKMNT",
+  "acct": "acc_7f3a",
+  "ts": "2026-08-15T00:05:03.120Z",
+  "body": {
+    "as_of": "2026-08-15T00:05:03.120Z",
+    "daemon": {
+      "version": "0.1.0",
+      "sha": "a1b2c3d",
+      "started_at": "2026-08-14T21:00:00.000Z"
+    },
+    "mode": "live",
+    "applied_seq": 10432,
+    "guards": {
+      "paused": false,
+      "block_entry_until": null,
+      "circuit_breaker": false,
+      "target_stale": false
+    },
+    "positions": [
+      {
+        "intent_id": "01J9Z8QK3M7X2ABCDEFGHJKMNQ",
+        "slot": "gapdown_a",
+        "symbol": { "exchange": "KRX", "code": "005930" },
+        "qty": 14,
+        "avg_entry_price": 72100,
+        "entry_at": "2026-08-15T00:01:12.000Z",
+        "stop_armed": 71200,
+        "tp_order_id": "K-88213",
+        "unrealized_pct": -0.0125
+      }
+    ],
+    "orphans": []
+  }
+}

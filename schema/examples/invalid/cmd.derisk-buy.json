@@ -1,0 +1,14 @@
+{
+  "_why": "★ 명령 채널에 '사라' 는 존재하지 않는다. action enum 에 buy 가 없어야 한다 — 릴레이가 털렸을 때 최악이 '봇이 꺼짐' 으로 유지되는 근거.",
+  "v": 1,
+  "typ": "cmd.derisk",
+  "id": "01J9Z8QK3M7X2ABCDEFGHJKMNS",
+  "acct": "acc_7f3a",
+  "ts": "2026-08-15T02:10:00.000Z",
+  "exp": "2026-08-15T02:15:00.000Z",
+  "nonce": "9a1c77de",
+  "body": {
+    "action": "buy",
+    "scope": "all"
+  }
+}

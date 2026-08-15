@@ -1,0 +1,26 @@
+{
+  "v": 1,
+  "typ": "ack",
+  "id": "01J9Z8QK3M7X2ABCDEFGHJKMNY",
+  "acct": "acc_7f3a",
+  "ts": "2026-08-15T00:06:02.000Z",
+  "body": {
+    "ref_id": "01J9Z8QK3M7X2ABCDEFGHJKMNP",
+    "ref_seq": 10432,
+    "ref_typ": "intent.target",
+    "status": "partial",
+    "codes": ["E_EXPIRED", "E_CAPITAL"],
+    "per_intent": [
+      {
+        "intent_id": "01J9Z8QK3M7X2ABCDEFGHJKMNQ",
+        "status": "expired",
+        "codes": ["E_EXPIRED"]
+      },
+      {
+        "intent_id": "01J9Z8QK3M7X2ABCDEFGHJKMNR",
+        "status": "applied"
+      }
+    ],
+    "detail": "weight 0.14 → floor 후 0주"
+  }
+}

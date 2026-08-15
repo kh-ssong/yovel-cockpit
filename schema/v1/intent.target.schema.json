@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yovel:v1:intent.target",
+  "title": "intent.target — 목표상태 전체 스냅샷 (서버 → 클라)",
+  "description": "★ 이벤트가 아니라 목표상태다. 클라가 실상태와 비교해 차이만 집행한다. 완성봉마다 전체를 재발행하며 retained 로 보관된다.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["as_of_bar", "book_state", "targets"],
+  "properties": {
+    "as_of_bar": {
+      "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
+      "description": "이 목표를 계산한 완성봉의 시각."
+    },
+    "book_state": {
+      "enum": ["normal", "degrossing", "halted"],
+      "description": "포트폴리오 레벨 상태. ★ 모르는 값은 halted 로 해석한다(안전한 쪽)."
+    },
+    "targets": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "$ref": "#/$defs/Target" }
+    }
+  },
+  "$defs": {
+    "Target": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["intent_id", "slot", "symbol", "side", "want"],
+      "properties": {
+        "intent_id": {
+          "$ref": "urn:yovel:v1:common#/$defs/Ulid",
+          "description": "★ 이 id 로 한 번만 진입한다. 종결된 id 는 영속 원장에 남아 재진입 불가."
+        },
+        "slot": { "$ref": "urn:yovel:v1:common#/$defs/SlotName" },
+        "symbol": { "$ref": "urn:yovel:v1:common#/$defs/Symbol" },
+        "side": { "enum": ["long"], "description": "v1 은 롱만. 숏은 v1 안에서 enum 추가로 확장." },
+        "want": {
+          "enum": ["open", "flat"],
+          "description": "★ flat 이 곧 청산 지시. 별도 SELL 메시지 타입은 없다."
+        },
+        "weight": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "슬롯 예산 대비 비중. ★ 원화 금액이 아니다 — 수량 계산은 클라가 한다(protocol.md §7)."
+        },
+        "entry": { "$ref": "#/$defs/Entry" },
+        "exit": { "$ref": "#/$defs/Exit" }
+      },
+      "allOf": [
+        {
+          "$comment": "want=open 이면 진입 조건(weight/entry)이 있어야 한다.",
+          "if": { "properties": { "want": { "const": "open" } }, "required": ["want"] },
+          "then": { "required": ["weight", "entry", "exit"] }
+        }
+      ]
+    },
+    "Entry": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["mode", "not_after"],
+      "properties": {
+        "mode": { "enum": ["market", "limit"] },
+        "limit_price": { "type": "number", "exclusiveMinimum": 0 },
+        "not_after": {
+          "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
+          "description": "★ 필수. 이 시각을 넘으면 진입만 포기한다 — 청산·stop 은 계속 유효."
+        },
+        "max_slip_bp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "허용 슬리피지(bp). 넘으면 진입 포기 + ack{E_BROKER}."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "limit" } }, "required": ["mode"] },
+          "then": { "required": ["limit_price"] }
+        }
+      ]
+    },
+    "Exit": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["stop_price"],
+      "properties": {
+        "stop_price": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "★ 로직이 아니라 숫자. 서버가 매 완성봉 재계산해 결과만 내려보낸다. 끊겨도 마지막 값이 유효하다."
+        },
+        "tp_price": { "type": "number", "exclusiveMinimum": 0 },
+        "tp_delegate": {
+          "type": "boolean",
+          "default": true,
+          "description": "true 면 클라가 브로커에 지정가로 위임한다 (끊겨도 체결되는 층)."
+        },
+        "time_exit_at": {
+          "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
+          "description": "로컬 타이머가 지킨다. ★ 청산은 만료시키지 않는다."
+        }
+      }
+    }
+  }
+}

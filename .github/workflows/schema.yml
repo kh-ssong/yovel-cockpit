@@ -1,0 +1,27 @@
+name: schema
+
+# 프로토콜은 문서만으론 계약이 아니다. 예제를 스키마로 검증해야 계약이 실제로 문다.
+# ★ examples/invalid/* 가 통과해버리는 순간을 잡는 게 이 잡의 존재 이유다
+#   (서명 없는 진입 / 명령 채널의 buy 가 조용히 뚫리는 지점).
+
+on:
+  push:
+    paths: ["schema/**", ".github/workflows/schema.yml"]
+  pull_request:
+    paths: ["schema/**", ".github/workflows/schema.yml"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: schema
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: schema/package-lock.json
+      - run: npm ci
+      - run: npm test

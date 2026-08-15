@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yovel:v1:state.snapshot",
+  "title": "state.snapshot — 클라 실상태 (클라 → 서버, retained)",
+  "description": "서버가 다음 intent 를 계산하려면 실상태가 필요하다. 이것도 이벤트가 아니라 스냅샷이다.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["as_of", "daemon", "mode", "guards", "positions"],
+  "properties": {
+    "as_of": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp" },
+    "daemon": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["version", "sha"],
+      "properties": {
+        "version": { "type": "string", "maxLength": 32 },
+        "sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,40}$",
+          "description": "★ '업데이트했는데 옛 코드가 돌고 있음' 드리프트를 같은 채널로 잡는다."
+        },
+        "started_at": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp" }
+      }
+    },
+    "mode": {
+      "enum": ["paper", "live"],
+      "description": "★ 생략 불가. paper 와 live 를 합산해 표시하면 허위 표시가 된다."
+    },
+    "applied_seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "마지막으로 적용한 intent.target 의 seq. 서버는 이걸로 유실을 감지한다."
+    },
+    "guards": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["paused", "circuit_breaker"],
+      "properties": {
+        "paused": { "type": "boolean" },
+        "block_entry_until": {
+          "oneOf": [{ "$ref": "urn:yovel:v1:common#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "circuit_breaker": { "type": "boolean" },
+        "target_stale": {
+          "type": "boolean",
+          "description": "스냅샷 나이 > target_max_age. true 면 진입 금지 상태 (청산·stop 은 동작)."
+        }
+      }
+    },
+    "positions": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["intent_id", "symbol", "qty", "avg_entry_price"],
+        "properties": {
+          "intent_id": { "$ref": "urn:yovel:v1:common#/$defs/Ulid" },
+          "slot": { "$ref": "urn:yovel:v1:common#/$defs/SlotName" },
+          "symbol": { "$ref": "urn:yovel:v1:common#/$defs/Symbol" },
+          "qty": { "type": "number", "exclusiveMinimum": 0 },
+          "avg_entry_price": { "type": "number", "exclusiveMinimum": 0 },
+          "entry_at": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp" },
+          "stop_armed": {
+            "type": "number",
+            "description": "클라가 실제로 무장 중인 stop. ★ 서버가 보낸 값과 다르면 그 자체가 사고 신호다."
+          },
+          "tp_order_id": { "type": "string", "maxLength": 64 },
+          "unrealized_pct": { "type": "number" }
+        }
+      }
+    },
+    "orphans": {
+      "type": "array",
+      "description": "목표에 없는데 실보유 중인 포지션. ★ 자동청산하지 않고 보고만 한다.",
+      "items": { "$ref": "urn:yovel:v1:common#/$defs/Symbol" }
+    }
+  }
+}

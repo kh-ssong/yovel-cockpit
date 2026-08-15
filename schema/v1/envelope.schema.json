@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yovel:v1:envelope",
+  "title": "yovel v1 — 봉투",
+  "description": "모든 메시지가 공유하는 껍데기. body 는 typ 별 스키마가 검증한다 (urn:yovel:v1:message).",
+  "type": "object",
+  "required": ["v", "typ", "id", "acct", "ts", "body"],
+  "properties": {
+    "v": { "const": 1, "description": "프로토콜 메이저. 토픽 경로의 v1 과 일치해야 한다." },
+    "typ": { "$ref": "urn:yovel:v1:common#/$defs/MessageType" },
+    "id": { "$ref": "urn:yovel:v1:common#/$defs/Ulid" },
+    "acct": { "$ref": "urn:yovel:v1:common#/$defs/AccountHandle" },
+    "ts": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp" },
+    "exp": {
+      "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
+      "description": "유효시각. 봉 경계에 앵커한다. ★ 진입을 담은 메시지는 이것 또는 target.entry.not_after 가 필수."
+    },
+    "nonce": { "type": "string", "minLength": 4, "maxLength": 64 },
+    "seq": { "type": "integer", "minimum": 0, "description": "(typ, acct) 별 단조증가." },
+    "sig": { "$ref": "urn:yovel:v1:common#/$defs/Signature" },
+    "body": { "type": "object" }
+  },
+  "additionalProperties": true,
+  "$comment": "★ additionalProperties: true 는 의도적이다 — 모르는 필드는 무시(forward compat). 반대로 모르는 typ 은 실행하지 않는다."
+}

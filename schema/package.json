@@ -1,0 +1,14 @@
+{
+  "name": "yovel-cockpit-schema",
+  "version": "1.0.0",
+  "private": true,
+  "description": "yovel v1 릴레이 프로토콜 — JSON Schema 와 계약 예제 검증기",
+  "type": "module",
+  "scripts": {
+    "test": "node validate.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yovel:v1:event.order",
+  "title": "event.order — 주문 생애주기 (클라 → 서버)",
+  "description": "원장·지연 실측용이며 제어 경로가 아니다 (제어는 state.snapshot). ★ signal_ts / submitted_at / filled_at 3종을 전부 실어야 '신호→체결' 지연을 잴 수 있다.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["intent_id", "phase", "symbol", "side"],
+  "properties": {
+    "intent_id": { "$ref": "urn:yovel:v1:common#/$defs/Ulid" },
+    "phase": { "enum": ["submitted", "filled", "partial", "rejected", "canceled", "exit_filled"] },
+    "symbol": { "$ref": "urn:yovel:v1:common#/$defs/Symbol" },
+    "side": { "enum": ["buy", "sell"] },
+    "qty": { "type": "number", "minimum": 0 },
+    "price": { "type": "number", "minimum": 0 },
+    "broker_order_id": { "type": "string", "maxLength": 64 },
+    "signal_ts": {
+      "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
+      "description": "이 주문을 낳은 intent.target 의 as_of_bar."
+    },
+    "submitted_at": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp" },
+    "filled_at": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp" },
+    "slippage_bp": {
+      "type": "number",
+      "description": "기준가 대비 체결 슬리피지(bp). ★ 엔진이 이미 반영한 비용을 집계에서 또 빼지 말 것."
+    },
+    "fee_krw": { "type": "number", "minimum": 0 },
+    "exit_reason": { "enum": ["stop", "tp", "time", "derisk", "manual", "broker"] },
+    "realized_pct": { "type": "number" },
+    "broker_code": { "type": "string", "maxLength": 64 },
+    "detail": { "type": "string", "maxLength": 500 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "phase": { "const": "exit_filled" } }, "required": ["phase"] },
+      "then": { "required": ["exit_reason"] }
+    }
+  ]
+}

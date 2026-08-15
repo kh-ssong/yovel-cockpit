@@ -1,0 +1,14 @@
+{
+  "_why": "★ mode(paper|live) 누락. 빠지면 원격 UI 가 paper 와 live 를 합산해 허위 손익을 표시하게 된다 (§5.1).",
+  "v": 1,
+  "typ": "state.snapshot",
+  "id": "01J9Z8QK3M7X2ABCDEFGHJKMNT",
+  "acct": "acc_7f3a",
+  "ts": "2026-08-15T00:05:03.120Z",
+  "body": {
+    "as_of": "2026-08-15T00:05:03.120Z",
+    "daemon": { "version": "0.1.0", "sha": "a1b2c3d" },
+    "guards": { "paused": false, "circuit_breaker": false },
+    "positions": []
+  }
+}
