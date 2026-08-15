@@ -2,9 +2,25 @@ name: gitleaks
 
 # 공개 저장소라 유출은 되돌릴 수 없다 (force-push 해도 캐시·포크에 남는다).
 # 그래서 차단은 push 시점에 건다.
+#
+# ★ gitleaks-action 을 안 쓰는 이유 (2026-08-15 최초 push 에서 실측):
+#   그 액션은 "이번에 밀린 범위" 만 스캔하려고 `<첫커밋>^..<HEAD>` 를 계산하는데,
+#   **최초 push 에서는 첫 커밋에 부모가 없어** git 이 `unknown revision` 으로 죽고 exit 1 이 된다.
+#   그런데 로그 마지막 줄은 "no leaks found in partial scan" 이다 — 즉 겉보기엔 "유출 발견"
+#   같지만 실제로는 **0 바이트를 스캔**했다. 빨간불이면서 아무것도 검사하지 않은 최악의 조합.
+#
+#   ⟹ 바이너리를 직접 돌려 **히스토리 전체**를 본다. 범위 계산이 없으니 깨질 여지도 없고,
+#      과거 커밋에 묻힌 유출도 매번 다시 걸린다 (그게 원래 의도였다).
+
 on:
   push:
   pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.24.3"
 
 jobs:
   scan:
@@ -12,7 +28,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 히스토리 전체를 봐야 과거 커밋의 유출도 잡힌다
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0 # 히스토리 전체를 봐야 과거 커밋의 유출도 잡힌다
+
+      - name: gitleaks 설치
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: 히스토리 전체 스캔
+        run: gitleaks detect --source . --redact -v --exit-code 1
+
+      - name: 워킹트리 스캔
+        # 커밋 전 단계에서 섞여 들어온 파일도 본다 (히스토리 스캔은 그걸 못 본다).
+        run: gitleaks dir . --redact -v --exit-code 1

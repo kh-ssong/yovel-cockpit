@@ -4,11 +4,14 @@ name: schema
 # ★ examples/invalid/* 가 통과해버리는 순간을 잡는 게 이 잡의 존재 이유다
 #   (서명 없는 진입 / 명령 채널의 buy 가 조용히 뚫리는 지점).
 
+# ★ push 에는 paths 필터를 걸지 않는다 (2026-08-15 실측).
+#   브랜치를 **처음 만드는 push** 에서는 비교 기준(before)이 0000... 이라 GitHub 이
+#   변경 파일을 못 구하고, 그러면 잡이 아예 안 돈다. "빨간불" 보다 나쁜 게 "안 돈 줄 모르는 것" 이다.
+#   PR 에서는 필터가 정상 동작하므로 그쪽만 남긴다.
 on:
   push:
-    paths: ["schema/**", ".github/workflows/schema.yml"]
   pull_request:
-    paths: ["schema/**", ".github/workflows/schema.yml"]
+    paths: ["schema/**", "internal/protocol/**", ".github/workflows/schema.yml"]
 
 jobs:
   validate:
@@ -25,3 +28,16 @@ jobs:
           cache-dependency-path: schema/package-lock.json
       - run: npm ci
       - run: npm test
+
+  # ★ 서명 픽스처는 **양쪽이 돌아야** 의미가 있다.
+  #   Go 만 돌리면 "Go 가 Go 를 검증" 한 것뿐이고, 픽스처의 존재 이유(Python↔Go 정규화 일치)가 사라진다.
+  #   그 차이는 조용해서 — 한글이나 소수점이 섞이는 순간 "가끔 실패하는 인증" 으로 나타난다.
+  signing-interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install cryptography
+      - run: python schema/fixtures/signing/verify.py
