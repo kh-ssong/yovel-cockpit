@@ -95,6 +95,7 @@ pin 한다. 릴레이는 암호문을 나르기만 하므로 **릴레이를 장�
 ```
 cmd/cockpitd/        데몬 진입점
 internal/protocol/   와이어 타입 + 서명 검증 + 수용 규칙   ← 계약의 Go 측 구현
+internal/store/      로컬 SQLite — 원장 · intent 매핑 · 가드 영속 · 업링크 큐
 internal/config/     로컬 설정 · pin 된 pitwall 공개키
 internal/httpapi/    로컬 API (토큰 · Host · Origin 가드)
 internal/version/    버전 · SHA (드리프트 감지)
@@ -108,7 +109,7 @@ schema/v1/           ★ 같은 계약의 JSON Schema (npm test 로 예제 검�
 ui/                  Svelte SPA — 산출물 ui/dist 를 데몬이 서빙하다가 Tauri 가 번들 (미착수)
 ```
 
-**아직 없는 것**: 브로커 드라이버 · 릴레이(MQTT) 연결 · 주문을 실제로 내는 실행 루프.
+**아직 없는 것**: 브로커 드라이버 · 릴레이(MQTT) 연결 · 주문을 실제로 내는 실행 루프 · UI.
 그래서 지금 계획은 항상 `E_SYMBOL`(참조가를 모름) 로 끝난다 — 그게 맞는 동작이다.
 가짜 가격을 채워 계획이 나오는 것처럼 보이게 두면 **배선이 빠진 상태와 정상 상태가 같아 보인다.**
 

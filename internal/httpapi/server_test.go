@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/reconcile"
+	"github.com/kh-ssong/yovel-cockpit/internal/store"
 )
 
 const tok = "test-token-0123456789abcdef"
@@ -35,6 +37,10 @@ func (f *fakeEngine) Apply(raw []byte, _ time.Time) protocol.Ack {
 }
 
 func (f *fakeEngine) Plan(time.Time) reconcile.Plan { return reconcile.Plan{} }
+
+func (f *fakeEngine) Ledger(_ context.Context, mode protocol.Mode, _ int) ([]store.Order, error) {
+	return []store.Order{{ID: "o1", IntentID: "i1", Phase: "exit_filled", Mode: mode}}, nil
+}
 
 func newTestServer() *Server { return newTestServerWith(&fakeEngine{}) }
 
@@ -210,5 +216,35 @@ func TestBindsToLoopbackOnly(t *testing.T) {
 	// 0.0.0.0 에 붙으면 같은 와이파이의 아무나 접근할 수 있다.
 	if got := newTestServer().Addr(); got != "127.0.0.1:7737" {
 		t.Fatalf("addr=%q", got)
+	}
+}
+
+// ★ 원장 조회는 mode 를 반드시 고르게 한다. 기본값 "전체" 는 허위 손익의 입구다.
+func TestLedgerRequiresMode(t *testing.T) {
+	for _, q := range []string{"", "?mode=", "?mode=all", "?mode=both"} {
+		t.Run("deny "+q, func(t *testing.T) {
+			if w := do(t, "/v1/ledger"+q, nil); w.Code != http.StatusBadRequest {
+				t.Fatalf("code=%d, 기대 400 (body=%s)", w.Code, w.Body)
+			}
+		})
+	}
+	for _, m := range []string{"live", "paper"} {
+		t.Run("allow "+m, func(t *testing.T) {
+			w := do(t, "/v1/ledger?mode="+m, nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("code=%d body=%s", w.Code, w.Body)
+			}
+			var got ledgerResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if string(got.Mode) != m || got.Count != 1 {
+				t.Fatalf("%+v", got)
+			}
+			// 신선도 표시가 없으면 UI 가 옛 원장을 현재처럼 그린다.
+			if got.AsOf.IsZero() {
+				t.Fatal("as_of 가 비었다")
+			}
+		})
 	}
 }

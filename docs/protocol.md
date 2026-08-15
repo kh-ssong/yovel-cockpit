@@ -325,7 +325,9 @@ diff    := reconcile(actual, target)
 **가드레일** (전부 클라 로컬, 서버가 못 끄는 것):
 
 - reconcile 틱당 최대 주문 수 (기본 5) — 폭주 차단
-- 같은 `intent_id` 는 **한 번만 진입**. 종결된 intent_id 는 영속 원장에 남아 재진입 불가
+- 같은 `intent_id` 는 **한 번만 진입**. 종결된 intent_id 는 영속 원장에 남아 재진입 불가 (`E_TERMINAL`)
+  ★ 이게 없으면 stop 에 털린 자리에 같은 목표로 곧바로 재진입한다 — retained 목표는 재접속마다
+  그대로 다시 오고, 진입 창(`not_after`)이 아직 안 지났을 수 있기 때문이다
 - 진입은 `not_after` + 장 운영시간 + `guards` 전부 통과해야
 - ★ **스냅샷 나이 > `target_max_age`(기본 180초) 면 진입 금지, 청산·stop 은 계속 동작**
   ("연결이 끊긴 순간 무엇이 남는가" 의 직접적 구현)
@@ -405,6 +407,7 @@ skew 가 지속되면 거절이 아니라 **알림**을 올린다(사용자 PC �
 | `E_BROKER` | 증권사가 거절 (`detail` 에 원문 코드) |
 | `E_ORPHAN` | 목표에 없는 실보유 포지션 발견 (자동청산 안 함) |
 | `E_RATE` | reconcile 틱당 주문 상한 초과 |
+| `E_TERMINAL` | 이미 종결된 `intent_id` 로 다시 진입하려 함 |
 
 ---
 

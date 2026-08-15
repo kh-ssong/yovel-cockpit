@@ -256,3 +256,31 @@ func TestLimitEntryUsesLimitPrice(t *testing.T) {
 		t.Fatalf("qty=%v", p.Enters[0].Qty)
 	}
 }
+
+// ★ 종결된 목표로 재진입하지 않는다.
+// retained 목표는 재접속마다 그대로 다시 오므로, 이 가드가 없으면 stop 에 털린 자리에
+// 진입 창(not_after)이 남아 있는 동안 같은 목표로 곧바로 재진입한다.
+func TestTerminalIntentIsNotReentered(t *testing.T) {
+	o := opts()
+	o.Terminal = func(id string) bool { return id == "a" }
+
+	p := Build(book(openTarget("a", "005930")), nil, o)
+	if len(p.Enters) != 0 {
+		t.Fatalf("종결된 목표로 재진입했다: %+v", p.Enters)
+	}
+	a, _ := ackFor(p, "a")
+	if a.Status != "noop" {
+		t.Fatalf("ack=%+v — 에러는 아니지만 침묵도 아니어야 한다", a)
+	}
+	if len(a.Codes) == 0 || a.Codes[0] != protocol.CodeTerminal {
+		t.Fatalf("왜 안 샀는지 안 남겼다: %+v", a)
+	}
+}
+
+// 가드가 꺼져 있으면(nil) 재진입한다 — 그래서 배선을 빠뜨리면 안 된다는 걸 테스트로 고정한다.
+func TestWithoutTerminalGuardItReenters(t *testing.T) {
+	p := Build(book(openTarget("a", "005930")), nil, opts())
+	if len(p.Enters) != 1 {
+		t.Fatalf("Terminal 미배선 시 동작이 바뀌었다: %+v", p)
+	}
+}

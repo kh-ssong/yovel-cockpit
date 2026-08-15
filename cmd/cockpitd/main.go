@@ -23,6 +23,7 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/engine"
 	"github.com/kh-ssong/yovel-cockpit/internal/httpapi"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
+	"github.com/kh-ssong/yovel-cockpit/internal/store"
 	"github.com/kh-ssong/yovel-cockpit/internal/version"
 )
 
@@ -67,6 +68,12 @@ func run() error {
 
 	started := time.Now()
 
+	st, err := store.Open(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("로컬 저장소: %w", err)
+	}
+	defer st.Close()
+
 	// ★ 브로커가 아직 없다 = 참조가를 모른다 = 진입 계획이 E_SYMBOL 로 거절된다.
 	// 그게 맞는 동작이다. 가짜 가격을 채워 "계획이 나오는 것처럼" 보이게 두면,
 	// 배선이 빠진 상태와 정상 상태가 같아 보인다.
@@ -76,7 +83,13 @@ func run() error {
 		TargetMaxAge: cfg.TargetMaxAge,
 		MaxOrders:    cfg.MaxOrdersPerTick,
 		SlotCapital:  func(string) float64 { return 0 },
+		Store:        st,
 	}, started)
+
+	// ★ 재시작 복구를 건너뛰면 걸어둔 pause 가 풀리고, 이미 끝난 목표로 재진입한다.
+	if err := eng.Restore(context.Background()); err != nil {
+		return fmt.Errorf("상태 복구 실패: %w", err)
+	}
 
 	srv := httpapi.New(httpapi.Options{
 		Port:      cfg.Port,
@@ -89,9 +102,11 @@ func run() error {
 		return fmt.Errorf("로컬 API 기동 실패: %w", err)
 	}
 
+	snap := eng.Snapshot()
 	log.Info("cockpitd 시작",
 		"version", v.Version, "sha", v.SHA, "dirty", v.Dirty,
 		"mode", cfg.Mode, "addr", srv.Addr(), "data_dir", cfg.DataDir,
+		"restored_positions", len(snap.Positions), "paused", snap.Guards.Paused,
 		"trusted_keys", len(cfg.Policy.TrustedKeys),
 		"accept_unsigned_derisk", cfg.Policy.AcceptUnsignedDerisk,
 	)
@@ -104,6 +119,10 @@ func run() error {
 	}
 	if cfg.Mode == protocol.ModeLive {
 		log.Warn("live 모드 — 실주문이 나갈 수 있다")
+	}
+	// ★ 복구된 pause 를 조용히 두면, 사용자는 봇이 도는 줄 알고 기다린다.
+	if snap.Guards.Paused {
+		log.Warn("이전 세션의 de-risk 가 아직 걸려 있다 — resume 전까지 신규 진입 없음")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

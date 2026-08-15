@@ -17,11 +17,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/reconcile"
+	"github.com/kh-ssong/yovel-cockpit/internal/store"
 	"github.com/kh-ssong/yovel-cockpit/internal/version"
 )
 
@@ -32,6 +34,8 @@ type Engine interface {
 	Apply(raw []byte, now time.Time) protocol.Ack
 	// Plan 은 지금 무엇을 할지 계산한다 (주문은 내지 않는다).
 	Plan(now time.Time) reconcile.Plan
+	// Ledger 는 매매기록. ★ mode 없이는 조회할 수 없다.
+	Ledger(ctx context.Context, mode protocol.Mode, limit int) ([]store.Order, error)
 }
 
 // maxDownlinkBytes — 목표 스냅샷은 포지션 수백 개여도 수십 KB 다.
@@ -65,6 +69,7 @@ func New(opt Options, eng Engine) *Server {
 	// 위험해 보이지만 실제로는 아니다: 진입 intent 는 pitwall 서명이 있어야만 통과하므로,
 	// 이 엔드포인트를 두드릴 수 있어도 서명키 없이는 주문을 만들 수 없다.
 	mux.HandleFunc("POST /v1/downlink", s.handleDownlink)
+	mux.HandleFunc("GET /v1/ledger", s.handleLedger)
 
 	s.http = &http.Server{
 		// ★ 127.0.0.1 에만 붙는다. 0.0.0.0 이면 같은 와이파이의 아무나 접근할 수 있다.
@@ -221,4 +226,50 @@ func (s *Server) handleDownlink(w http.ResponseWriter, r *http.Request) {
 	// 릴레이(MQTT)에는 상태코드라는 게 없다 — 두 경로가 다른 모양이면 그게 곧 배선 버그가 된다.
 	writeJSON(w, http.StatusOK, ack)
 	s.opt.Log.Info("다운링크 처리", "typ", ack.RefTyp, "status", ack.Status, "codes", ack.Codes)
+}
+
+type ledgerResponse struct {
+	// ★ AsOf 를 매번 싣는다. 지하철·엘리베이터 간헐 연결에서 캐시된 옛 원장을
+	// 현재처럼 보여주는 게 이 화면의 최악 실패다. UI 는 이걸로 "n분 전" 을 그린다.
+	AsOf   time.Time     `json:"as_of"`
+	Mode   protocol.Mode `json:"mode"`
+	Count  int           `json:"count"`
+	Orders []store.Order `json:"orders"`
+}
+
+// handleLedger — 매매기록 조회.
+//
+// ★ mode 를 기본값으로 채우지 않는다. "전체 보기"가 기본이면 paper 와 live 가 합산돼
+// 실계좌가 손실인데 수익으로 보인다 (실측: live 15건 −18,725원 vs paper 63건 +49,884원).
+// 그래서 호출자가 반드시 고르게 하고, 안 고르면 400 이다.
+func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
+	if s.eng == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "엔진이 아직 없다"})
+		return
+	}
+	mode := protocol.Mode(r.URL.Query().Get("mode"))
+	if mode != protocol.ModePaper && mode != protocol.ModeLive {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "mode=paper 또는 mode=live 를 명시할 것 — 합산하면 허위 손익이 된다",
+		})
+		return
+	}
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	orders, err := s.eng.Ledger(r.Context(), mode, limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if orders == nil {
+		orders = []store.Order{}
+	}
+	writeJSON(w, http.StatusOK, ledgerResponse{
+		AsOf: time.Now().UTC(), Mode: mode, Count: len(orders), Orders: orders,
+	})
 }

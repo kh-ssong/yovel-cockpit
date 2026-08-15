@@ -1,13 +1,16 @@
 package engine
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
+	"github.com/kh-ssong/yovel-cockpit/internal/store"
 )
 
 const kid = "pw-test"
@@ -215,5 +218,109 @@ func TestFreshEngineReportsStale(t *testing.T) {
 	}
 	if snap.Mode == "" {
 		t.Fatal("mode 가 비었다")
+	}
+}
+
+// ── 영속 (store 배선) ───────────────────────────────────────────────────────
+
+func newPersistentEngine(t *testing.T, dbPath string) (*Engine, ed25519.PrivateKey, *store.Store) {
+	t.Helper()
+	st, err := store.OpenPath(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv, pub := keys(t)
+	p := protocol.DefaultPolicy()
+	p.TrustedKeys = pub
+	e := New(Config{
+		Mode: protocol.ModePaper, Policy: p, TargetMaxAge: 180 * time.Second, MaxOrders: 5,
+		SlotCapital: func(string) float64 { return 1_000_000 },
+		Price:       func(protocol.Symbol) (float64, bool) { return 1000, true },
+		Market:      func(protocol.Symbol) sizing.Market { return sizing.StockMarket() },
+		Store:       st,
+	}, base)
+	if err := e.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return e, priv, st
+}
+
+// ★ 재시작하면 풀리는 일시정지는 안전장치가 아니다.
+func TestPauseSurvivesRestart(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "cockpit.db")
+	now := base.Add(time.Second)
+
+	e1, _, st1 := newPersistentEngine(t, db)
+	e1.Apply(deriskMsg("n1", "pause", base, base.Add(5*time.Minute)), now)
+	if !e1.Snapshot().Guards.Paused {
+		t.Fatal("pause 가 안 걸렸다")
+	}
+	st1.Close()
+
+	e2, priv, st2 := newPersistentEngine(t, db)
+	defer st2.Close()
+	if !e2.Snapshot().Guards.Paused {
+		t.Fatal("★ 재시작에 pause 가 풀렸다")
+	}
+	e2.Apply(signEnv(t, targetMsg(1, base, base.Add(time.Minute), base.Add(time.Minute), base), priv), now)
+	if len(e2.Plan(now).Enters) != 0 {
+		t.Fatal("풀린 pause 로 진입까지 했다")
+	}
+}
+
+// ★ 종결된 목표로 재진입하지 않는다 — retained 목표가 재접속마다 그대로 다시 오기 때문에.
+func TestClosedIntentIsNotReenteredAfterRestart(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "cockpit.db")
+	now := base.Add(time.Second)
+	const id = "01J9Z8QK3M7X2ABCDEFGHJKMNQ"
+
+	e1, priv, st1 := newPersistentEngine(t, db)
+	e1.Apply(signEnv(t, targetMsg(1, base, base.Add(time.Minute), base.Add(time.Minute), base), priv), now)
+	if len(e1.Plan(now).Enters) != 1 {
+		t.Fatal("첫 진입 계획이 없다")
+	}
+
+	// 진입 → 원장 기록 → stop 에 털림 → 종결.
+	if err := st1.UpsertIntent(context.Background(), store.Intent{
+		IntentID: id, Slot: "gapdown_a",
+		Symbol: protocol.Symbol{Exchange: "KRX", Code: "005930"}, Side: "long",
+		Qty: 500, AvgEntryPrice: 1000, StopArmed: 900,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st1.CloseIntent(context.Background(), id, "stop", now); err != nil {
+		t.Fatal(err)
+	}
+	st1.Close()
+
+	// 재시작 — 같은 retained 목표가 그대로 다시 온다 (진입 창도 아직 안 지났다).
+	e2, priv2, st2 := newPersistentEngine(t, db)
+	defer st2.Close()
+	e2.Apply(signEnv(t, targetMsg(1, base, base.Add(time.Minute), base.Add(time.Minute), base), priv2), now)
+
+	plan := e2.Plan(now)
+	if len(plan.Enters) != 0 {
+		t.Fatalf("★ 털린 자리에 같은 목표로 재진입했다: %+v", plan.Enters)
+	}
+	var found bool
+	for _, a := range plan.Acks {
+		if a.IntentID == id && len(a.Codes) > 0 && a.Codes[0] == protocol.CodeTerminal {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("왜 안 샀는지 안 남겼다: %+v", plan.Acks)
+	}
+}
+
+// store 없이도 엔진은 돈다 (단, 위 두 성질은 사라진다).
+func TestEngineWorksWithoutStore(t *testing.T) {
+	e, priv := newEngine(t)
+	now := base.Add(time.Second)
+	if ack := e.Apply(signEnv(t, targetMsg(1, base, base.Add(time.Minute), base.Add(time.Minute), base), priv), now); ack.Status != "applied" {
+		t.Fatalf("ack=%+v", ack)
+	}
+	if _, err := e.Ledger(context.Background(), protocol.ModeLive, 10); err != nil {
+		t.Fatalf("store 없을 때 원장 조회가 터졌다: %v", err)
 	}
 }

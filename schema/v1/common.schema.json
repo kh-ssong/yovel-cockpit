@@ -61,7 +61,8 @@
         "E_LOCAL_GUARD",
         "E_BROKER",
         "E_ORPHAN",
-        "E_RATE"
+        "E_RATE",
+        "E_TERMINAL"
       ]
     },
     "MessageType": {
