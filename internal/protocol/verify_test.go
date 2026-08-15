@@ -391,3 +391,69 @@ func TestStale(t *testing.T) {
 		t.Fatal("멀쩡한 스냅샷을 stale 로 봄")
 	}
 }
+
+// ── 계정 바인딩 (§2.4) ──────────────────────────────────────────────────────
+
+// ★ 이 저장소에서 제일 반직관적인 거절: **서명이 유효한데도** 거절한다.
+// 릴레이는 BUY 를 지어낼 수 없지만, A 에게 갈 진짜 서명된 BUY 를 B 에게 배달할 수는 있다.
+func TestAdmitRejectsForeignAcct(t *testing.T) {
+	p, priv := policyWith(t)
+	p.Acct = "acc_me"
+
+	env := targetEnv(1, baseTS, baseTS.Add(time.Minute), baseTS.Add(time.Minute))
+	env["acct"] = "acc_someone_else"
+
+	got := Admit(signed(t, env, priv), baseTS, p, NewGuard())
+	if !hasCode(got.Codes, CodeAcct) {
+		t.Fatalf("남의 계정 목표를 받아들였다: %+v", got.Codes)
+	}
+}
+
+func TestAdmitAcceptsOwnAcct(t *testing.T) {
+	p, priv := policyWith(t)
+	p.Acct = "acc_7f3a" // targetEnv 가 쓰는 값
+
+	env := targetEnv(1, baseTS, baseTS.Add(time.Minute), baseTS.Add(time.Minute))
+	got := Admit(signed(t, env, priv), baseTS, p, NewGuard())
+	if hasCode(got.Codes, CodeAcct) {
+		t.Fatalf("자기 계정 목표를 거절했다: %+v", got.Codes)
+	}
+}
+
+// 설정이 비면 검사하지 않는다 (릴레이 이전의 루프백 개발).
+// ★ 이건 "안전해서" 가 아니라 "아직 계정 개념이 없어서" 다 — 데몬이 기동 시 경고로 갚는다.
+func TestAdmitSkipsAcctCheckWhenUnset(t *testing.T) {
+	p, priv := policyWith(t)
+
+	env := targetEnv(1, baseTS, baseTS.Add(time.Minute), baseTS.Add(time.Minute))
+	env["acct"] = "acc_anything"
+
+	got := Admit(signed(t, env, priv), baseTS, p, NewGuard())
+	if hasCode(got.Codes, CodeAcct) {
+		t.Fatalf("바인딩이 없는데 거절했다: %+v", got.Codes)
+	}
+}
+
+// ★ 남의 봉투는 seq 상태를 건드리지 못해야 한다.
+// 아니면 릴레이가 남의 목표(높은 seq)를 배달해 내 카운터를 밀어올리고, 그 뒤에 오는
+// **진짜 내 목표가 조용히 무시된다** — 거절 한 번이 아니라 그 이후 전부가 막히는 사고다.
+func TestForeignAcctDoesNotAdvanceSeq(t *testing.T) {
+	p, priv := policyWith(t)
+	p.Acct = "acc_me"
+	g := NewGuard()
+
+	foreign := targetEnv(999, baseTS, baseTS.Add(time.Minute), baseTS.Add(time.Minute))
+	foreign["acct"] = "acc_someone_else"
+	Admit(signed(t, foreign, priv), baseTS, p, g)
+
+	if seq := g.LastSeq(TypeIntentTarget); seq != 0 {
+		t.Fatalf("남의 봉투가 seq 를 %d 로 밀어올렸다 — 이후 내 목표가 전부 무시된다", seq)
+	}
+
+	mine := targetEnv(1, baseTS, baseTS.Add(time.Minute), baseTS.Add(time.Minute))
+	mine["acct"] = "acc_me"
+	got := Admit(signed(t, mine, priv), baseTS, p, g)
+	if len(got.Codes) > 0 {
+		t.Fatalf("내 목표가 막혔다: %+v", got.Codes)
+	}
+}

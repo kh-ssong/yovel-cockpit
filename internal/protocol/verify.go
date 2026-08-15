@@ -107,6 +107,18 @@ type Policy struct {
 
 	// TrustedKeys — kid → pitwall 공개키. 바이너리에 pin 된 값에서 온다.
 	TrustedKeys map[string]ed25519.PublicKey
+
+	// Acct — 이 콕핏이 자기 것으로 아는 계정 핸들. 다른 acct 의 봉투는 E_ACCT 로 거절한다.
+	//
+	// ★ 왜 서명만으로 부족한가 (다중 사용자에서만 생기는 공격면):
+	// 릴레이는 서명키가 없으니 BUY 를 **지어낼** 수는 없다. 그런데 A 에게 갈 **진짜 서명된**
+	// BUY 를 B 의 콕핏으로 **배달**할 수는 있다 — 서명은 통과한다(피트월이 실제로 서명했으니).
+	// 토픽 ACL 오설정 하나, 캡처한 메시지 재전송 하나면 남의 목표가 내 계좌에서 집행된다.
+	// 서명은 "누가 만들었나" 를 증명하지 초대는 "누구에게 가는 것인가" 를 증명하지 않는다.
+	//
+	// ★ 빈 값이면 검사하지 않는다 (릴레이 이전의 루프백 개발). 대신 데몬이 기동 시 경고한다 —
+	// 조용히 무방비인 상태를 조용히 두지 않는다. 릴레이 등록이 붙으면 이 값이 자동으로 찬다.
+	Acct string
 }
 
 func DefaultPolicy() Policy {
@@ -197,6 +209,13 @@ func Admit(raw []byte, now time.Time, p Policy, g *Guard) Admission {
 	}
 	if env.ID == "" || env.Acct == "" || env.TS.IsZero() || len(env.Body) == 0 {
 		return reject(CodeSchema)
+	}
+
+	// ★ 계정 바인딩 — 서명 검사보다 **앞**이다.
+	// 남의 계정으로 온 봉투는 서명이 아무리 멀쩡해도 우리 것이 아니다. 그리고 여기서 끊으면
+	// 그 메시지는 seq/nonce 상태를 건드리지 못한다 (남의 seq 로 내 카운터를 밀어올리는 것도 막힌다).
+	if p.Acct != "" && env.Acct != p.Acct {
+		return Admission{Env: &env, Codes: []RejectCode{CodeAcct}}
 	}
 
 	// 클라가 받아 처리하는 것은 다운링크뿐이다.

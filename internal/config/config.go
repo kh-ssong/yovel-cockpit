@@ -103,6 +103,8 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 	fs.Float64Var(&c.SlotCapitalDefault, "slot-capital", c.SlotCapitalDefault, "슬롯당 자본 (원)")
 	fs.DurationVar(&c.ReconcileInterval, "reconcile-interval", c.ReconcileInterval, "집행 루프 주기")
 	fs.BoolVar(&c.UI, "ui", c.UI, "로컬 대시보드 서빙 (--ui=false 로 끔)")
+	fs.StringVar(&c.Policy.Acct, "acct", c.Policy.Acct,
+		"이 콕핏의 계정 핸들 — 다른 acct 의 목표는 E_ACCT 로 거절 (★ 비우면 검사 안 함)")
 
 	// mode 는 파싱 후에 반영해야 해서 포인터를 잡아둔다.
 	c.modeFlag = &mode
@@ -125,6 +127,9 @@ func (c *Config) applyEnv() {
 	}
 	if v := os.Getenv("COCKPIT_KIWOOM_TOKEN_FILE"); v != "" {
 		c.KiwoomTokenFile = v
+	}
+	if v := os.Getenv("COCKPIT_ACCT"); v != "" {
+		c.Policy.Acct = v
 	}
 }
 

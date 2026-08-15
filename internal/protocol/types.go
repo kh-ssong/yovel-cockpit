@@ -50,6 +50,10 @@ const (
 	// ★ retained 목표는 재접속마다 그대로 다시 오므로, 이 코드가 없으면 stop 에 털린 자리에
 	// 같은 목표로 곧바로 재진입한다.
 	CodeTerminal RejectCode = "E_TERMINAL"
+	// CodeAcct — 이 콕핏의 계정이 아닌 봉투가 왔다.
+	// ★ 서명이 유효해도 거절한다. 서명은 "누가 만들었나" 를 증명하지 "누구에게 가는 것인가" 는
+	// 증명하지 않는다 — 릴레이는 A 의 진짜 서명된 목표를 B 에게 배달할 수 있다.
+	CodeAcct RejectCode = "E_ACCT"
 )
 
 // Envelope 는 모든 메시지가 공유하는 껍데기.

@@ -158,6 +158,14 @@ func run() error {
 	if cfg.Mode == protocol.ModeLive {
 		log.Warn("live 모드 — 실주문이 나갈 수 있다")
 	}
+	// ★ 계정 바인딩이 없으면 "누구에게 온 목표인가" 를 안 본다. 혼자 루프백으로 굴릴 땐 무해하지만,
+	// 릴레이나 여러 사용자가 끼는 순간 남의 (진짜 서명된) 목표가 이 계좌에서 집행될 수 있다.
+	// 조용히 무방비인 상태를 조용히 두지 않는다.
+	if cfg.Policy.Acct == "" {
+		log.Warn("계정 바인딩 없음 — 어느 acct 로 온 목표든 받아들인다 (--acct 로 고정할 것)")
+	} else {
+		log.Info("계정 바인딩", "acct", cfg.Policy.Acct)
+	}
 	switch {
 	case !cfg.UI:
 	case webui.Built():

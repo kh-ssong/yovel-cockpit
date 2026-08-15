@@ -62,7 +62,8 @@
         "E_BROKER",
         "E_ORPHAN",
         "E_RATE",
-        "E_TERMINAL"
+        "E_TERMINAL",
+        "E_ACCT"
       ]
     },
     "MessageType": {

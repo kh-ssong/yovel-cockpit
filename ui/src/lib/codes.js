@@ -22,6 +22,7 @@ export const REJECT = {
   E_ORPHAN: '목표에 없는 보유 — ★ 자동 청산하지 않는다',
   E_RATE: '이번 틱 주문 상한에 걸림 — 다음 틱에 다시 시도',
   E_TERMINAL: '이미 종결된 목표 — 같은 자리 재진입을 막았다',
+  E_ACCT: '내 계정(acct)으로 온 목표가 아니다 — 서명이 유효해도 거절한다',
 }
 
 export function explain(code) {
