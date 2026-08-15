@@ -1,0 +1,47 @@
+{
+  "v": 1,
+  "typ": "intent.target",
+  "id": "01J9Z8QK3M7X2ABCDEFGHJKMNP",
+  "acct": "acc_7f3a",
+  "ts": "2026-08-15T00:05:00.000Z",
+  "exp": "2026-08-15T00:06:00.000Z",
+  "nonce": "b7d1e2f0",
+  "seq": 10432,
+  "sig": {
+    "alg": "ed25519",
+    "kid": "pw-2026-08",
+    "val": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/ABCDEFGHIJKLMNOPQRSTUV=="
+  },
+  "body": {
+    "as_of_bar": "2026-08-15T09:05:00+09:00",
+    "book_state": "normal",
+    "targets": [
+      {
+        "intent_id": "01J9Z8QK3M7X2ABCDEFGHJKMNQ",
+        "slot": "gapdown_a",
+        "symbol": { "exchange": "KRX", "code": "005930" },
+        "side": "long",
+        "want": "open",
+        "weight": 0.14,
+        "entry": {
+          "mode": "market",
+          "not_after": "2026-08-15T00:06:00.000Z",
+          "max_slip_bp": 80
+        },
+        "exit": {
+          "stop_price": 71200,
+          "tp_price": 78400,
+          "tp_delegate": true,
+          "time_exit_at": "2026-08-15T15:15:00+09:00"
+        }
+      },
+      {
+        "intent_id": "01J9Z8QK3M7X2ABCDEFGHJKMNR",
+        "slot": "rsi_swing",
+        "symbol": { "exchange": "KRX", "code": "069500" },
+        "side": "long",
+        "want": "flat"
+      }
+    ]
+  }
+}

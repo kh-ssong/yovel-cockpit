@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yovel:v1:message",
+  "title": "yovel v1 — 와이어 메시지 (봉투 + typ 별 body 디스패치)",
+  "description": "검증 진입점. 봉투 규칙 + typ 에 맞는 body 스키마 + typ 별 필수 봉투 필드를 한 번에 건다.",
+  "allOf": [
+    { "$ref": "urn:yovel:v1:envelope" },
+
+    {
+      "$comment": "★ 진입을 담을 수 있는 타입은 서명이 필수다. 릴레이가 털려도 BUY 를 지어낼 수 없게 하는 지점.",
+      "if": {
+        "properties": { "typ": { "enum": ["intent.target", "intent.position"] } },
+        "required": ["typ"]
+      },
+      "then": { "required": ["sig", "seq"] }
+    },
+
+    {
+      "$comment": "cmd.derisk 는 서명이 선택이다 (클라 설정 accept_unsigned_derisk). 대신 nonce+exp 로 재생을 막는다.",
+      "if": { "properties": { "typ": { "const": "cmd.derisk" } }, "required": ["typ"] },
+      "then": { "required": ["nonce", "exp"] }
+    },
+
+    {
+      "if": { "properties": { "typ": { "const": "intent.target" } }, "required": ["typ"] },
+      "then": { "properties": { "body": { "$ref": "urn:yovel:v1:intent.target" } } }
+    },
+    {
+      "if": { "properties": { "typ": { "const": "cmd.derisk" } }, "required": ["typ"] },
+      "then": { "properties": { "body": { "$ref": "urn:yovel:v1:cmd.derisk" } } }
+    },
+    {
+      "if": { "properties": { "typ": { "const": "state.snapshot" } }, "required": ["typ"] },
+      "then": { "properties": { "body": { "$ref": "urn:yovel:v1:state.snapshot" } } }
+    },
+    {
+      "if": { "properties": { "typ": { "const": "event.order" } }, "required": ["typ"] },
+      "then": { "properties": { "body": { "$ref": "urn:yovel:v1:event.order" } } }
+    },
+    {
+      "if": { "properties": { "typ": { "const": "heartbeat" } }, "required": ["typ"] },
+      "then": { "properties": { "body": { "$ref": "urn:yovel:v1:heartbeat" } } }
+    },
+    {
+      "if": { "properties": { "typ": { "const": "presence" } }, "required": ["typ"] },
+      "then": { "properties": { "body": { "$ref": "urn:yovel:v1:presence" } } }
+    },
+    {
+      "if": { "properties": { "typ": { "const": "ack" } }, "required": ["typ"] },
+      "then": { "properties": { "body": { "$ref": "urn:yovel:v1:ack" } } }
+    }
+  ]
+}

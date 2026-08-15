@@ -1,0 +1,14 @@
+{
+  "_why": "scope=slot 인데 slot 이 없다. 대상이 모호한 de-risk 는 '전체'로 해석될 위험이 있으므로 거절한다.",
+  "v": 1,
+  "typ": "cmd.derisk",
+  "id": "01J9Z8QK3M7X2ABCDEFGHJKMNS",
+  "acct": "acc_7f3a",
+  "ts": "2026-08-15T02:10:00.000Z",
+  "exp": "2026-08-15T02:15:00.000Z",
+  "nonce": "9a1c77de",
+  "body": {
+    "action": "liquidate",
+    "scope": "slot"
+  }
+}

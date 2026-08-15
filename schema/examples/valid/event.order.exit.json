@@ -1,0 +1,23 @@
+{
+  "v": 1,
+  "typ": "event.order",
+  "id": "01J9Z8QK3M7X2ABCDEFGHJKMNV",
+  "acct": "acc_7f3a",
+  "ts": "2026-08-15T02:31:44.900Z",
+  "body": {
+    "intent_id": "01J9Z8QK3M7X2ABCDEFGHJKMNQ",
+    "phase": "exit_filled",
+    "symbol": { "exchange": "KRX", "code": "005930" },
+    "side": "sell",
+    "qty": 14,
+    "price": 71180,
+    "broker_order_id": "K-88214",
+    "signal_ts": "2026-08-15T02:31:00.000Z",
+    "submitted_at": "2026-08-15T02:31:44.310Z",
+    "filled_at": "2026-08-15T02:31:44.880Z",
+    "slippage_bp": -2.8,
+    "fee_krw": 2490,
+    "exit_reason": "stop",
+    "realized_pct": -0.0128
+  }
+}

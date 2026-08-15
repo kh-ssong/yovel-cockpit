@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yovel:v1:presence",
+  "title": "presence — 온라인 여부 (클라 → 서버, retained · LWT)",
+  "description": "★ state 와 분리한 이유: LWT 는 retained 로 발행되므로 같은 토픽이면 PC 가 꺼지는 순간 마지막 상태 스냅샷을 덮어써 지운다. 부재 표시가 상태 기록을 삭제하면 안 된다.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["online", "reason"],
+  "properties": {
+    "online": { "type": "boolean" },
+    "reason": {
+      "enum": ["connect", "shutdown", "lwt"],
+      "description": "lwt = 클라가 아니라 브로커가 대신 발행한 것 (= 비정상 종료 · PC 꺼짐)."
+    },
+    "since": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp" },
+    "daemon_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" }
+  },
+  "$comment": "LWT 페이로드는 접속 시점에 미리 등록하므로 ts/nonce 가 낡는다. 수신측은 presence 에 한해 E_SKEW 를 적용하지 않는다."
+}

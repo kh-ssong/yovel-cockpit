@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "typ": "presence",
+  "id": "01J9Z8QK3M7X2ABCDEFGHJKMNX",
+  "acct": "acc_7f3a",
+  "ts": "2026-08-15T02:00:00.000Z",
+  "body": {
+    "online": false,
+    "reason": "lwt",
+    "daemon_sha": "a1b2c3d"
+  }
+}

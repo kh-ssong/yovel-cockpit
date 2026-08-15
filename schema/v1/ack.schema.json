@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yovel:v1:ack",
+  "title": "ack — 다운링크 처리 결과 (클라 → 서버)",
+  "description": "★ 모든 다운링크에 대해 반드시 보낸다. 침묵과 실패가 같아 보이면 서버는 '안 갔나 / 갔는데 거절됐나' 를 영원히 구분 못 한다.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["ref_id", "status"],
+  "properties": {
+    "ref_id": { "$ref": "urn:yovel:v1:common#/$defs/Ulid" },
+    "ref_seq": { "type": "integer", "minimum": 0 },
+    "ref_typ": { "$ref": "urn:yovel:v1:common#/$defs/MessageType" },
+    "status": { "enum": ["applied", "partial", "rejected", "expired", "ignored"] },
+    "codes": {
+      "type": "array",
+      "items": { "$ref": "urn:yovel:v1:common#/$defs/RejectCode" }
+    },
+    "per_intent": {
+      "type": "array",
+      "description": "target 단위 결과. 스냅샷 하나가 부분적으로만 적용될 수 있으므로 필요하다.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["intent_id", "status"],
+        "properties": {
+          "intent_id": { "$ref": "urn:yovel:v1:common#/$defs/Ulid" },
+          "status": { "enum": ["applied", "rejected", "expired", "noop"] },
+          "codes": {
+            "type": "array",
+            "items": { "$ref": "urn:yovel:v1:common#/$defs/RejectCode" }
+          }
+        }
+      }
+    },
+    "detail": { "type": "string", "maxLength": 500 }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "enum": ["rejected", "expired", "partial"] } },
+        "required": ["status"]
+      },
+      "then": { "required": ["codes"] }
+    }
+  ]
+}
