@@ -1,0 +1,46 @@
+name: go
+
+on:
+  push:
+    paths: ["**.go", "go.mod", "go.sum", "scripts/**", ".github/workflows/go.yml"]
+  pull_request:
+    paths: ["**.go", "go.mod", "go.sum", "scripts/**", ".github/workflows/go.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - run: go vet ./...
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "$unformatted"; exit 1; fi
+      - run: go test ./... -race
+
+  # ★ 크로스컴파일이 Go 를 고른 유일한 결정타다. 그게 깨지면 배포 전략이 통째로 깨지므로
+  #   CI 가 매번 확인한다 (맥 ARM 빌드머신을 사지 않기 위한 전제).
+  cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe 용
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - run: ./scripts/build.sh cross
+      - name: 버전 스탬프 확인
+        run: |
+          # sha 가 비면 "업데이트했는데 옛 코드" 드리프트 감지가 죽는다.
+          out=$(./bin/cockpitd-linux-amd64 --version)
+          echo "$out"
+          if echo "$out" | grep -q "unknown"; then
+            echo "sha 가 비었다 — 드리프트 감지가 죽는다"
+            exit 1
+          fi

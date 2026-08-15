@@ -93,12 +93,29 @@ pin 한다. 릴레이는 암호문을 나르기만 하므로 **릴레이를 장�
 ## 6. 개발
 
 ```
-cmd/        데몬 진입점 (Go)
-internal/   브로커 드라이버 · 상태 · 릴레이 채널
-ui/         Svelte SPA — 산출물 ui/dist 를 데몬이 서빙하다가 Tauri 가 번들
+cmd/cockpitd/        데몬 진입점
+internal/protocol/   와이어 타입 + 서명 검증 + 수용 규칙   ← 계약의 Go 측 구현
+internal/config/     로컬 설정 · pin 된 pitwall 공개키
+internal/httpapi/    로컬 API (토큰 · Host · Origin 가드)
+internal/version/    버전 · SHA (드리프트 감지)
+docs/protocol.md     ★ 와이어 계약 SSOT
+schema/v1/           ★ 같은 계약의 JSON Schema (npm test 로 예제 검증)
+ui/                  Svelte SPA — 산출물 ui/dist 를 데몬이 서빙하다가 Tauri 가 번들 (미착수)
+```
+
+```bash
+go test ./...            # Go
+cd schema && npm test    # 계약 예제
+scripts/build.sh cross   # macOS(arm64/amd64) + Windows + Linux 를 한 번에
+
+./bin/cockpitd-<plat> --port 7737 --data-dir ./.cockpit
+curl -H "Authorization: Bearer $(cat .cockpit/api-token)" http://127.0.0.1:7737/v1/health
 ```
 
 - 데몬 언어 = **Go**. 이유는 성능이 아니라 크로스컴파일 — 윈도우 PC 한 대에서 macOS ARM/Intel 바이너리까지 낸다.
+- ★ **빌드는 반드시 `scripts/build.sh` 로.** go 의 자동 VCS 스탬프는 **git worktree 에서 동작하지 않아**
+  (`.git` 이 파일이라 감지 실패, `-buildvcs=true` 를 줘도 조용히 비운다) sha 가 `unknown` 이 된다.
+  sha 가 비면 "업데이트했는데 옛 코드가 돌고 있음" 드리프트 감지가 통째로 죽는다.
 - 브로커 드라이버는 증권사마다 **별도 파일**로 짓는다. 겉만 비슷하고 응답 스키마가 전부 달라서,
   섣부른 공통화는 한 증권사의 착각을 전 증권사로 번지게 한다.
 - 릴리스 바이너리가 이 소스에서 나온 것인지 확인할 수 있도록 **재현 가능 빌드**를 목표로 한다
