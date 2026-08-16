@@ -39,8 +39,9 @@ type Config struct {
 	Policy       protocol.Policy
 	TargetMaxAge time.Duration
 	MaxOrders    int
-	// SlotCapital — 슬롯별 자본. 사용자가 정한다 (서버는 비중만 보낸다).
-	SlotCapital func(slot string) float64
+	// EngineBudget — 이 콕핏에 붙은 엔진의 예산. 사용자가 정한다 (엔진은 비중만 보낸다).
+	// ★ 슬롯당이 아니라 엔진 전체다 (protocol.md §7.1).
+	EngineBudget float64
 	// Price — 참조가. 브로커가 붙기 전에는 없다.
 	Price func(protocol.Symbol) (float64, bool)
 	// Market — 종목별 주문 제약.
@@ -265,7 +266,7 @@ func (e *Engine) planLocked(now time.Time) reconcile.Plan {
 		CircuitBreaker:  e.circuitBreaker,
 		BlockEntryUntil: e.blockEntryUntil,
 		MaxOrders:       e.cfg.MaxOrders,
-		SlotCapital:     e.cfg.SlotCapital,
+		Budget:          e.cfg.EngineBudget,
 		Price:           e.cfg.Price,
 		Market:          e.cfg.Market,
 		Terminal:        e.isTerminalLocked,

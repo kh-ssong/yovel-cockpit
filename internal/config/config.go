@@ -46,9 +46,15 @@ type Config struct {
 	// (`../yovel-flat6/data/kiwoom_token.json`). 각자 발급하면 1계정 1토큰이라
 	// 서로의 토큰을 죽인다 — 증상은 "가끔 8005" 가 아니라 상대 세션 통째 유실이다.
 	KiwoomTokenFile string
-	// SlotCapitalDefault — 슬롯별 자본이 따로 없을 때 쓰는 값 (원).
-	// ★ 서버는 비중만 보낸다. 얼마를 걸지는 사용자가 정한다.
-	SlotCapitalDefault float64
+	// EngineBudget — 이 콕핏에 붙은 엔진에 배정한 예산 (원). 사이징의 분모다.
+	//
+	// ★ 슬롯당 자본이 아니다 (protocol.md §7.1). 옛 --slot-capital 은 모든 슬롯에 같은 값을
+	// 줬는데, 그러면 엔진이 슬롯 3개를 쓰는 순간 노출이 3배가 된다 — 사용자가 정한 적 없는 크기다.
+	// 슬롯 사이의 분배는 엔진이 target.weight 로 한다(전략 지식이라 사용자가 알 수 없다).
+	//
+	// ★ 두 번째 엔진이 붙으면 이 값은 kid 별 맵이 된다 (architecture.md §4 소스 1급화).
+	// 지금 스칼라인 것은 소스가 하나뿐이기 때문이고, 그때까지는 이 한 값이 곧 그 엔진의 예산이다.
+	EngineBudget float64
 
 	// UI — 로컬 대시보드를 서빙할지. 기본 켜짐.
 	// ★ 끌 수 있게 둔 이유는 헤드리스 상주다 (서버·CI). 화면이 없어야 하는 자리에서
@@ -100,7 +106,8 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 	fs.BoolVar(&c.KiwoomMock, "kiwoom-mock", c.KiwoomMock, "키움 모의투자 도메인 사용")
 	fs.StringVar(&c.KiwoomTokenFile, "kiwoom-token-file", c.KiwoomTokenFile,
 		"토큰 파일 경로 (★ flat6 와 같은 앱키면 flat6 의 파일을 가리킬 것)")
-	fs.Float64Var(&c.SlotCapitalDefault, "slot-capital", c.SlotCapitalDefault, "슬롯당 자본 (원)")
+	fs.Float64Var(&c.EngineBudget, "engine-budget", c.EngineBudget,
+		"이 엔진에 배정한 예산 (원) — ★ 슬롯당이 아니라 엔진 전체. 슬롯 분배는 weight 가 한다")
 	fs.DurationVar(&c.ReconcileInterval, "reconcile-interval", c.ReconcileInterval, "집행 루프 주기")
 	fs.BoolVar(&c.UI, "ui", c.UI, "로컬 대시보드 서빙 (--ui=false 로 끔)")
 	fs.StringVar(&c.Policy.Acct, "acct", c.Policy.Acct,
