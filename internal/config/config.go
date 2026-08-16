@@ -56,6 +56,20 @@ type Config struct {
 	// 지금 스칼라인 것은 소스가 하나뿐이기 때문이고, 그때까지는 이 한 값이 곧 그 엔진의 예산이다.
 	EngineBudget float64
 
+	// PaperFeeBpBuy / PaperFeeBpSell / PaperSlipBp — paper 브로커의 비용 모델 (편도 bp).
+	//
+	// ★★ 왜 플래그로 뺐나 — 옛 코드는 `main.go` 에 **대칭 15bp** 로 박혀 있었다. 그래서
+	// 매수 체결에 국내엔 존재하지 않는 0.15% 가 붙었고(거래세는 매도에만 붙는다), 바꾸려면
+	// **재빌드**가 필요했다. paper 원장의 손익은 사람이 읽는 숫자다 — 읽히는 숫자의 전제가
+	// 코드에 잠겨 있으면 안 된다.
+	//
+	// ★ 기본값도 **추정치**다. 확정은 실제 체결 통지의 `fee`/`tax` 로만 된다.
+	// 그래서 기동 로그에 **항상 찍는다** — 어떤 비용 전제로 채점됐는지 모른 채로 원장을
+	// 읽는 상황을 만들지 않기 위해서다 (잘못 채워진 측정값은 빈 값보다 나쁘다).
+	PaperFeeBpBuy  float64
+	PaperFeeBpSell float64
+	PaperSlipBp    float64
+
 	// UI — 로컬 대시보드를 서빙할지. 기본 켜짐.
 	// ★ 끌 수 있게 둔 이유는 헤드리스 상주다 (서버·CI). 화면이 없어야 하는 자리에서
 	// 화면이 떠 있으면, 그 포트로 무엇이 열려 있는지 사용자가 매번 다시 확인해야 한다.
@@ -77,8 +91,22 @@ func Default() Config {
 		HeartbeatInterval: 20 * time.Second,
 		MaxOrdersPerTick:  5,
 		Broker:            "paper",
-		UI:                true,
-		Policy:            protocol.DefaultPolicy(),
+		// ★ 국내 주식 기준 **추정치**. 매수 = 위탁수수료만 / 매도 = 위탁수수료 + 증권거래세.
+		//   옛 대칭 15bp 는 매수에 없는 비용(거래세)을 매수에도 물렸다.
+		//
+		// ★★ **모르면 낙관이 아니라 보수 쪽으로 둔다.** 매수를 0 으로 두고 싶어지는데
+		//   (수수료 무료 이벤트 계좌가 흔하다), 그건 **그 계좌의 요율**이지 기본값이 아니다.
+		//   기본값이 실제보다 싸면 손익분기 근처 전략이 통과해 버린다 — 되돌리기 제일 비싼 오류다.
+		//   ⟹ 이벤트 없는 일반 계좌를 가정하고, 요율이 실제로 0 인 사용자는 내려서 쓴다.
+		//
+		// ★ 이 숫자들은 **확정이 아니다.** 진짜 요율은 체결 통지의 fee/tax 에서 관측되고
+		//   (`store.ObservedCost`), 기동 로그가 설정과 관측을 나란히 찍어 어긋남을 드러낸다.
+		PaperFeeBpBuy:  1.5,
+		PaperFeeBpSell: 21.5,
+		// ★ 슬리피지는 0 으로 두지 않는다 — 비용 0 시뮬은 손익분기 근처 전략의 판정을 뒤집는다.
+		PaperSlipBp: 10,
+		UI:          true,
+		Policy:      protocol.DefaultPolicy(),
 	}
 }
 
@@ -109,6 +137,14 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 	fs.Float64Var(&c.EngineBudget, "engine-budget", c.EngineBudget,
 		"이 엔진에 배정한 예산 (원) — ★ 슬롯당이 아니라 엔진 전체. 슬롯 분배는 weight 가 한다")
 	fs.DurationVar(&c.ReconcileInterval, "reconcile-interval", c.ReconcileInterval, "집행 루프 주기")
+	// ★ paper 비용은 사용자마다 다르다 (이벤트·등급 우대) — 상수로 박으면 남의 요율이 된다.
+	//   라이브 체결이 생기면 기동 로그에 관측치가 찍히므로, 그 값으로 맞추는 게 정답이다.
+	fs.Float64Var(&c.PaperFeeBpBuy, "paper-fee-bp-buy", c.PaperFeeBpBuy,
+		"paper 매수 편도 비용 (bp) — ★ 추정치. 라이브 체결로 관측되면 그 값으로 맞출 것")
+	fs.Float64Var(&c.PaperFeeBpSell, "paper-fee-bp-sell", c.PaperFeeBpSell,
+		"paper 매도 편도 비용 (bp) — 국내는 여기에 증권거래세가 포함된다")
+	fs.Float64Var(&c.PaperSlipBp, "paper-slip-bp", c.PaperSlipBp,
+		"paper 시장가 슬리피지 (bp) — ★ 0 으로 두면 손익분기 근처 판정이 뒤집힌다")
 	fs.BoolVar(&c.UI, "ui", c.UI, "로컬 대시보드 서빙 (--ui=false 로 끔)")
 	fs.StringVar(&c.Policy.Acct, "acct", c.Policy.Acct,
 		"이 콕핏의 계정 핸들 — 다른 acct 의 목표는 E_ACCT 로 거절 (★ 비우면 검사 안 함)")
