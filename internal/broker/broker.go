@@ -117,3 +117,14 @@ func SlippageBp(side string, ref, filled float64) float64 {
 	}
 	return d
 }
+
+// LimitFill — **브로커가 스스로 들고 있던 지정가**가 체결된 건.
+//
+// ★ 왜 별도 타입인가 — 우리가 낸 주문의 체결(`Fill`)과 달리, 이건 *우리가 부르지 않았는데*
+// 일어난 일이다. 그래서 어느 포지션의 것인지 알려면 주문 ID 로 되짚어야 하고, 종목도 같이
+// 실어야 한다 (호출자가 무엇을 팔았는지 모른 채 결과만 받기 때문).
+type LimitFill struct {
+	OrderID string
+	Symbol  protocol.Symbol
+	Fill
+}

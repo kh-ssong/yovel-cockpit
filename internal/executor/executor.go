@@ -56,10 +56,23 @@ func (r *Result) fail(format string, args ...any) {
 	r.Errors = append(r.Errors, fmt.Sprintf(format, args...))
 }
 
+// limitSettler — **자기가 지정가를 들고 있는** 브로커. paper 만 구현한다.
+//
+// ★ 실브로커는 구현하지 않는다: 지정가는 거래소가 체결시키고, 그 결과는 `syncPositions` 가
+// «브로커에서 사라진 포지션» 으로 잡는다. paper 가 이걸 구현하면 **두 경로가 같아진다** —
+// 집행 코드는 paper 인지 live 인지 몰라도 되고, TP 배선이 라이브에서 처음 검증되는 일도 없다.
+type limitSettler interface {
+	SettleLimits(ctx context.Context) ([]broker.LimitFill, error)
+}
+
 // Tick 은 한 번 돌린다. ★ 한 종목이 실패해도 나머지는 계속 간다 —
 // 09:00 에 한 종목의 거부가 전체 집행을 막으면 그날 매매가 통째로 증발한다.
 func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 	var res Result
+
+	// ★ 순서 주의 — 정산을 syncPositions **앞에** 둔다. 뒤에 두면 이번 틱의 포지션 목록이
+	//   이미 팔린 종목을 담고 있어 한 틱 늦게 종결되고, paper 만 라이브보다 굼떠 보인다.
+	x.settleLimits(ctx, now, &res)
 
 	x.syncPositions(ctx, now, &res)
 
@@ -327,4 +340,68 @@ func realizedPct(entry, exit float64) float64 {
 		return 0
 	}
 	return exit/entry - 1
+}
+
+// settleLimits — paper 브로커가 스스로 체결시킨 지정가를 **체결가와 함께** 원장에 남긴다.
+//
+// ★★ 왜 `syncPositions` 의 «사라진 포지션» 경로에 맡기지 않나 — 그 경로는 실브로커를 위한
+// 사후 감지라 체결가·시각을 모른 채 `"체결가·시각 미상"` 으로 적는다. 그러면 실현손익이
+// 계산되지 않는다. paper 는 **우리가 직접 체결시켰으므로 가격을 안다** — 아는 걸 버리고
+// 「미상」으로 적을 이유가 없다.
+//
+// ★ 그래서 라이브 쪽에 숙제가 하나 남는다: 실제 TP 체결도 지금은 체결가가 안 남아
+// **라이브 실현손익이 정확히 안 나온다.** (키움 주문체결 통지에 체결가가 있으므로 채울 수
+// 있다 — flat6 가 이미 `00`/`F5` 로 받고 있다.) paper 가 라이브보다 정확한 건 뒤집힌 상태다.
+func (x *Executor) settleLimits(ctx context.Context, now time.Time, res *Result) {
+	s, ok := x.d.Broker.(limitSettler)
+	if !ok {
+		return
+	}
+	fills, err := s.SettleLimits(ctx)
+	if err != nil {
+		res.fail("지정가 정산: %v", err)
+		return
+	}
+	if len(fills) == 0 {
+		return
+	}
+
+	open, err := x.d.Store.OpenIntents(ctx)
+	if err != nil {
+		res.fail("지정가 정산용 원장 조회: %v", err)
+		return
+	}
+	byTP := map[string]protocol.Position{}
+	for _, p := range open {
+		if p.TpOrderID != "" {
+			byTP[p.TpOrderID] = p
+		}
+	}
+
+	for _, f := range fills {
+		p, ok := byTP[f.OrderID]
+		if !ok {
+			// 우리 장부에 없는 지정가가 체결됐다. ★ 추측해서 종결시키지 않고 보고만 한다.
+			res.Mismatch = append(res.Mismatch, fmt.Sprintf(
+				"%s: 장부에 없는 지정가가 체결됐다 (order=%s)", f.Symbol.Code, f.OrderID))
+			continue
+		}
+		x.recordOrder(ctx, store.Order{
+			ID: ids.NewAt(now), IntentID: p.IntentID, Phase: "exit_filled",
+			Symbol: f.Symbol, Side: "sell", Qty: f.Qty, Price: f.Price,
+			BrokerOrderID: f.BrokerOrderID, SubmittedAt: &f.SubmittedAt, FilledAt: &f.FilledAt,
+			FeeKRW: f.FeeKRW, SlippageBp: f.SlippageBp,
+			ExitReason: "tp", RealizedPct: realizedPct(p.AvgEntryPrice, f.Price),
+			Source: store.SourceBot,
+		}, res)
+
+		if err := x.d.Store.CloseIntent(ctx, p.IntentID, "tp", now); err != nil {
+			res.fail("종결 %s: %v", p.IntentID, err)
+			continue
+		}
+		x.d.Engine.MarkClosed(p.IntentID)
+		res.Exited++
+		x.d.Log.Info("TP 지정가 체결", "intent_id", p.IntentID, "code", f.Symbol.Code,
+			"price", f.Price, "realized_pct", realizedPct(p.AvgEntryPrice, f.Price))
+	}
 }

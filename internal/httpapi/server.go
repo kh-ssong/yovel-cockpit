@@ -56,6 +56,13 @@ type Options struct {
 	// 논블로킹이어야 한다 — 여기서 막히면 다운링크 응답이 늦어진다.
 	Wake func()
 
+	// Account — 계좌 상태 공급자. nil 이면 `/v1/state` 에 `account` 가 안 실린다.
+	//
+	// ★ 엔진이 아니라 여기서 받는 이유 = 잔고는 **브로커의 사실**이지 엔진의 판단이 아니다.
+	// 엔진에 넣으면 판단 계층이 계좌를 알게 되고, 그 순간 "잔고를 보고 목표를 바꾸는"
+	// 경로가 생긴다 — 배분은 콕핏이 하되 **엔진은 계좌를 모른다** 는 경계가 무너진다.
+	Account func(ctx context.Context) *protocol.Account
+
 	// UI — 로컬 대시보드(정적 번들). nil 이면 안 서빙한다.
 	//
 	// ★ 이 경로만 Bearer 검사에서 빠진다 (needsToken). 브라우저의 최초 내비게이션에는
@@ -233,7 +240,11 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "엔진이 아직 없다"})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.eng.Snapshot())
+	snap := s.eng.Snapshot()
+	if s.opt.Account != nil {
+		snap.Account = s.opt.Account(r.Context())
+	}
+	writeJSON(w, http.StatusOK, snap)
 }
 
 func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {

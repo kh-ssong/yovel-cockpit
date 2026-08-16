@@ -255,3 +255,67 @@ func (b *Broker) OpenTPOrders() int {
 	defer b.mu.Unlock()
 	return len(b.tpOrders)
 }
+
+// SettleLimits — 들고 있던 TP 지정가 중 **가격이 닿은 것**을 체결시킨다.
+//
+// ★★ 왜 필요한가 — 라이브에서 TP 는 브로커(거래소)가 들고 있다가 체결시키고, 데몬은 그걸
+// «포지션이 사라졌다» 로 사후 감지한다. paper 에는 그 브로커가 없으므로, 이걸 안 하면
+// **TP 로 닫히는 경로가 아예 없다** — 승자가 전부 시간청산까지 끌려가서 손익 분포가
+// 라이브와 구조적으로 달라진다. (reflex 의 페이퍼는 엔진이 TP 를 직접 봐서 이 문제가 없었다.
+// 콕핏은 «끊겨도 체결되는 층» 을 얻으려고 브로커에 위임했고, 그 대가가 여기였다.)
+//
+// ★ 낙관적으로 흉내내지 않는다:
+//   · 체결가는 **지정가 그대로**다. 갭으로 훌쩍 넘어가면 실제론 더 좋게 체결되지만
+//     그걸 반영하지 않는다 = 우리에게 불리한 쪽.
+//   · 폴링 시점에만 본다. 폴링 사이에 스쳤다 내려온 건 **놓친다** = 역시 불리한 쪽.
+//   ⟹ 두 편향 모두 «paper 가 라이브보다 좋아 보이는» 방향이 아니다.
+func (b *Broker) SettleLimits(context.Context) ([]broker.LimitFill, error) {
+	if b.cfg.Price == nil {
+		return nil, nil // 시세원이 없으면 체결 판정 자체가 불가 — 조용히 아무것도 안 한다
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	var out []broker.LimitFill
+	for id, o := range b.tpOrders {
+		px, ok := b.cfg.Price(o.symbol)
+		if !ok || px < o.price {
+			continue
+		}
+		h := b.holdings[key(o.symbol)]
+		if h == nil || h.Qty < o.qty {
+			// 장부와 실물이 어긋났다. ★ 추측해서 맞추지 않고 주문만 거둔다.
+			delete(b.tpOrders, id)
+			continue
+		}
+
+		notional := o.price * o.qty
+		fee := notional * b.cfg.FeeBpSell / 10000
+		b.cash += notional - fee
+
+		h.Qty -= o.qty
+		h.Sellable = h.Qty
+		if h.Qty <= 0 {
+			delete(b.holdings, key(o.symbol))
+		}
+		delete(b.tpOrders, id)
+
+		now := b.cfg.Now()
+		out = append(out, broker.LimitFill{
+			OrderID: id,
+			Symbol:  o.symbol,
+			Fill: broker.Fill{
+				BrokerOrderID: id,
+				Qty:           o.qty,
+				Price:         o.price,
+				SubmittedAt:   now,
+				FilledAt:      now,
+				FeeKRW:        fee,
+				// ★ 지정가는 원하는 가격에 체결된다 = 슬리피지 0. 시장가와 달리 이건 사실이다.
+				SlippageBp: 0,
+			},
+		})
+	}
+	return out, nil
+}

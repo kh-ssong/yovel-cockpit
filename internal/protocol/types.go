@@ -198,6 +198,21 @@ type StateSnapshot struct {
 	Positions  []Position `json:"positions"`
 	// ★ omitempty 를 붙이지 않는다: "유령 없음(빈 배열)" 과 "안 봤음(필드 부재)" 은 다른 말이다.
 	Orphans []Symbol `json:"orphans"`
+	// Account — 계좌가 불어나는지 줄어드는지. ★ 조회 실패 시 nil 이고, **0 으로 채우지 않는다**
+	// (잔고 0 과 «못 봤음» 을 합치면 사용자가 파산한 줄 안다).
+	Account *Account `json:"account,omitempty"`
+}
+
+// Account — 예수금·평가액. paper 면 가상, live 면 진짜다 (`Mode` 로 구분).
+type Account struct {
+	Deposit   float64 `json:"deposit"`             // 현금
+	Orderable float64 `json:"orderable"`           // 주문가능 (live 에서는 예수금과 다르다)
+	Holdings  float64 `json:"holdings"`            // 보유 평가금액
+	Equity    float64 `json:"equity"`              // 현금 + 평가금액
+	Currency  string  `json:"currency"`
+	// StaleHoldings — 평가에 쓸 현재가를 못 구한 종목이 있었다. ★ 그 경우 평가액은
+	// 평단으로 대신 채워지므로 **Equity 가 실제와 다르다**. 조용히 두면 안 되는 사실이다.
+	StaleHoldings int `json:"stale_holdings,omitempty"`
 }
 
 type Position struct {

@@ -63,3 +63,81 @@ func TestSlippageIsChargedBothWays(t *testing.T) {
 		t.Fatalf("매도 체결가 %v — 기준가보다 싸야 한다", sell.Price)
 	}
 }
+
+// ★★ paper 가 TP 지정가를 실제로 체결시키는가 — 이게 없으면 승자가 전부 시간청산까지
+// 끌려가서 손익 분포가 라이브와 구조적으로 달라진다 (reflex 페이퍼엔 없던 문제).
+func TestSettleLimitsFillsWhenPriceReaches(t *testing.T) {
+	ctx := context.Background()
+	px := 70000.0
+	b := New(Config{
+		Cash: 10_000_000, Lot: 1, FeeBpBuy: 0, FeeBpSell: 20, SlipBp: 0,
+		Price: func(protocol.Symbol) (float64, bool) { return px, true },
+	})
+	s := protocol.Symbol{Exchange: "KRX", Code: "005930"}
+
+	if _, err := b.Buy(ctx, broker.OrderRequest{Symbol: s, Qty: 10, RefPrice: 70000}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := b.PlaceTP(ctx, s, 10, 72100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 아직 안 닿았다 → 체결 없음
+	fills, err := b.SettleLimits(ctx)
+	if err != nil || len(fills) != 0 {
+		t.Fatalf("가격이 안 닿았는데 체결됐다: %v %v", fills, err)
+	}
+
+	px = 72500 // 지정가를 넘어섰다
+	fills, err = b.SettleLimits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fills) != 1 {
+		t.Fatalf("체결 %d건, 기대 1건", len(fills))
+	}
+	f := fills[0]
+	// ★ 체결가는 **지정가 그대로**다. 넘어선 만큼 더 받지 않는다 = 우리에게 불리한 쪽.
+	if f.Price != 72100 {
+		t.Fatalf("체결가 %v, 기대 72100 (지정가)", f.Price)
+	}
+	if f.OrderID != id || f.Symbol.Code != "005930" {
+		t.Fatalf("체결 귀속이 틀렸다: %+v", f)
+	}
+	if f.SlippageBp != 0 {
+		t.Fatalf("지정가 슬리피지 %v, 기대 0", f.SlippageBp)
+	}
+	want := 72100 * 10 * 20.0 / 10000
+	if math.Abs(f.FeeKRW-want) > 1e-6 {
+		t.Fatalf("수수료 %v, 기대 %v", f.FeeKRW, want)
+	}
+
+	// 포지션이 사라지고 현금이 늘었다 = "계좌가 불어나는지" 가 보인다
+	pos, _ := b.Positions(ctx)
+	if len(pos) != 0 {
+		t.Fatalf("체결 후에도 포지션이 남았다: %+v", pos)
+	}
+	cash, _ := b.Cash(ctx)
+	if cash.Deposit <= 10_000_000 {
+		t.Fatalf("현금 %v — 익절했는데 안 늘었다", cash.Deposit)
+	}
+	if b.OpenTPOrders() != 0 {
+		t.Fatal("체결된 지정가가 주문서에 남아 있다")
+	}
+
+	// 두 번 체결되지 않는다 (멱등)
+	again, _ := b.SettleLimits(ctx)
+	if len(again) != 0 {
+		t.Fatalf("같은 지정가가 두 번 체결됐다: %+v", again)
+	}
+}
+
+// ★ 시세원이 없으면 체결 판정 자체가 불가 — 조용히 아무것도 안 한다 (낙관 금지).
+func TestSettleLimitsNoPriceSourceDoesNothing(t *testing.T) {
+	b := New(Config{Cash: 1_000_000, Lot: 1})
+	fills, err := b.SettleLimits(context.Background())
+	if err != nil || len(fills) != 0 {
+		t.Fatalf("시세원 없이 체결됐다: %v %v", fills, err)
+	}
+}

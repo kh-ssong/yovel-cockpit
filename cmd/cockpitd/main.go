@@ -134,7 +134,8 @@ func run() error {
 			default:
 			}
 		},
-		UI: ui,
+		UI:      ui,
+		Account: accountProvider(br, qs.Price, log),
 	}, eng)
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("로컬 API 기동 실패: %w", err)
@@ -244,7 +245,11 @@ func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
 			log.Warn("키움 시세원 연결 실패 — 가격 없이 돈다 (진입 계획은 E_SYMBOL 로 거절된다)", "err", err)
 		}
 	} else {
-		log.Warn("시세원이 없다 — 진입 계획은 항상 E_SYMBOL 로 거절된다")
+		// ★ 옛 문구("진입 계획은 항상 E_SYMBOL 로 거절된다")는 **사실이 아니었다** —
+		//   엔진이 `entry.ref_price` 를 실은 목표는 시세 없이도 진입시킨다(실측 2026-08-16).
+		//   실제로 죽는 건 진입이 아니라 **청산**이다. 틀린 경고는 없는 경고보다 나쁘다.
+		log.Warn("시세원이 없다 — ref_price 로 진입은 되지만 **TP·스톱이 평가되지 않는다** " +
+			"(시간청산만 남는다). 키움 자격증명을 주면 paper 도 실시세로 돈다")
 	}
 	return paper.New(pcfg), nil
 }
@@ -319,5 +324,42 @@ func logCostModel(ctx context.Context, cfg config.Config, st *store.Store, log *
 	if obs.HasSell() && math.Abs(obs.SellBp-cfg.PaperFeeBpSell) > tol {
 		log.Warn("★ 매도 요율이 설정과 다르다 — paper 손익이 실제와 갈린다",
 			"설정", cfg.PaperFeeBpSell, "관측", obs.SellBp)
+	}
+}
+
+
+// accountProvider — 「계좌가 불어나는지 줄어드는지」를 `/v1/state` 에 싣는다.
+//
+// ★ 실패를 0 으로 채우지 않는다. 잔고 조회가 실패했는데 0 을 내면 사용자는 파산한 줄 알고,
+// 화면은 "정상적으로 0원" 과 구분되지 않는다 — 빈 값이 낫다 (nil = account 필드 자체가 없음).
+//
+// ★ 평가금액에 현재가를 못 구하면 **평단으로 대신 채우고 그 사실을 센다**(`stale_holdings`).
+// 그러면 Equity 가 실제와 다른데, 그걸 조용히 두면 손익 그래프가 조용히 틀린다.
+func accountProvider(br broker.Broker, price func(protocol.Symbol) (float64, bool),
+	log *slog.Logger) func(context.Context) *protocol.Account {
+	return func(ctx context.Context) *protocol.Account {
+		cash, err := br.Cash(ctx)
+		if err != nil {
+			log.Warn("잔고 조회 실패 — account 를 싣지 않는다", "err", err)
+			return nil
+		}
+		holdings, err := br.Positions(ctx)
+		if err != nil {
+			log.Warn("보유 조회 실패 — account 를 싣지 않는다", "err", err)
+			return nil
+		}
+		acc := &protocol.Account{
+			Deposit: cash.Deposit, Orderable: cash.Orderable, Currency: cash.Currency,
+		}
+		for _, h := range holdings {
+			px, ok := price(h.Symbol)
+			if !ok || px <= 0 {
+				px = h.AvgPrice // 모르는 것 ≠ 없는 것 — 평단으로라도 값을 매긴다
+				acc.StaleHoldings++
+			}
+			acc.Holdings += px * h.Qty
+		}
+		acc.Equity = acc.Deposit + acc.Holdings
+		return acc
 	}
 }
