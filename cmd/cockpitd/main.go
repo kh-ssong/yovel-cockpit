@@ -96,9 +96,9 @@ func run() error {
 		Policy:       cfg.Policy,
 		TargetMaxAge: cfg.TargetMaxAge,
 		MaxOrders:    cfg.MaxOrdersPerTick,
-		// ★ 자본은 사용자가 정한다. 서버는 비중만 보낸다.
-		SlotCapital: func(string) float64 { return cfg.SlotCapitalDefault },
-		Price:       qs.Price,
+		// ★ 자본은 사용자가 정한다. 엔진은 비중만 보낸다 (슬롯 사이 분배 = weight).
+		EngineBudget: cfg.EngineBudget,
+		Price:        qs.Price,
 		Market: func(s protocol.Symbol) sizing.Market {
 			return sizing.Market{LotSize: br.LotSize(s), MinOrderValue: br.MinOrderValue(s)}
 		},
@@ -144,7 +144,7 @@ func run() error {
 		"version", v.Version, "sha", v.SHA, "dirty", v.Dirty,
 		"mode", cfg.Mode, "addr", srv.Addr(), "data_dir", cfg.DataDir,
 		"restored_positions", len(snap.Positions), "paused", snap.Guards.Paused,
-		"broker", br.Name(), "slot_capital", cfg.SlotCapitalDefault,
+		"broker", br.Name(), "engine_budget", cfg.EngineBudget,
 		"trusted_keys", len(cfg.Policy.TrustedKeys),
 		"accept_unsigned_derisk", cfg.Policy.AcceptUnsignedDerisk,
 	)
@@ -221,7 +221,7 @@ func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
 	}
 
 	pcfg := paper.Config{
-		Cash: cfg.SlotCapitalDefault, Lot: 1,
+		Cash: cfg.EngineBudget, Lot: 1,
 		// 편도 비용. ★ 0 으로 두지 않는다 — 비용 0 시뮬은 손익분기 근처 전략의 판정을 뒤집는다.
 		FeeBp: 15, SlipBp: 10,
 	}

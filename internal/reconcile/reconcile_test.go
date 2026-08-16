@@ -12,11 +12,13 @@ var now = time.Date(2026, 8, 15, 0, 5, 0, 0, time.UTC)
 
 func sym(code string) protocol.Symbol { return protocol.Symbol{Exchange: "KRX", Code: code} }
 
-func openTarget(id, code string) protocol.Target {
+func openTarget(id, code string) protocol.Target { return openTargetW(id, code, 0.5) }
+
+func openTargetW(id, code string, weight float64) protocol.Target {
 	na := now.Add(time.Minute)
 	return protocol.Target{
 		IntentID: id, Slot: "s1", Symbol: sym(code), Side: "long", Want: protocol.WantOpen,
-		Weight: 0.5,
+		Weight: weight,
 		Entry:  &protocol.Entry{Mode: "market", NotAfter: na},
 		Exit:   &protocol.Exit{StopPrice: 900, TpPrice: 1200, TpDelegate: true},
 	}
@@ -39,7 +41,7 @@ func opts() Options {
 		Now:          now,
 		EntryAllowed: true,
 		MaxOrders:    5,
-		SlotCapital:  func(string) float64 { return 1_000_000 },
+		Budget:       1_000_000,
 		Price:        func(protocol.Symbol) (float64, bool) { return 1000, true },
 		Market:       func(protocol.Symbol) sizing.Market { return sizing.StockMarket() },
 	}
@@ -197,8 +199,10 @@ func TestOrderCapNeverDropsExits(t *testing.T) {
 		targets = append(targets, flatTarget(id, "0006"+id))
 		positions = append(positions, held(id, "0006"+id, 900))
 	}
+	// ★ 진입은 가볍게 잡는다 — 여기서 시험하는 것은 주문 상한이지 예산이 아니다.
+	// 무겁게 두면 예산 쪽에서 먼저 걸려(E_CAPITAL) 상한 로직이 실행되지도 않는다.
 	for _, id := range []string{"e1", "e2"} { // 진입 2건
-		targets = append(targets, openTarget(id, "0059"+id))
+		targets = append(targets, openTargetW(id, "0059"+id, 0.1))
 	}
 
 	p := Build(book(targets...), positions, o)
@@ -235,7 +239,7 @@ func TestNoPriceMeansNoEntry(t *testing.T) {
 
 func TestZeroSharesRejectsWithCapital(t *testing.T) {
 	o := opts()
-	o.SlotCapital = func(string) float64 { return 100 } // 1주도 못 산다
+	o.Budget = 100 // 1주도 못 산다
 	p := Build(book(openTarget("a", "005930")), nil, o)
 	if len(p.Enters) != 0 {
 		t.Fatal("0주인데 주문을 냈다")
@@ -310,5 +314,100 @@ func TestWithoutRefPriceFallsBackToQuote(t *testing.T) {
 	p := Build(book(openTarget("a", "005930")), nil, opts())
 	if len(p.Enters) != 1 || p.Enters[0].Price != 1000 {
 		t.Fatalf("%+v", p.Enters)
+	}
+}
+
+// ★ 예산의 분모는 엔진 하나다 — 슬롯이 몇 개든 합이 예산을 넘지 않는다 (protocol.md §7.1).
+//
+// 옛 동작(슬롯당 자본)에서는 이 케이스가 예산의 2배를 샀다. 스키마도 서명도 전부 통과하므로
+// 어디에서도 안 걸렸다 — 그래서 이 gate 가 필요하다.
+func TestBudgetIsEngineWideNotPerSlot(t *testing.T) {
+	a := openTargetW("a", "005930", 0.5)
+	a.Slot = "slot_a"
+	b := openTargetW("b", "000660", 0.5)
+	b.Slot = "slot_b"
+
+	p := Build(book(a, b), nil, opts())
+	if len(p.Enters) != 2 {
+		t.Fatalf("enters=%d %+v", len(p.Enters), p.Acks)
+	}
+	var sum float64
+	for _, e := range p.Enters {
+		sum += e.Notional
+	}
+	if sum > 1_000_000 {
+		t.Fatalf("예산 100만인데 %v 원어치 샀다 (슬롯당으로 계산했다)", sum)
+	}
+}
+
+// ★ 보유분이 예산을 먹는다. 안 그러면 스냅샷이 재발행될 때마다 예산 전액이 새로 생긴다
+// — 재발행은 이 프로토콜의 기본 동작이라 매 봉 반복된다.
+func TestHeldPositionsConsumeBudget(t *testing.T) {
+	pos := held("old", "000660", 900)
+	pos.Qty = 600 // 60만원어치 이미 들고 있다
+
+	// 목표에 그 포지션이 그대로 있고(유지), 새 진입이 50만원어치 온다 → 110만 > 예산 100만
+	keep := openTarget("old", "000660")
+	p := Build(book(keep, openTarget("new", "005930")), []protocol.Position{pos}, opts())
+
+	if len(p.Enters) != 0 {
+		t.Fatalf("예산을 넘겨 샀다: %+v", p.Enters)
+	}
+	if a, _ := ackFor(p, "new"); len(a.Codes) == 0 || a.Codes[0] != protocol.CodeCapital {
+		t.Fatalf("ack=%+v", a)
+	}
+}
+
+// 평단을 모르는 보유(원장이 아직 못 채운 것)도 예산을 먹는다.
+// ★ "모르는 것"을 "없는 것"으로 읽으면 그만큼 더 사게 된다.
+func TestUnknownAvgPriceStillConsumesBudget(t *testing.T) {
+	pos := held("old", "000660", 900)
+	pos.Qty, pos.AvgEntryPrice = 600, 0 // 평단 미상 → 현재가(1000)로 값을 매겨야 한다
+
+	p := Build(book(openTarget("old", "000660"), openTarget("new", "005930")),
+		[]protocol.Position{pos}, opts())
+
+	if len(p.Enters) != 0 {
+		t.Fatalf("평단 미상을 0원으로 세고 샀다: %+v", p.Enters)
+	}
+}
+
+// ★ 예산으로 자를 때는 targets[] 배열 순서(= 엔진이 정한 우선순위)를 따른다 (protocol.md §6).
+// 도착 순서나 종목 코드로 자르면 엔진이 무엇을 우선하는지 표현할 방법이 사라진다.
+func TestBudgetCutFollowsTargetOrder(t *testing.T) {
+	first := openTargetW("first", "005930", 0.4)
+	second := openTargetW("second", "000660", 0.4)
+	third := openTargetW("third", "035720", 0.4) // 합 120% → 하나는 못 산다
+
+	p := Build(book(first, second, third), nil, opts())
+	if len(p.Enters) != 2 {
+		t.Fatalf("enters=%d", len(p.Enters))
+	}
+	if p.Enters[0].Target.IntentID != "first" || p.Enters[1].Target.IntentID != "second" {
+		t.Fatalf("우선순위를 안 지켰다: %v %v", p.Enters[0].Target.IntentID, p.Enters[1].Target.IntentID)
+	}
+	if a, _ := ackFor(p, "third"); len(a.Codes) == 0 || a.Codes[0] != protocol.CodeCapital {
+		t.Fatalf("잘린 것을 조용히 버렸다: %+v", a)
+	}
+
+	// 순서를 뒤집으면 살아남는 쪽도 뒤집힌다 — 종목·금액이 아니라 순서가 기준이라는 증거.
+	q := Build(book(third, second, first), nil, opts())
+	if q.Enters[0].Target.IntentID != "third" {
+		t.Fatalf("배열 순서가 아니라 다른 기준으로 골랐다: %+v", q.Enters[0].Target.IntentID)
+	}
+}
+
+// 예산을 넘는 진입은 **거절**이지 축소가 아니다. 줄여 사면 엔진이 지시한 적 없는 비중이 된다.
+func TestOverBudgetIsRejectedNotShrunk(t *testing.T) {
+	pos := held("old", "000660", 900)
+	pos.Qty = 900 // 90만 사용 중 → 남은 예산 10만
+
+	p := Build(book(openTarget("old", "000660"), openTargetW("new", "005930", 0.5)),
+		[]protocol.Position{pos}, opts())
+
+	for _, e := range p.Enters {
+		if e.Target.IntentID == "new" {
+			t.Fatalf("남은 예산에 맞춰 크기를 깎아 샀다: qty=%v (지시받은 비중이 아니다)", e.Qty)
+		}
 	}
 }

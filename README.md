@@ -164,7 +164,7 @@ scripts/build.sh                    # UI 를 먼저 짓고 그걸 embed 한다
 ```bash
 # ★ 자격증명은 환경변수로만. 플래그로 주면 같은 PC 의 다른 프로세스에서 ps 로 그대로 보인다.
 export COCKPIT_KIWOOM_APPKEY=... COCKPIT_KIWOOM_SECRET=...
-./bin/cockpitd-<plat> --broker kiwoom --mode paper --slot-capital 1000000
+./bin/cockpitd-<plat> --broker kiwoom --mode paper --engine-budget 1000000
 ```
 
 ★ `--mode live` + `--broker paper` 조합은 **기동을 거부한다.** 실주문이 안 나가는 상태를

@@ -50,8 +50,12 @@ func (r Result) Distortion() float64 {
 
 // Shares 는 비중을 수량으로 바꾼다.
 //
+// ★ engineBudget = 그 엔진에 배정한 예산 **전체**다. 슬롯당 자본이 아니다 (protocol.md §7.1) —
+// 슬롯 사이의 분배는 엔진이 weight 로 이미 했다. 분모를 슬롯당으로 두면 슬롯 수만큼 노출이
+// 곱해지는데, 스키마도 서명도 전부 통과하므로 어디에서도 안 걸린다.
+//
 // ★ 결과가 0주면 진입하지 않는다 (E_CAPITAL). 조용히 1주 사는 것은 금지 — 그건 비중이 아니다.
-func Shares(weight, slotCapital, price float64, m Market) Result {
+func Shares(weight, engineBudget, price float64, m Market) Result {
 	res := Result{IntendedWeight: weight}
 
 	if weight <= 0 || weight > 1 {
@@ -62,12 +66,12 @@ func Shares(weight, slotCapital, price float64, m Market) Result {
 		res.Codes = []protocol.RejectCode{protocol.CodeSymbol}
 		return res
 	}
-	if slotCapital <= 0 {
+	if engineBudget <= 0 {
 		res.Codes = []protocol.RejectCode{protocol.CodeCapital}
 		return res
 	}
 
-	budget := weight * slotCapital
+	budget := weight * engineBudget
 	lot := m.LotSize
 	if lot <= 0 {
 		lot = 1
@@ -86,7 +90,7 @@ func Shares(weight, slotCapital, price float64, m Market) Result {
 
 	res.Qty = qty
 	res.Notional = qty * price
-	res.RealizedWeight = res.Notional / slotCapital
+	res.RealizedWeight = res.Notional / engineBudget
 
 	if m.MinOrderValue > 0 && res.Notional < m.MinOrderValue {
 		// 최소주문금액 미달을 "그럼 조금 더 사자"로 처리하지 않는다 — 그건 서버가 지시하지 않은 비중이다.
