@@ -22,8 +22,18 @@ import (
 type Config struct {
 	// Cash — 시작 예수금.
 	Cash float64
-	// FeeBp — 편도 수수료 (bp). 왕복이 아니라 편도다.
-	FeeBp float64
+	// FeeBpBuy / FeeBpSell — 편도 비용 (bp). 왕복이 아니라 편도다.
+	//
+	// ★★ **매수와 매도를 나눠 둔 이유는 대칭이 아니기 때문이다.** 국내 주식은 매수엔
+	// 위탁수수료만 붙고, 매도엔 거기에 **증권거래세**가 얹힌다. 하나의 상수로 뭉개면
+	// 크기만 틀리는 게 아니라 **모양**이 틀린다 — 회전율이 높을수록, 보유가 짧을수록
+	// 왜곡 방향이 달라져서 "얼마 틀렸는지" 조차 일정하지 않다.
+	// (옛 코드는 대칭 15bp 였고, 그래서 매수 체결에 국내엔 존재하지 않는 0.15% 가 붙었다.)
+	//
+	// ★ 값은 **여전히 추정치다.** 확정은 실제 체결 통지의 `fee`/`tax` 필드로만 된다
+	// (flat6 `exec_reports` 가 원문을 보존한다). 그때까지 이 숫자를 성과 근거로 쓰지 말 것.
+	FeeBpBuy  float64
+	FeeBpSell float64
 	// SlipBp — 시장가 체결이 기준가에서 밀리는 정도 (bp). 매수는 비싸게, 매도는 싸게.
 	SlipBp float64
 	// Lot — 최소 주문 단위.
@@ -131,7 +141,7 @@ func (b *Broker) Buy(_ context.Context, req broker.OrderRequest) (broker.Fill, e
 	}
 	price := b.fillPrice(req, "buy", ref)
 	notional := price * req.Qty
-	fee := notional * b.cfg.FeeBp / 10000
+	fee := notional * b.cfg.FeeBpBuy / 10000
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -182,7 +192,7 @@ func (b *Broker) Sell(_ context.Context, req broker.OrderRequest) (broker.Fill, 
 	}
 
 	notional := price * req.Qty
-	fee := notional * b.cfg.FeeBp / 10000
+	fee := notional * b.cfg.FeeBpSell / 10000
 	b.cash += notional - fee
 
 	h.Qty -= req.Qty

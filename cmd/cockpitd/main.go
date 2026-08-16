@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -166,6 +167,7 @@ func run() error {
 	} else {
 		log.Info("계정 바인딩", "acct", cfg.Policy.Acct)
 	}
+	logCostModel(context.Background(), cfg, st, log)
 	switch {
 	case !cfg.UI:
 	case webui.Built():
@@ -220,10 +222,14 @@ func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
 		})
 	}
 
+	// 편도 비용. ★ 0 으로 두지 않는다 — 비용 0 시뮬은 손익분기 근처 전략의 판정을 뒤집는다.
+	// ★★ 값은 이제 설정이다(옛 하드코딩 대칭 15bp 는 매수에 없는 비용을 물렸다).
+	//    그리고 기본값도 추정치라, 진짜 요율은 `--paper-fee-bp-*` 로 **자기 원장에서 재서** 넣는다.
 	pcfg := paper.Config{
 		Cash: cfg.EngineBudget, Lot: 1,
-		// 편도 비용. ★ 0 으로 두지 않는다 — 비용 0 시뮬은 손익분기 근처 전략의 판정을 뒤집는다.
-		FeeBp: 15, SlipBp: 10,
+		FeeBpBuy:  cfg.PaperFeeBpBuy,
+		FeeBpSell: cfg.PaperFeeBpSell,
+		SlipBp:    cfg.PaperSlipBp,
 	}
 	if appKey != "" && secret != "" {
 		kw, err := kiwoom.New(kiwoom.Config{
@@ -271,5 +277,47 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 		log.Info("집행", "entered", res.Entered, "exited", res.Exited,
 			"stops", res.StopsArmed, "tp", res.TpPlaced, "closed_by_broker", res.ClosedByBroker,
 			"mismatch", res.Mismatch, "errors", res.Errors)
+	}
+}
+
+// logCostModel — paper 채점에 쓰는 **비용 전제**를 기동 때마다 찍고, 라이브 원장에서
+// 관측된 실제 요율과 나란히 보여준다.
+//
+// ★★ 왜 로그에 박나 — paper 원장의 손익은 사람이 읽는 숫자다. 그 숫자가 어떤 비용 가정
+// 위에서 나왔는지 화면 어디에도 없으면, **틀린 가정이 조용히 결론이 된다**
+// (잘못 채워진 측정값은 빈 값보다 나쁘다 — 채워져 있으니 아무도 다시 안 본다).
+//
+// ★★ 수수료율은 **사용자마다 다르다** (비대면 개설 이벤트·등급 우대·증권사 정책).
+// 그래서 "좋은 기본값" 이라는 건 없고, 정답은 자기 원장에서 재는 것이다. 라이브 체결이
+// 쌓이는 순간 관측치가 나오고, 설정과 어긋나면 **그 어긋남이 바로 보인다.**
+func logCostModel(ctx context.Context, cfg config.Config, st *store.Store, log *slog.Logger) {
+	log.Info("paper 비용 모델 (편도 bp, ★ 추정치)",
+		"fee_buy_bp", cfg.PaperFeeBpBuy,
+		"fee_sell_bp", cfg.PaperFeeBpSell,
+		"slip_bp", cfg.PaperSlipBp)
+
+	obs, err := st.ObservedCost(ctx)
+	if err != nil {
+		log.Warn("라이브 요율 관측 실패", "err", err)
+		return
+	}
+	if !obs.HasBuy() && !obs.HasSell() {
+		// ★ "관측 없음" 을 "0bp" 로 뭉개지 않는다 — 수수료가 공짜인 것처럼 보인다.
+		log.Info("라이브 체결이 없어 실제 요율은 아직 관측되지 않았다 " +
+			"(체결이 한 건이라도 생기면 여기 찍힌다 → 그 값으로 --paper-fee-bp-* 를 맞출 것)")
+		return
+	}
+	log.Info("라이브 원장에서 관측된 실제 요율 (편도 bp)",
+		"fee_buy_bp", obs.BuyBp, "buy_fills", obs.BuyFills,
+		"fee_sell_bp", obs.SellBp, "sell_fills", obs.SellFills)
+
+	const tol = 2.0 // bp
+	if obs.HasBuy() && math.Abs(obs.BuyBp-cfg.PaperFeeBpBuy) > tol {
+		log.Warn("★ 매수 요율이 설정과 다르다 — paper 손익이 실제와 갈린다",
+			"설정", cfg.PaperFeeBpBuy, "관측", obs.BuyBp)
+	}
+	if obs.HasSell() && math.Abs(obs.SellBp-cfg.PaperFeeBpSell) > tol {
+		log.Warn("★ 매도 요율이 설정과 다르다 — paper 손익이 실제와 갈린다",
+			"설정", cfg.PaperFeeBpSell, "관측", obs.SellBp)
 	}
 }

@@ -53,7 +53,7 @@ func newHarness(t *testing.T) *harness {
 	pol.TrustedKeys = map[string]ed25519.PublicKey{kid: priv.Public().(ed25519.PublicKey)}
 
 	br := paper.New(paper.Config{
-		Cash: 1_000_000, FeeBp: 15, SlipBp: 10, Lot: 1,
+		Cash: 1_000_000, FeeBpBuy: 1.5, FeeBpSell: 21.5, SlipBp: 10, Lot: 1,
 		Now:   func() time.Time { return base },
 		Price: func(protocol.Symbol) (float64, bool) { return 1000, true },
 	})
