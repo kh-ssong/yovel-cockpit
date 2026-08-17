@@ -171,7 +171,13 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 						Position: pos, From: pos.StopArmed, To: t.Exit.StopPrice,
 					})
 				}
-				if t.Exit.TpDelegate && t.Exit.TpPrice > 0 {
+				// ★ stop 과 같은 가드가 필요하다 (2026-08-17). 없을 땐 **매 틱 취소·재발행**
+				//   이었다 — 실측으로 몇 분 만에 paper-tp-38 → 334. 라이브에선 주문 유량이고,
+				//   더 나쁘게는 취소와 재발행 **사이에 TP 가 브로커에 없는 창**이 생긴다.
+				//   하필 그 층의 존재 이유가 "데몬도 서버도 죽어도 이건 체결된다" 이다.
+				//   ★ 아직 안 걸린 상태(TpOrderID 비어 있음)면 값이 같아도 걸어야 한다.
+				if t.Exit.TpDelegate && t.Exit.TpPrice > 0 &&
+					(pos.TpOrderID == "" || t.Exit.TpPrice != pos.TpArmed) {
 					plan.TpUpdates = append(plan.TpUpdates, TpUpdate{Position: pos, To: t.Exit.TpPrice})
 				}
 			}

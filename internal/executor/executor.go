@@ -201,6 +201,8 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 		SlippageBp: fill.SlippageBp, FeeKRW: fill.FeeKRW, ExitReason: reason,
 		RealizedPct: realizedPct(pos.AvgEntryPrice, fill.Price),
 		Source:      store.SourceBot,
+		// ★ 드라이버가 붙인 단서를 삼키지 않는다 — 값이 있으면 그 건의 숫자가 근사라는 뜻이다.
+		Detail: fill.Detail,
 	}, res)
 
 	if err := x.d.Store.CloseIntent(ctx, pos.IntentID, reason, now); err != nil {
@@ -274,6 +276,9 @@ func (x *Executor) armStop(ctx context.Context, pos protocol.Position, to float6
 	if err := x.d.Store.UpsertIntent(ctx, store.Intent{
 		IntentID: pos.IntentID, Slot: pos.Slot, Symbol: pos.Symbol, Side: "long",
 		Qty: pos.Qty, AvgEntryPrice: pos.AvgEntryPrice, StopArmed: to, TpOrderID: pos.TpOrderID,
+		// ★ TpPrice 를 같이 실어야 한다 — `UpsertIntent` 는 전체 갱신이라 빼면
+		//   **stop 을 조일 때마다 tp_price 가 0 으로 지워진다** (부분 갱신처럼 생겼지만 아니다).
+		TpPrice: pos.TpArmed,
 	}); err != nil {
 		return err
 	}
@@ -292,6 +297,7 @@ func (x *Executor) placeTP(ctx context.Context, pos protocol.Position, price flo
 		return err
 	}
 	pos.TpOrderID = id
+	pos.TpArmed = price // ★ 걸어 둔 값을 기억한다 — 다음 틱이 "같은 값인가" 를 비교한다
 	if err := x.d.Store.UpsertIntent(ctx, store.Intent{
 		IntentID: pos.IntentID, Slot: pos.Slot, Symbol: pos.Symbol, Side: "long",
 		Qty: pos.Qty, AvgEntryPrice: pos.AvgEntryPrice, StopArmed: pos.StopArmed,
