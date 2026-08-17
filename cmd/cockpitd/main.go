@@ -327,7 +327,6 @@ func logCostModel(ctx context.Context, cfg config.Config, st *store.Store, log *
 	}
 }
 
-
 // accountProvider — 「계좌가 불어나는지 줄어드는지」를 `/v1/state` 에 싣는다.
 //
 // ★ 실패를 0 으로 채우지 않는다. 잔고 조회가 실패했는데 0 을 내면 사용자는 파산한 줄 알고,

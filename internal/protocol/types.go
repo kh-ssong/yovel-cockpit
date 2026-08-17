@@ -205,10 +205,10 @@ type StateSnapshot struct {
 
 // Account — 예수금·평가액. paper 면 가상, live 면 진짜다 (`Mode` 로 구분).
 type Account struct {
-	Deposit   float64 `json:"deposit"`             // 현금
-	Orderable float64 `json:"orderable"`           // 주문가능 (live 에서는 예수금과 다르다)
-	Holdings  float64 `json:"holdings"`            // 보유 평가금액
-	Equity    float64 `json:"equity"`              // 현금 + 평가금액
+	Deposit   float64 `json:"deposit"`   // 현금
+	Orderable float64 `json:"orderable"` // 주문가능 (live 에서는 예수금과 다르다)
+	Holdings  float64 `json:"holdings"`  // 보유 평가금액
+	Equity    float64 `json:"equity"`    // 현금 + 평가금액
 	Currency  string  `json:"currency"`
 	// StaleHoldings — 평가에 쓸 현재가를 못 구한 종목이 있었다. ★ 그 경우 평가액은
 	// 평단으로 대신 채워지므로 **Equity 가 실제와 다르다**. 조용히 두면 안 되는 사실이다.

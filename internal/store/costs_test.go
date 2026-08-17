@@ -74,8 +74,8 @@ func TestObservedCostWeightsByNotional(t *testing.T) {
 	// ★ 건수 평균이 아니라 **금액 가중**이어야 한다. 작은 체결의 반올림이 요율을 흔들면
 	//   관측치가 설정과 계속 어긋나 경고만 울리는 늑대소년이 된다.
 	s := open(t)
-	fill(t, s, "b1", "buy", 1, 1000, 1, protocol.ModeLive)      // 10bp, 1,000원
-	fill(t, s, "b2", "buy", 100, 1000, 100, protocol.ModeLive)  // 1bp, 100,000원
+	fill(t, s, "b1", "buy", 1, 1000, 1, protocol.ModeLive)     // 10bp, 1,000원
+	fill(t, s, "b2", "buy", 100, 1000, 100, protocol.ModeLive) // 1bp, 100,000원
 	obs, err := s.ObservedCost(ctx)
 	if err != nil {
 		t.Fatal(err)

@@ -235,9 +235,9 @@ func newPersistentEngine(t *testing.T, dbPath string) (*Engine, ed25519.PrivateK
 	e := New(Config{
 		Mode: protocol.ModePaper, Policy: p, TargetMaxAge: 180 * time.Second, MaxOrders: 5,
 		EngineBudget: 1_000_000,
-		Price:       func(protocol.Symbol) (float64, bool) { return 1000, true },
-		Market:      func(protocol.Symbol) sizing.Market { return sizing.StockMarket() },
-		Store:       st,
+		Price:        func(protocol.Symbol) (float64, bool) { return 1000, true },
+		Market:       func(protocol.Symbol) sizing.Market { return sizing.StockMarket() },
+		Store:        st,
 	}, base)
 	if err := e.Restore(context.Background()); err != nil {
 		t.Fatal(err)
