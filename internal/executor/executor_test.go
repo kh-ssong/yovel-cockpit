@@ -61,9 +61,9 @@ func newHarness(t *testing.T) *harness {
 	eng := engine.New(engine.Config{
 		Mode: protocol.ModePaper, Policy: pol, TargetMaxAge: 180 * time.Second, MaxOrders: 5,
 		EngineBudget: 1_000_000,
-		Price:       func(protocol.Symbol) (float64, bool) { return 1000, true },
-		Market:      func(protocol.Symbol) sizing.Market { return sizing.StockMarket() },
-		Store:       st,
+		Price:        func(protocol.Symbol) (float64, bool) { return 1000, true },
+		Market:       func(protocol.Symbol) sizing.Market { return sizing.StockMarket() },
+		Store:        st,
 	}, base)
 	if err := eng.Restore(ctx); err != nil {
 		t.Fatal(err)
