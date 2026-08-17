@@ -411,3 +411,41 @@ func TestOverBudgetIsRejectedNotShrunk(t *testing.T) {
 		}
 	}
 }
+
+// ★ TP 위임은 **이미 건 값과 같으면 다시 걸지 않는다** (2026-08-17).
+//
+// stop 에는 처음부터 `!= pos.StopArmed` 가드가 있었는데 TP 에는 없었다 — `Position` 에 TP
+// 가격 필드가 아예 없어서 비교 자체가 불가능했기 때문이다. 그래서 매 reconcile 틱마다
+// 취소 → 재발행이 돌았다(실측: 몇 분 만에 paper-tp-38 → 334). 라이브에선 주문 유량이고,
+// 더 나쁘게는 취소와 재발행 **사이에 TP 가 브로커에 없는 창**이 생긴다 — 하필 그 층의
+// 존재 이유가 "데몬도 서버도 죽어도 이건 체결된다" 이다.
+func heldWithTP(id, code string, stop, tp float64, orderID string) protocol.Position {
+	p := held(id, code, stop)
+	p.TpArmed, p.TpOrderID = tp, orderID
+	return p
+}
+
+func TestNoTpUpdateWhenAlreadyArmedAtSamePrice(t *testing.T) {
+	pos := heldWithTP("a", "005930", 900, 1200, "tp-1")
+	p := Build(book(openTarget("a", "005930")), []protocol.Position{pos}, opts())
+	if len(p.TpUpdates) != 0 {
+		t.Fatalf("같은 값인데 TP 를 다시 걸었다 (매 틱 취소·재발행): %+v", p.TpUpdates)
+	}
+}
+
+func TestTpUpdateWhenPriceChanged(t *testing.T) {
+	pos := heldWithTP("a", "005930", 900, 1150, "tp-1")
+	p := Build(book(openTarget("a", "005930")), []protocol.Position{pos}, opts())
+	if len(p.TpUpdates) != 1 || p.TpUpdates[0].To != 1200 {
+		t.Fatalf("바뀐 TP 가 반영되지 않았다: %+v", p.TpUpdates)
+	}
+}
+
+// ★ 값이 같아도 **아직 안 걸린 상태**면 걸어야 한다 — 안 그러면 TP 가 영영 안 걸린다.
+func TestTpIsPlacedWhenNoOrderYetEvenIfPriceMatches(t *testing.T) {
+	pos := heldWithTP("a", "005930", 900, 1200, "")
+	p := Build(book(openTarget("a", "005930")), []protocol.Position{pos}, opts())
+	if len(p.TpUpdates) != 1 {
+		t.Fatalf("주문이 없는데 안 걸었다: %+v", p.TpUpdates)
+	}
+}

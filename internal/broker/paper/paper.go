@@ -173,16 +173,33 @@ func (b *Broker) Buy(_ context.Context, req broker.OrderRequest) (broker.Fill, e
 	}, nil
 }
 
+// Sell — ★ 기준가를 못 구해도 **청산은 나간다** (2026-08-17).
+//
+// 옛 코드는 매수와 똑같이 `refPrice` 실패에 즉시 에러를 냈다. 그런데 시세원 없이 뜬 paper
+// (= `docs/flat6.md §5` 가 처방한 검증 배치 그대로다)에서 그건 **청산 불가**를 뜻한다:
+// 판단자가 `want=flat` 을 아무리 내도 `매도 …: 모르는 종목` 으로 매 틱 실패한다. 진입에는
+// `ref_price` 우회로가 있어 통과하는데 청산에는 없어서, **비대칭이 거꾸로 걸린 자리**였다 —
+// 진입 실패는 기회 상실(유한)이고 청산 실패는 손실 노출(무한)인데 막힌 쪽이 청산이었다.
+//
+// ⟹ 마지막 수단으로 **보유 평단**을 기준가로 쓴다. 근사지만 «닫히지 않는 것» 보다 낫고,
+// paper 의 가격은 어차피 시뮬레이션이다. ★ 대신 조용히 넘어가지 않는다 — `Detail` 에 남겨
+// 원장에서 «시세 없이 닫은 건» 을 구분할 수 있게 한다 (그 건의 실현손익은 근사다).
 func (b *Broker) Sell(_ context.Context, req broker.OrderRequest) (broker.Fill, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	h := b.holdings[key(req.Symbol)]
 	ref, err := b.refPrice(req)
+	detail := ""
 	if err != nil {
-		return broker.Fill{}, err
+		if h == nil || h.AvgPrice <= 0 {
+			return broker.Fill{}, err // 평단조차 없으면 정말로 모르는 종목이다
+		}
+		ref = h.AvgPrice
+		detail = "시세원 없음 — 보유 평단을 기준가로 사용 (실현손익 근사)"
 	}
 	price := b.fillPrice(req, "sell", ref)
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	h := b.holdings[key(req.Symbol)]
 	if h == nil || h.Sellable < req.Qty {
 		have := 0.0
 		if h != nil {
@@ -211,6 +228,7 @@ func (b *Broker) Sell(_ context.Context, req broker.OrderRequest) (broker.Fill, 
 		FilledAt:      now,
 		FeeKRW:        fee,
 		SlippageBp:    broker.SlippageBp("sell", ref, price),
+		Detail:        detail,
 	}, nil
 }
 

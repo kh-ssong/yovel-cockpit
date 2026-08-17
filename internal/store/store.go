@@ -132,7 +132,7 @@ WHERE intent_id=?`, ts(at), reason, nowStr(), intentID)
 // OpenIntents 는 아직 종결되지 않은 목표를 포지션 형태로 준다 (재시작 복구용).
 func (s *Store) OpenIntents(ctx context.Context) ([]protocol.Position, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT intent_id, slot, exchange, code, qty, avg_entry_price, stop_armed, tp_order_id, entry_at
+SELECT intent_id, slot, exchange, code, qty, avg_entry_price, stop_armed, tp_price, tp_order_id, entry_at
 FROM intents WHERE closed_at IS NULL ORDER BY intent_id`)
 	if err != nil {
 		return nil, err
@@ -144,8 +144,10 @@ FROM intents WHERE closed_at IS NULL ORDER BY intent_id`)
 		var p protocol.Position
 		var tpOrder sql.NullString
 		var entryAt sql.NullString
+		// ★ tp_price 는 이미 저장하고 있었는데 **읽지 않고 있었다** — 그래서 재시작하면
+		//   "이미 건 TP" 를 몰라 매번 새로 걸었다.
 		if err := rows.Scan(&p.IntentID, &p.Slot, &p.Symbol.Exchange, &p.Symbol.Code,
-			&p.Qty, &p.AvgEntryPrice, &p.StopArmed, &tpOrder, &entryAt); err != nil {
+			&p.Qty, &p.AvgEntryPrice, &p.StopArmed, &p.TpArmed, &tpOrder, &entryAt); err != nil {
 			return nil, err
 		}
 		p.TpOrderID = tpOrder.String

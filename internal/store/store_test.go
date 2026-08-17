@@ -294,3 +294,54 @@ func TestOutbox(t *testing.T) {
 		t.Fatal("미전송분까지 지웠다")
 	}
 }
+
+// ★★ 걸어 둔 TP 가격이 재시작을 넘어 살아남아야 한다 (2026-08-17).
+//
+// `tp_price` 는 예전부터 **쓰고는 있었는데 읽지 않았다.** 그래서 복구된 포지션은 "이미 건
+// TP" 를 모르고, reconcile 이 매번 새로 걸었다 (취소 → 재발행). 저장과 조회는 짝이라
+// 한쪽만 있으면 그 필드는 없는 것과 같다.
+func TestTpPriceSurvivesRoundTrip(t *testing.T) {
+	s := open(t)
+	if err := s.UpsertIntent(ctx, Intent{
+		IntentID: "i1", Slot: "s1", Symbol: sym("005930"), Side: "long",
+		Qty: 10, AvgEntryPrice: 1000, StopArmed: 900, TpPrice: 1200, TpOrderID: "tp-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	open, err := s.OpenIntents(ctx)
+	if err != nil || len(open) != 1 {
+		t.Fatalf("%v %+v", err, open)
+	}
+	if open[0].TpArmed != 1200 {
+		t.Fatalf("★ 걸어 둔 TP 가격을 못 읽었다 — 재시작하면 TP 를 다시 건다: %+v", open[0])
+	}
+}
+
+// ★ `UpsertIntent` 는 **전체 갱신**이다 — 부분 갱신처럼 생겼지만 아니다.
+// stop 만 고치려고 TpPrice 를 빼고 부르면 tp_price 가 0 으로 지워진다.
+func TestStopUpdateMustNotWipeTpPrice(t *testing.T) {
+	s := open(t)
+	base := Intent{
+		IntentID: "i1", Slot: "s1", Symbol: sym("005930"), Side: "long",
+		Qty: 10, AvgEntryPrice: 1000, StopArmed: 900, TpPrice: 1200, TpOrderID: "tp-1",
+	}
+	if err := s.UpsertIntent(ctx, base); err != nil {
+		t.Fatal(err)
+	}
+	// 집행자가 stop 을 조인다 — TpPrice 를 같이 실어야 한다
+	tightened := base
+	tightened.StopArmed = 950
+	if err := s.UpsertIntent(ctx, tightened); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.OpenIntents(ctx)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("%v %+v", err, got)
+	}
+	if got[0].StopArmed != 950 {
+		t.Fatalf("stop 이 안 조여졌다: %+v", got[0])
+	}
+	if got[0].TpArmed != 1200 {
+		t.Fatalf("★ stop 을 조였더니 tp_price 가 지워졌다: %+v", got[0])
+	}
+}

@@ -223,6 +223,12 @@ type Position struct {
 	AvgEntryPrice float64    `json:"avg_entry_price"`
 	EntryAt       *time.Time `json:"entry_at,omitempty"`
 	StopArmed     float64    `json:"stop_armed,omitempty"`
+	// TpArmed — **브로커에 실제로 걸어 둔** TP 지정가. ★ StopArmed 의 짝이다. 이게 없어서
+	// "이미 건 값과 같은가" 를 비교할 수 없었고, 그래서 TP 는 **매 틱 취소·재발행**됐다
+	// (2026-08-17 실측: 몇 분 만에 paper-tp-38 → 334). 라이브에선 주문 유량 문제이자, 더
+	// 나쁘게는 취소와 재발행 **사이에 TP 가 브로커에 없는 창**이 생긴다 — 하필 그 층의
+	// 존재 이유가 "데몬도 서버도 죽어도 이건 체결된다" 이다.
+	TpArmed       float64    `json:"tp_armed,omitempty"`
 	TpOrderID     string     `json:"tp_order_id,omitempty"`
 	UnrealizedPct float64    `json:"unrealized_pct,omitempty"`
 }
