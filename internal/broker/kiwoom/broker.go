@@ -138,12 +138,12 @@ func (b *Broker) etp(s protocol.Symbol) bool {
 // ── 잔고 ────────────────────────────────────────────────────────────────────
 
 type balanceResp struct {
-	Entr     string            `json:"entr"`      // 예수금 (L1)
-	OrdAlowa string            `json:"ord_alowa"` // 주문가능현금 (L2)
+	Entr     string `json:"entr"`      // 예수금 (L1)
+	OrdAlowa string `json:"ord_alowa"` // 주문가능현금 (L2)
 	// 100ord_alow_amt — 증거금률 100% 주문가능금액 = 현금 한도 (L1).
 	// ★ 해외 원화주문 배정이 있으면 이 값이 **이미 깎여서** 온다 — 그래서 예산 점검은 이걸로 한다.
-	Seed100 string `json:"100ord_alow_amt"`
-	Rows     []json.RawMessage `json:"stk_cntr_remn"`
+	Seed100 string            `json:"100ord_alow_amt"`
+	Rows    []json.RawMessage `json:"stk_cntr_remn"`
 }
 
 func (b *Broker) balance(ctx context.Context) (balanceResp, error) {

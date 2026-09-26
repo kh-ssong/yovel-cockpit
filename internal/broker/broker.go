@@ -38,8 +38,8 @@ type Cash struct {
 	// ★ 예산을 이것과 비교한다. Orderable 은 보유 증거금이 영구히 깎아 먹어 시드를 과소평가하고
 	// (reflex 실측 −49%), Deposit 은 해외 원화배정처럼 **빠져나간 돈**을 못 보여준다.
 	// 0 = 드라이버가 모른다.
-	Seed float64
-	Currency  string
+	Seed     float64
+	Currency string
 }
 
 type Quote struct {
