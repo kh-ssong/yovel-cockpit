@@ -237,9 +237,11 @@ type Position struct {
 	// (2026-08-17 실측: 몇 분 만에 paper-tp-38 → 334). 라이브에선 주문 유량 문제이자, 더
 	// 나쁘게는 취소와 재발행 **사이에 TP 가 브로커에 없는 창**이 생긴다 — 하필 그 층의
 	// 존재 이유가 "데몬도 서버도 죽어도 이건 체결된다" 이다.
-	TpArmed       float64 `json:"tp_armed,omitempty"`
-	TpOrderID     string  `json:"tp_order_id,omitempty"`
-	UnrealizedPct float64 `json:"unrealized_pct,omitempty"`
+	TpArmed   float64 `json:"tp_armed,omitempty"`
+	TpOrderID string  `json:"tp_order_id,omitempty"`
+	// TimeExitAt — 이 시각이 되면 콕핏이 **스스로** 판다 (데드맨). 시세가 없어도 동작한다.
+	TimeExitAt    *time.Time `json:"time_exit_at,omitempty"`
+	UnrealizedPct float64    `json:"unrealized_pct,omitempty"`
 }
 
 type EventOrder struct {

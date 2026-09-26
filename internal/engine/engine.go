@@ -274,6 +274,17 @@ func (e *Engine) SetPositions(ps []protocol.Position) {
 	}
 }
 
+// Positions 는 지금 들고 있다고 아는 포지션들 (복사본).
+func (e *Engine) Positions() []protocol.Position {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]protocol.Position, 0, len(e.positions))
+	for _, p := range e.positions {
+		out = append(out, p)
+	}
+	return out
+}
+
 // UpsertPosition 은 포지션 하나를 갱신한다 (브로커 조회 결과 또는 방금 체결된 진입).
 func (e *Engine) UpsertPosition(p protocol.Position) {
 	e.mu.Lock()

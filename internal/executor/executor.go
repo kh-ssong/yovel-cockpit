@@ -28,6 +28,11 @@ type Deps struct {
 	Mode      protocol.Mode
 	DaemonSHA string
 	Log       *slog.Logger
+
+	// Quote — 로컬 stop 평가용 시세 (가격, 시각). nil 이면 stop 은 평가하지 않고 시간청산만 돈다.
+	Quote func(ctx context.Context, s protocol.Symbol) (float64, time.Time, bool)
+	// MaxPriceAge — 이보다 늙은 시세로는 stop 을 평가하지 않는다 (Blind). 0 이면 검사 안 함.
+	MaxPriceAge time.Duration
 }
 
 type Executor struct{ d Deps }
@@ -49,6 +54,9 @@ type Result struct {
 	PartialExits int `json:"partial_exits,omitempty"`
 	// ClosedByBroker — 우리가 안 팔았는데 브로커에서 사라진 포지션 (TP 체결 또는 수동 매도).
 	ClosedByBroker int `json:"closed_by_broker"`
+	// Blind — stop 이 걸려 있는데 시세가 없거나 늙어 평가하지 못한 포지션.
+	// ★ "청산 조건이 아니다" 와 "판단할 근거가 없다" 는 다른 말이다 — 후자를 조용히 두지 않는다.
+	Blind []string `json:"blind,omitempty"`
 	// Mismatch — 장부와 실물이 어긋난 지점. ★ 추측해서 맞추지 않는다, 보고만 한다.
 	Mismatch []string `json:"mismatch,omitempty"`
 	Errors   []string `json:"errors,omitempty"`
@@ -78,10 +86,17 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 
 	x.syncPositions(ctx, now, &res)
 
+	// ⓪ 로컬 청산 층 — 신호원이 죽어도 도는 데드맨 (protocol.md §8 의 2층).
+	//   ★ 계획보다 먼저 본다. 여기서 판 포지션은 이번 틱의 계획에서 다시 팔지 않는다.
+	sold := x.enforceLocalExits(ctx, now, &res)
+
 	plan := x.d.Engine.Plan(now)
 
 	// ① 청산 먼저. 진입 실패는 기회 상실(유한)이지만 청산 실패는 손실 노출(무한)이다.
 	for _, e := range plan.Exits {
+		if sold[e.Position.IntentID] {
+			continue
+		}
 		x.doExit(ctx, now, e.Position, e.Reason, &res)
 	}
 
@@ -301,7 +316,7 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 	x.d.Engine.UpsertPosition(protocol.Position{
 		IntentID: t.IntentID, Slot: t.Slot, Symbol: t.Symbol,
 		Qty: fill.Qty, AvgEntryPrice: fill.Price, EntryAt: &fill.FilledAt,
-		StopArmed: in.StopArmed,
+		StopArmed: in.StopArmed, TimeExitAt: in.TimeExitAt,
 	})
 	res.Entered++
 }

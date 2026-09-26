@@ -216,6 +216,10 @@ func run() error {
 
 	exec := executor.New(executor.Deps{
 		Broker: br, Store: st, Engine: eng, Mode: cfg.Mode, DaemonSHA: v.SHA, Log: log,
+		// 로컬 stop 은 사이징과 **같은 시세원**을 본다 (quotes 패키지 주석 — 두 곳이 각자 조회하면
+		// 같은 틱에서도 다른 값을 본다). 1분보다 늙은 시세로는 stop 을 판정하지 않는다.
+		Quote:       qs.Get,
+		MaxPriceAge: time.Minute,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -316,6 +320,7 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	var lastBlind time.Time
 
 	for {
 		select {
@@ -326,6 +331,13 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 		}
 
 		res := exec.Tick(ctx, time.Now().UTC())
+
+		// ★ stop 을 못 지키는 상태(Blind)는 조용히 두지 않되, 5초마다 찍지도 않는다 — 1분에 한 번.
+		if len(res.Blind) > 0 && time.Since(lastBlind) > time.Minute {
+			log.Warn("시세가 없어 로컬 stop 을 판정하지 못했다 — 신호원이 죽으면 이 포지션은 stop 없이 방치된다",
+				"positions", res.Blind)
+			lastBlind = time.Now()
+		}
 
 		// 아무 일도 없었으면 조용히 넘긴다 — 5초마다 로그를 찍으면 진짜 사건이 묻힌다.
 		if res.Entered+res.Exited+res.PartialExits+res.StopsArmed+res.TpPlaced+res.ClosedByBroker == 0 &&
