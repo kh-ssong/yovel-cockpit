@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kh-ssong/yovel-cockpit/internal/book"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/reconcile"
 	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
@@ -42,6 +43,8 @@ type Config struct {
 	// EngineBudget — 이 콕핏에 붙은 엔진의 예산. 사용자가 정한다 (엔진은 비중만 보낸다).
 	// ★ 슬롯당이 아니라 엔진 전체다 (protocol.md §7.1).
 	EngineBudget float64
+	// Books — 전략별 장부 (internal/book). nil 이면 모든 슬롯이 EngineBudget 하나를 쓴다.
+	Books *book.Set
 	// Price — 참조가. 브로커가 붙기 전에는 없다.
 	Price func(protocol.Symbol) (float64, bool)
 	// Market — 종목별 주문 제약.
@@ -70,6 +73,18 @@ type Engine struct {
 
 	// terminal — 이미 끝난 intent_id 캐시 (원장에서 복원).
 	terminal map[string]struct{}
+
+	// marks — 신호원이 목표에 실어 보낸 가격 (종목 → 가장 최근 값).
+	//
+	// ★ 별도 락이다. 계획(planLocked)은 e.mu 를 쥔 채 시세를 부르는데, paper 의 시세가 곧
+	// 이 marks 라서 같은 락을 쓰면 **자기 자신을 기다리는 교착**이 된다.
+	marksMu sync.Mutex
+	marks   map[protocol.Symbol]mark
+}
+
+type mark struct {
+	price float64
+	at    time.Time
 }
 
 func New(cfg Config, now time.Time) *Engine {
@@ -82,8 +97,27 @@ func New(cfg Config, now time.Time) *Engine {
 		guard:     protocol.NewGuard(),
 		positions: map[string]protocol.Position{},
 		terminal:  map[string]struct{}{},
+		marks:     map[protocol.Symbol]mark{},
 	}
 }
+
+// Mark 는 신호원이 보낸 최근 가격을 준다. maxAge 보다 늙었으면 없는 것으로 친다 —
+// 늙은 가격으로 체결시키면 paper 손익이 조용히 틀린다.
+func (e *Engine) Mark(s protocol.Symbol, now time.Time, maxAge time.Duration) (float64, bool) {
+	e.marksMu.Lock()
+	defer e.marksMu.Unlock()
+	m, ok := e.marks[s]
+	if !ok || m.price <= 0 {
+		return 0, false
+	}
+	if maxAge > 0 && now.Sub(m.at) > maxAge {
+		return 0, false
+	}
+	return m.price, true
+}
+
+// Books 는 장부 설정을 준다 (nil 가능).
+func (e *Engine) Books() *book.Set { return e.cfg.Books }
 
 // Apply 는 다운링크 한 통을 받아 판정하고 상태에 반영한다. 반환값이 곧 업링크 ack 다.
 func (e *Engine) Apply(raw []byte, now time.Time) protocol.Ack {
@@ -114,6 +148,19 @@ func (e *Engine) Apply(raw []byte, now time.Time) protocol.Ack {
 		}
 		e.target = &it
 		e.appliedSeq = ack.RefSeq
+		e.marksMu.Lock()
+		for _, t := range it.Targets {
+			if t.MarkPrice <= 0 {
+				continue
+			}
+			// mark_at 이 없으면 봉 시각을 쓴다 — 수신 시각을 쓰면 늙은 값이 새것처럼 보인다.
+			at := it.AsOfBar
+			if t.MarkAt != nil {
+				at = *t.MarkAt
+			}
+			e.marks[t.Symbol] = mark{price: t.MarkPrice, at: at}
+		}
+		e.marksMu.Unlock()
 		e.envelopeEntryOK = adm.EntryAllowed
 		ack.PerIntent = e.planLocked(now).Acks
 
@@ -267,10 +314,18 @@ func (e *Engine) planLocked(now time.Time) reconcile.Plan {
 		BlockEntryUntil: e.blockEntryUntil,
 		MaxOrders:       e.cfg.MaxOrders,
 		Budget:          e.cfg.EngineBudget,
+		Book:            e.bookFn(),
 		Price:           e.cfg.Price,
 		Market:          e.cfg.Market,
 		Terminal:        e.isTerminalLocked,
 	})
+}
+
+func (e *Engine) bookFn() func(string) (string, float64) {
+	if e.cfg.Books == nil {
+		return nil
+	}
+	return e.cfg.Books.Of
 }
 
 func (e *Engine) isTerminalLocked(intentID string) bool {

@@ -304,6 +304,63 @@ func TestBuyShrinksToBrokerAllowance(t *testing.T) {
 	}
 }
 
+// ★ kt00011 로 줄였는데도 855056 이 난다 — 직전 매수가 주문가능금액에 아직 안 잡힌 채
+// 조회된 경우. 거부 메시지의 "N주 매수가능" 으로 딱 한 번 다시 낸다.
+func TestBuyRetriesOnceWithMarginAllowance(t *testing.T) {
+	f := newFake()
+	f.on(apiBuyableQt, func(map[string]any) any {
+		return map[string]any{"return_code": 0, "min_ord_alowq": "9"} // 늦은 값
+	})
+	f.on(apiBuy, func(body map[string]any) any {
+		if body["ord_qty"] == "9" {
+			return map[string]any{"return_code": 20, "return_msg": "[2000](855056:매수증거금이 부족합니다. 6주 매수가능)"}
+		}
+		return map[string]any{"return_code": 0, "ord_no": "00031"}
+	})
+	f.on(apiFills, func(map[string]any) any {
+		return fillsResp("00031", map[string]any{
+			"cntr_qty": "6", "cntr_pric": "72,100",
+			"tdy_trde_cmsn": "0", "tdy_trde_tax": "0", "ord_tm": "090512",
+		})
+	})
+	b, _ := newBroker(t, f)
+
+	fill, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 9, RefPrice: 72_100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := f.bodies(apiBuy)
+	if len(sent) != 2 || sent[1]["ord_qty"] != "6" || fill.Qty != 6 {
+		t.Fatalf("재주문 %d회 %v, 체결 %v", len(sent), sent, fill.Qty)
+	}
+}
+
+// 재시도는 한 번뿐이다 — 두 번째도 거부면 그대로 올린다(무한 축소 루프 금지).
+// 그리고 855056 이 아닌 거부는 재시도하지 않는다.
+func TestMarginRetryIsBounded(t *testing.T) {
+	f := newFake()
+	f.on(apiBuy, func(body map[string]any) any {
+		return map[string]any{"return_code": 20, "return_msg": "[2000](855056:매수증거금이 부족합니다. 3주 매수가능)"}
+	})
+	b, _ := newBroker(t, f)
+	if _, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 9, RefPrice: 72_100}); err == nil {
+		t.Fatal("거부가 삼켜졌다")
+	}
+	if n := len(f.bodies(apiBuy)); n != 2 {
+		t.Fatalf("주문 %d회, 기대 2", n)
+	}
+
+	g := newFake()
+	g.on(apiBuy, func(map[string]any) any {
+		return map[string]any{"return_code": 20, "return_msg": "[2000](800033:장 종료. 6주 매수가능)"}
+	})
+	b2, _ := newBroker(t, g)
+	_, _ = b2.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 9, RefPrice: 72_100})
+	if n := len(g.bodies(apiBuy)); n != 1 {
+		t.Fatalf("855056 아닌 거부를 %d회 냈다", n)
+	}
+}
+
 // ★ 수수료는 요율로 추정하지 않고 브로커가 준 실측을 쓴다.
 // 요율 추정이 "기록 수수료 왕복 1.9배 과다" 를 만든 전례가 있다.
 func TestFeeComesFromBrokerNotRate(t *testing.T) {

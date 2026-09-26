@@ -106,12 +106,36 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(intent_id) DO UPDATE SET
   qty=excluded.qty, avg_entry_price=excluded.avg_entry_price,
   stop_armed=excluded.stop_armed, tp_price=excluded.tp_price,
-  tp_order_id=excluded.tp_order_id, time_exit_at=excluded.time_exit_at,
+  tp_order_id=excluded.tp_order_id,
+  -- ★ 전체 갱신이라 호출자가 안 실으면 지워진다. stop 조임·TP 위임은 이 값을 모르고 부르므로
+  --   그대로 두면 **stop 을 한 번 올리는 순간 15:20 시간청산이 원장에서 사라진다.**
+  time_exit_at=COALESCE(excluded.time_exit_at, intents.time_exit_at),
   entry_at=COALESCE(intents.entry_at, excluded.entry_at),
   updated_at=excluded.updated_at`,
 		in.IntentID, in.Slot, in.Symbol.Exchange, in.Symbol.Code, in.Side,
 		in.Qty, in.AvgEntryPrice, in.StopArmed, in.TpPrice, nullStr(in.TpOrderID),
 		nullTime(in.TimeExitAt), nullTime(in.EntryAt), nowStr())
+	return err
+}
+
+// ReduceIntent — 부분 청산 뒤 남은 수량으로 줄인다. 걸어 둔 TP 는 이미 취소됐으므로 같이 지운다.
+//
+// ★ UpsertIntent 를 쓰지 않는 이유: 전체 갱신이라 stop·시간청산을 다시 실어야 하는데,
+// 청산 경로는 그 값을 다 들고 있지 않다. 필요한 칸만 고친다.
+func (s *Store) ReduceIntent(ctx context.Context, intentID string, qty float64) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE intents SET qty=?, tp_order_id=NULL, tp_price=0, updated_at=? WHERE intent_id=?`,
+		qty, nowStr(), intentID)
+	return err
+}
+
+// ClearTP — 걸어 둔 TP 를 취소했다는 사실만 남긴다.
+//
+// ★ 취소 직후 매도가 실패하면, 이게 없으면 다음 틱이 **이미 죽은 주문**을 또 취소하려 들고
+// 실브로커는 그걸 오류로 돌려준다 → 청산 경로가 매 틱 거기서 멈춘다.
+func (s *Store) ClearTP(ctx context.Context, intentID string) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE intents SET tp_order_id=NULL, tp_price=0, updated_at=? WHERE intent_id=?`, nowStr(), intentID)
 	return err
 }
 

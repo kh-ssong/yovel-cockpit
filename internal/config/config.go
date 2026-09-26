@@ -36,7 +36,7 @@ type Config struct {
 	// MaxOrdersPerTick — reconcile 한 번에 낼 수 있는 주문 수 상한 (폭주 차단).
 	MaxOrdersPerTick int
 
-	// Broker — paper | kiwoom. 기본 paper.
+	// Broker — paper | kiwoom | upbit. 기본 paper.
 	Broker string
 	// KiwoomMock — 모의투자 도메인.
 	KiwoomMock bool
@@ -69,6 +69,12 @@ type Config struct {
 	PaperFeeBpBuy  float64
 	PaperFeeBpSell float64
 	PaperSlipBp    float64
+	// PaperSeed — paper 계좌의 시작 현금. 0 이면 장부 시드 합 + 엔진 예산.
+	// ★ 예산(사이징 분모)과 계좌 현금은 다른 값이다. 계좌가 예산보다 작을 때 무슨 일이 나는지도
+	// paper 에서 봐야 하므로 따로 둔다.
+	PaperSeed float64
+	// BooksFile — 전략별 장부 (internal/book). 비면 {data-dir}/books.json. 파일이 없으면 장부 없음.
+	BooksFile string
 
 	// UI — 로컬 대시보드를 서빙할지. 기본 켜짐.
 	// ★ 끌 수 있게 둔 이유는 헤드리스 상주다 (서버·CI). 화면이 없어야 하는 자리에서
@@ -130,7 +136,7 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 	fs.BoolVar(&c.Policy.AcceptUnsignedDerisk, "accept-unsigned-derisk", c.Policy.AcceptUnsignedDerisk,
 		"서명 없는 de-risk 를 수용할지 (★ 진입은 어느 쪽이든 서명 필수)")
 	fs.DurationVar(&c.Policy.MaxSkew, "max-skew", c.Policy.MaxSkew, "허용 시계 오차")
-	fs.StringVar(&c.Broker, "broker", c.Broker, "paper | kiwoom")
+	fs.StringVar(&c.Broker, "broker", c.Broker, "paper | kiwoom | upbit")
 	fs.BoolVar(&c.KiwoomMock, "kiwoom-mock", c.KiwoomMock, "키움 모의투자 도메인 사용")
 	fs.StringVar(&c.KiwoomTokenFile, "kiwoom-token-file", c.KiwoomTokenFile,
 		"토큰 파일 경로 (★ flat6 와 같은 앱키면 flat6 의 파일을 가리킬 것)")
@@ -145,6 +151,10 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 		"paper 매도 편도 비용 (bp) — 국내는 여기에 증권거래세가 포함된다")
 	fs.Float64Var(&c.PaperSlipBp, "paper-slip-bp", c.PaperSlipBp,
 		"paper 시장가 슬리피지 (bp) — ★ 0 으로 두면 손익분기 근처 판정이 뒤집힌다")
+	fs.Float64Var(&c.PaperSeed, "paper-seed", c.PaperSeed,
+		"paper 계좌 시작 현금 (원) — 0 이면 장부 시드 합 + 엔진 예산")
+	fs.StringVar(&c.BooksFile, "books-file", c.BooksFile,
+		"전략별 장부 파일 (기본 {data-dir}/books.json — 없으면 장부 없이 엔진 예산 하나)")
 	fs.BoolVar(&c.UI, "ui", c.UI, "로컬 대시보드 서빙 (--ui=false 로 끔)")
 	fs.StringVar(&c.Policy.Acct, "acct", c.Policy.Acct,
 		"이 콕핏의 계정 핸들 — 다른 acct 의 목표는 E_ACCT 로 거절 (★ 비우면 검사 안 함)")
@@ -184,6 +194,11 @@ func KiwoomCreds() (appKey, secret string) {
 	return os.Getenv("COCKPIT_KIWOOM_APPKEY"), os.Getenv("COCKPIT_KIWOOM_SECRET")
 }
 
+// UpbitCreds — 업비트 자격증명도 **환경변수에서만** 읽는다 (KiwoomCreds 와 같은 이유).
+func UpbitCreds() (access, secret string) {
+	return os.Getenv("COCKPIT_UPBIT_ACCESS_KEY"), os.Getenv("COCKPIT_UPBIT_SECRET_KEY")
+}
+
 // Finish 는 플래그 파싱 후 검증한다.
 func (c *Config) Finish() error {
 	if c.modeFlag != nil {
@@ -195,9 +210,14 @@ func (c *Config) Finish() error {
 		return fmt.Errorf("mode 는 paper 또는 live 여야 한다 (받은 값 %q)", c.Mode)
 	}
 	switch c.Broker {
-	case "paper", "kiwoom":
+	case "paper", "kiwoom", "upbit":
 	default:
-		return fmt.Errorf("broker 는 paper 또는 kiwoom 이어야 한다 (받은 값 %q)", c.Broker)
+		return fmt.Errorf("broker 는 paper · kiwoom · upbit 중 하나여야 한다 (받은 값 %q)", c.Broker)
+	}
+	// ★ 업비트엔 모의투자 도메인이 없다. mode=paper 로 upbit 를 붙이면 **실주문이 나가는데
+	// 원장엔 paper 로 찍힌다** — 연습인 줄 알고 진짜 돈을 쓰는 형태라 아예 막는다.
+	if c.Mode == protocol.ModePaper && c.Broker == "upbit" {
+		return fmt.Errorf("broker=upbit 는 실주문뿐이다(모의 도메인 없음) — 연습은 broker=paper, 실주문은 mode=live 로 둘 것")
 	}
 	// ★ live 모드인데 paper 브로커면 실주문이 안 나간다. 그 상태를 "돌고 있다" 로 보이게 두지 않는다.
 	if c.Mode == protocol.ModeLive && c.Broker == "paper" {

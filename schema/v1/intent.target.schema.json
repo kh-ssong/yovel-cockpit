@@ -45,7 +45,17 @@
           "description": "슬롯 예산 대비 비중. ★ 원화 금액이 아니다 — 수량 계산은 클라가 한다(protocol.md §7)."
         },
         "entry": { "$ref": "#/$defs/Entry" },
-        "exit": { "$ref": "#/$defs/Exit" }
+        "exit": { "$ref": "#/$defs/Exit" },
+        "mark_price": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "신호원이 본 지금 가격(선택). 청산이면 매수1호가, 보유면 현재가. 콕핏 paper 가 체결가·TP 평가에 1순위로 쓴다 (protocol.md §4.1)."
+        },
+        "mark_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "mark_price 의 시각. 없으면 as_of_bar. 목표 최대 나이보다 늙은 mark 는 버린다."
+        }
       },
       "allOf": [
         {

@@ -34,6 +34,11 @@ type Holding struct {
 type Cash struct {
 	Deposit   float64 // L1 — 계좌에 있는 돈
 	Orderable float64 // L2 — 지금 실제로 주문에 쓸 수 있는 돈
+	// Seed — L1. 미수 없이 현금으로 살 수 있는 한도 (보유 종목 증거금 **미차감**).
+	// ★ 예산을 이것과 비교한다. Orderable 은 보유 증거금이 영구히 깎아 먹어 시드를 과소평가하고
+	// (reflex 실측 −49%), Deposit 은 해외 원화배정처럼 **빠져나간 돈**을 못 보여준다.
+	// 0 = 드라이버가 모른다.
+	Seed float64
 	Currency  string
 }
 

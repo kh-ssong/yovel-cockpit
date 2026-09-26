@@ -45,6 +45,8 @@ type Result struct {
 	Exited     int `json:"exited"`
 	StopsArmed int `json:"stops_armed"`
 	TpPlaced   int `json:"tp_placed"`
+	// PartialExits — 청산을 냈는데 일부만 팔렸다. 잔량은 다음 틱에 다시 판다.
+	PartialExits int `json:"partial_exits,omitempty"`
 	// ClosedByBroker — 우리가 안 팔았는데 브로커에서 사라진 포지션 (TP 체결 또는 수동 매도).
 	ClosedByBroker int `json:"closed_by_broker"`
 	// Mismatch — 장부와 실물이 어긋난 지점. ★ 추측해서 맞추지 않는다, 보고만 한다.
@@ -184,6 +186,12 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 			res.fail("TP 취소 %s: %v", pos.IntentID, err)
 			return // 취소 실패 상태로 매도를 시도하면 "잔고 부족" 만 반복한다
 		}
+		// ★ 취소했다는 사실을 먼저 남긴다 — 아래 매도가 실패하면 다음 틱이 죽은 주문을 또 취소한다.
+		if err := x.d.Store.ClearTP(ctx, pos.IntentID); err != nil {
+			res.fail("TP 취소 기록 %s: %v", pos.IntentID, err)
+		}
+		pos.TpOrderID, pos.TpArmed = "", 0
+		x.d.Engine.UpsertPosition(pos)
 	}
 
 	fill, err := x.d.Broker.Sell(ctx, broker.OrderRequest{
@@ -194,6 +202,22 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 		return
 	}
 
+	// ★ 부분체결 — 판 만큼만 적고 **종결하지 않는다**. 예전엔 여기서 무조건 종결해서 남은 수량이
+	// 원장 밖 유령이 됐다 (stop·시간청산·판단자 신호 어느 것도 다시는 그걸 팔지 않는다).
+	// 남은 수량으로 줄여 두면, 청산 사유(flat·derisk)가 그대로 살아 있으므로 다음 틱이 나머지를 판다.
+	remaining := pos.Qty - fill.Qty
+	partial := fill.Qty > 0 && remaining > x.d.Broker.LotSize(pos.Symbol)/2
+
+	detail := fill.Detail
+	// ★ 잔량이 최소주문금액 밑이면 다시 팔 수 없다(거래소가 거부) — 매 틱 거부만 반복하느니
+	// 먼지로 적고 종결한다. 먼지는 브로커 잔고엔 남지만 손익에 의미가 없다.
+	if min := x.d.Broker.MinOrderValue(pos.Symbol); partial && min > 0 && remaining*fill.Price < min {
+		partial = false
+		detail = joinDetail(fmt.Sprintf("잔량 %v 은 최소주문금액 미만 먼지라 종결", remaining), detail)
+	}
+	if partial {
+		detail = joinDetail(fmt.Sprintf("부분 청산 — 잔량 %v 은 다음 틱에 다시 판다", remaining), detail)
+	}
 	x.recordOrder(ctx, store.Order{
 		ID: ids.NewAt(now), IntentID: pos.IntentID, Phase: "exit_filled",
 		Symbol: pos.Symbol, Side: "sell", Qty: fill.Qty, Price: fill.Price,
@@ -202,8 +226,20 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 		RealizedPct: realizedPct(pos.AvgEntryPrice, fill.Price),
 		Source:      store.SourceBot,
 		// ★ 드라이버가 붙인 단서를 삼키지 않는다 — 값이 있으면 그 건의 숫자가 근사라는 뜻이다.
-		Detail: fill.Detail,
+		Detail: detail,
 	}, res)
+
+	if partial {
+		if err := x.d.Store.ReduceIntent(ctx, pos.IntentID, remaining); err != nil {
+			res.fail("★ 부분 청산 잔량 기록 실패 %s: %v", pos.IntentID, err)
+		}
+		pos.Qty = remaining
+		x.d.Engine.UpsertPosition(pos)
+		res.PartialExits++
+		x.d.Log.Warn("부분 청산 — 잔량이 남았다", "intent_id", pos.IntentID,
+			"code", pos.Symbol.Code, "sold", fill.Qty, "remaining", remaining)
+		return
+	}
 
 	if err := x.d.Store.CloseIntent(ctx, pos.IntentID, reason, now); err != nil {
 		res.fail("종결 %s: %v", pos.IntentID, err)
@@ -339,6 +375,13 @@ func (x *Executor) recordOrder(ctx context.Context, o store.Order, res *Result) 
 	if err := x.d.Store.Enqueue(ctx, o.ID, protocol.TypeEventOrder, body); err != nil {
 		res.fail("업링크 큐 %s: %v", o.IntentID, err)
 	}
+}
+
+func joinDetail(a, b string) string {
+	if b == "" {
+		return a
+	}
+	return a + " · " + b
 }
 
 func realizedPct(entry, exit float64) float64 {

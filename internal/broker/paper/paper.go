@@ -94,7 +94,7 @@ func (b *Broker) Cash(context.Context) (broker.Cash, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	// paper 에서는 두 층이 같다. ★ 라이브에서는 절대 같지 않다는 걸 잊지 말 것.
-	return broker.Cash{Deposit: b.cash, Orderable: b.cash, Currency: "KRW"}, nil
+	return broker.Cash{Deposit: b.cash, Orderable: b.cash, Seed: b.cash, Currency: "KRW"}, nil
 }
 
 func (b *Broker) Quote(_ context.Context, s protocol.Symbol) (broker.Quote, error) {

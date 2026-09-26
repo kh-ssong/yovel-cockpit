@@ -128,6 +128,15 @@ type Target struct {
 	Weight   float64 `json:"weight,omitempty"` // 슬롯 예산 대비 비중. ★ 원화가 아니다 (§7)
 	Entry    *Entry  `json:"entry,omitempty"`
 	Exit     *Exit   `json:"exit,omitempty"`
+
+	// MarkPrice / MarkAt — 신호를 낸 쪽이 본 **지금 가격** (선택).
+	//
+	// ★ ref_price 는 진입 때만 온다. 그래서 청산(want=flat)·TP 평가 때 콕핏은 가격을 몰랐고,
+	// paper 는 평단으로 근사 체결했다 — 손익이 0 근처로 뭉개져 전략 검증이 안 됐다.
+	// 시세는 flat6 가 이미 들고 있으므로(키움 WS 독점) 콕핏이 따로 조회하지 않고 이걸 쓴다.
+	// 청산이면 매수1호가(내가 팔 수 있는 값), 보유면 현재가를 싣는다.
+	MarkPrice float64    `json:"mark_price,omitempty"`
+	MarkAt    *time.Time `json:"mark_at,omitempty"`
 }
 
 type Entry struct {

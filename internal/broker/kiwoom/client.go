@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -118,7 +121,7 @@ func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any
 			continue
 		}
 		if probe.ReturnCode != 0 {
-			return fmt.Errorf("%s 거부 (%d): %s", apiID, probe.ReturnCode, probe.ReturnMsg)
+			return rejectError{APIID: apiID, Code: probe.ReturnCode, Msg: probe.ReturnMsg}
 		}
 		if out == nil {
 			return nil
@@ -129,6 +132,36 @@ func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any
 		lastErr = fmt.Errorf("%s: 재시도 소진", apiID)
 	}
 	return lastErr
+}
+
+// rejectError — 키움이 요청을 **받고 거부했다**(return_code ≠ 0). 주문이면 나가지 않은 것이다.
+//
+// ★ 타입으로 두는 이유: 거부 메시지에 쓸모 있는 답이 실려 온다
+// (예: "[2000](855056:매수증거금이 부족합니다. 6주 매수가능)"). 문자열로 뭉개면 못 꺼낸다.
+type rejectError struct {
+	APIID string
+	Code  int
+	Msg   string
+}
+
+func (e rejectError) Error() string {
+	return fmt.Sprintf("%s 거부 (%d): %s", e.APIID, e.Code, e.Msg)
+}
+
+// marginAllowRe — 855056(매수증거금 부족) 거부에 실려 오는 "N주 매수가능".
+var marginAllowRe = regexp.MustCompile(`([0-9][0-9,]*)\s*주\s*매수\s*가능`)
+
+// marginAllowance — 매수증거금 부족 거부면 키움이 말해준 가능 수량을 준다.
+func marginAllowance(err error) (float64, bool) {
+	var re rejectError
+	if !errors.As(err, &re) || !strings.Contains(re.Msg, "855056") {
+		return 0, false
+	}
+	m := marginAllowRe.FindStringSubmatch(re.Msg)
+	if m == nil {
+		return 0, false
+	}
+	return numOK(m[1])
 }
 
 func backoff(attempt int) time.Duration { return time.Duration(1<<attempt) * time.Second }

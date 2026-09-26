@@ -140,6 +140,9 @@ func (b *Broker) etp(s protocol.Symbol) bool {
 type balanceResp struct {
 	Entr     string            `json:"entr"`      // 예수금 (L1)
 	OrdAlowa string            `json:"ord_alowa"` // 주문가능현금 (L2)
+	// 100ord_alow_amt — 증거금률 100% 주문가능금액 = 현금 한도 (L1).
+	// ★ 해외 원화주문 배정이 있으면 이 값이 **이미 깎여서** 온다 — 그래서 예산 점검은 이걸로 한다.
+	Seed100 string `json:"100ord_alow_amt"`
 	Rows     []json.RawMessage `json:"stk_cntr_remn"`
 }
 
@@ -161,6 +164,7 @@ func (b *Broker) Cash(ctx context.Context) (broker.Cash, error) {
 	return broker.Cash{
 		Deposit:   num(r.Entr),
 		Orderable: num(r.OrdAlowa),
+		Seed:      num(r.Seed100),
 		Currency:  "KRW",
 	}, nil
 }
@@ -279,7 +283,18 @@ func (b *Broker) Buy(ctx context.Context, req broker.OrderRequest) (broker.Fill,
 	var out struct {
 		OrdNo string `json:"ord_no"`
 	}
-	if err := b.call(ctx, apiBuy, pathOrder, body, &out); err != nil {
+	err := b.call(ctx, apiBuy, pathOrder, body, &out)
+	// ★ kt00011 로 줄였는데도 855056(매수증거금 부족)이 난다 — 바로 앞 매수가 주문가능금액에
+	// 아직 반영되지 않은 채 조회됐을 때다 (D-205 처럼 09:01 에 여러 종목이 몰리면 흔하다).
+	// 거부 메시지에 실린 "N주 매수가능" 으로 **딱 한 번** 다시 낸다. 거부된 주문은 나가지 않았으니
+	// 이중 주문이 아니다. 다음 틱까지 기다리면 수 초짜리 신호는 이미 늦는다.
+	if allow, ok := marginAllowance(err); ok && allow > 0 && allow < qty {
+		qty = allow
+		body["ord_qty"] = strconv.FormatFloat(qty, 'f', -1, 64)
+		submitted = b.now().UTC()
+		err = b.call(ctx, apiBuy, pathOrder, body, &out)
+	}
+	if err != nil {
 		return broker.Fill{}, err
 	}
 	return b.waitFill(ctx, req.Symbol, out.OrdNo, qty, "buy", ref, submitted)

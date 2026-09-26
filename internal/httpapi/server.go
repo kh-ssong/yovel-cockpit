@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kh-ssong/yovel-cockpit/internal/engine"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/reconcile"
 	"github.com/kh-ssong/yovel-cockpit/internal/store"
@@ -93,6 +94,7 @@ func New(opt Options, eng Engine) *Server {
 	// 이 엔드포인트를 두드릴 수 있어도 서명키 없이는 주문을 만들 수 없다.
 	mux.HandleFunc("POST /v1/downlink", s.handleDownlink)
 	mux.HandleFunc("GET /v1/ledger", s.handleLedger)
+	mux.HandleFunc("GET /v1/books", s.handleBooks)
 
 	// 대시보드는 마지막에 건다 — 남는 경로 전부(`/`, `/assets/...`)를 받는다.
 	if opt.UI != nil {
@@ -292,6 +294,33 @@ type ledgerResponse struct {
 // ★ mode 를 기본값으로 채우지 않는다. "전체 보기"가 기본이면 paper 와 live 가 합산돼
 // 실계좌가 손실인데 수익으로 보인다 (실측: live 15건 −18,725원 vs paper 63건 +49,884원).
 // 그래서 호출자가 반드시 고르게 하고, 안 고르면 400 이다.
+// booksEngine — 장부별 성적을 주는 엔진. 인터페이스를 넓히지 않고 선택으로 둔다.
+type booksEngine interface {
+	BookStats(ctx context.Context, mode protocol.Mode) ([]engine.BookStat, error)
+}
+
+// handleBooks — 전략(장부)별 성적. ★ mode 는 필수다 (paper 와 live 를 합산하지 않는다).
+func (s *Server) handleBooks(w http.ResponseWriter, r *http.Request) {
+	be, ok := s.eng.(booksEngine)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "장부를 모르는 엔진"})
+		return
+	}
+	mode := protocol.Mode(r.URL.Query().Get("mode"))
+	if mode != protocol.ModePaper && mode != protocol.ModeLive {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "mode=paper 또는 mode=live 를 명시할 것 — 합산하면 허위 손익이 된다",
+		})
+		return
+	}
+	stats, err := be.BookStats(r.Context(), mode)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"as_of": time.Now().UTC(), "mode": mode, "books": stats})
+}
+
 func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 	if s.eng == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "엔진이 아직 없다"})

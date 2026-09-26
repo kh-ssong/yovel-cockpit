@@ -18,12 +18,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/kh-ssong/yovel-cockpit/internal/book"
 	"github.com/kh-ssong/yovel-cockpit/internal/broker"
 	"github.com/kh-ssong/yovel-cockpit/internal/broker/kiwoom"
 	"github.com/kh-ssong/yovel-cockpit/internal/broker/paper"
+	"github.com/kh-ssong/yovel-cockpit/internal/broker/upbit"
 	"github.com/kh-ssong/yovel-cockpit/internal/config"
 	"github.com/kh-ssong/yovel-cockpit/internal/engine"
 	"github.com/kh-ssong/yovel-cockpit/internal/executor"
@@ -83,7 +86,32 @@ func run() error {
 	}
 	defer st.Close()
 
-	br, err := buildBroker(cfg, log)
+	booksPath := cfg.BooksFile
+	if booksPath == "" {
+		booksPath = filepath.Join(cfg.DataDir, "books.json")
+	}
+	books, err := book.Load(booksPath, cfg.EngineBudget)
+	if err != nil {
+		return fmt.Errorf("장부 설정: %w", err)
+	}
+	for _, b := range books.Books() {
+		log.Info("장부", "name", b.Name, "seed", b.Seed, "slots", b.Slots)
+	}
+	if len(books.Books()) > 0 && cfg.EngineBudget <= 0 {
+		log.Info("엔진 예산 0 — 장부에 없는 슬롯의 진입은 E_CAPITAL 로 거절된다")
+	}
+
+	// marks — flat6 가 목표에 실어 보낸 가격. 엔진이 생기기 전에 paper 가 참조를 잡아야 해서
+	// 간접 참조로 둔다 (엔진 → 시세 → paper → marks → 엔진 순환을 끊는다).
+	var eng *engine.Engine
+	mark := func(s protocol.Symbol) (float64, bool) {
+		if eng == nil {
+			return 0, false
+		}
+		return eng.Mark(s, time.Now().UTC(), cfg.TargetMaxAge)
+	}
+
+	br, err := buildBroker(cfg, books, mark, log)
 	if err != nil {
 		return err
 	}
@@ -92,13 +120,14 @@ func run() error {
 	// 배선이 빠진 상태와 정상 상태가 같아 보인다.
 	qs := quotes.New(br, 3*time.Second, func() time.Time { return time.Now().UTC() })
 
-	eng := engine.New(engine.Config{
+	eng = engine.New(engine.Config{
 		Mode:         cfg.Mode,
 		Policy:       cfg.Policy,
 		TargetMaxAge: cfg.TargetMaxAge,
 		MaxOrders:    cfg.MaxOrdersPerTick,
 		// ★ 자본은 사용자가 정한다. 엔진은 비중만 보낸다 (슬롯 사이 분배 = weight).
 		EngineBudget: cfg.EngineBudget,
+		Books:        books,
 		Price:        qs.Price,
 		Market: func(s protocol.Symbol) sizing.Market {
 			return sizing.Market{LotSize: br.LotSize(s), MinOrderValue: br.MinOrderValue(s)}
@@ -193,6 +222,8 @@ func run() error {
 	defer stop()
 
 	go runLoop(ctx, exec, cfg.ReconcileInterval, wake, log)
+	go watchBudget(ctx, br, books.Total(), // 장부 시드 합 + 엔진 예산
+		func() []protocol.Position { return eng.Snapshot().Positions }, log)
 
 	<-ctx.Done()
 
@@ -210,7 +241,16 @@ func run() error {
 //
 // ★ paper 브로커라도 시세는 진짜를 쓰는 게 낫다. 키움 자격증명이 있으면 시세만 키움에서
 // 받아 페이퍼로 체결시킨다 — 가짜 가격으로 만든 페이퍼 성과는 아무것도 증명하지 못한다.
-func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
+func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) (float64, bool),
+	log *slog.Logger) (broker.Broker, error) {
+	if cfg.Broker == "upbit" {
+		access, sec := config.UpbitCreds()
+		if access == "" || sec == "" {
+			return nil, fmt.Errorf("업비트 자격증명이 없다 — COCKPIT_UPBIT_ACCESS_KEY / COCKPIT_UPBIT_SECRET_KEY 환경변수로 줄 것")
+		}
+		return upbit.New(upbit.Config{AccessKey: access, SecretKey: sec})
+	}
+
 	appKey, secret := config.KiwoomCreds()
 
 	if cfg.Broker == "kiwoom" {
@@ -226,11 +266,18 @@ func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
 	// 편도 비용. ★ 0 으로 두지 않는다 — 비용 0 시뮬은 손익분기 근처 전략의 판정을 뒤집는다.
 	// ★★ 값은 이제 설정이다(옛 하드코딩 대칭 15bp 는 매수에 없는 비용을 물렸다).
 	//    그리고 기본값도 추정치라, 진짜 요율은 `--paper-fee-bp-*` 로 **자기 원장에서 재서** 넣는다.
+	// 시세 1순위 = flat6 mark_price. 키움이 붙으면 그 뒤를 받친다.
+	seed := cfg.PaperSeed
+	if seed <= 0 {
+		seed = books.Total()
+	}
+	log.Info("paper 시드", "cash", seed)
 	pcfg := paper.Config{
-		Cash: cfg.EngineBudget, Lot: 1,
+		Cash: seed, Lot: 1,
 		FeeBpBuy:  cfg.PaperFeeBpBuy,
 		FeeBpSell: cfg.PaperFeeBpSell,
 		SlipBp:    cfg.PaperSlipBp,
+		Price:     markFirst(mark, nil),
 	}
 	if appKey != "" && secret != "" {
 		kw, err := kiwoom.New(kiwoom.Config{
@@ -240,7 +287,7 @@ func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
 		if err == nil {
 			log.Info("paper 브로커에 키움 실시세를 물린다")
 			src := quotes.New(kw, 3*time.Second, func() time.Time { return time.Now().UTC() })
-			pcfg.Price = src.Price
+			pcfg.Price = markFirst(mark, src.Price)
 		} else {
 			log.Warn("키움 시세원 연결 실패 — 가격 없이 돈다 (진입 계획은 E_SYMBOL 로 거절된다)", "err", err)
 		}
@@ -251,9 +298,11 @@ func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
 		// ★★ 2026-08-17: 그 청산도 이제 나간다 — paper 가 시세를 못 구하면 **보유 평단**을
 		//   기준가로 써서 닫는다(그 건은 `detail` 에 표시되고 실현손익이 근사다). 청산이
 		//   막히는 것보다 근사로라도 닫히는 편이 낫다는 판단이고, 남는 degrade 는 아래 둘이다.
-		log.Warn("시세원이 없다 — 진입은 ref_price 로, 청산은 **보유 평단 근사**로 나간다. " +
-			"다만 **TP·스톱이 평가되지 않고**(시간청산과 판단자 신호만 남는다) 실현손익이 " +
-			"근사다. 키움 자격증명을 주면 paper 도 실시세로 돈다")
+		// ★ 2026-09-26: 이제 1순위 시세는 flat6 의 mark_price 다 (키 없이도 청산이 제값에 나간다).
+		//   flat6 가 mark 를 안 실은 종목만 평단 근사로 떨어진다.
+		log.Warn("키움 시세원 없음 — paper 는 flat6 가 목표에 실은 mark_price 로만 체결가를 정한다. " +
+			"mark 가 없는 종목의 청산은 **보유 평단 근사**라 실현손익이 0 근처로 뭉개진다 — " +
+			"flat6 발행에 mark_price 가 실렸는지 확인할 것")
 	}
 	return paper.New(pcfg), nil
 }
@@ -279,11 +328,11 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 		res := exec.Tick(ctx, time.Now().UTC())
 
 		// 아무 일도 없었으면 조용히 넘긴다 — 5초마다 로그를 찍으면 진짜 사건이 묻힌다.
-		if res.Entered+res.Exited+res.StopsArmed+res.TpPlaced+res.ClosedByBroker == 0 &&
+		if res.Entered+res.Exited+res.PartialExits+res.StopsArmed+res.TpPlaced+res.ClosedByBroker == 0 &&
 			len(res.Errors) == 0 && len(res.Mismatch) == 0 {
 			continue
 		}
-		log.Info("집행", "entered", res.Entered, "exited", res.Exited,
+		log.Info("집행", "entered", res.Entered, "exited", res.Exited, "partial_exits", res.PartialExits,
 			"stops", res.StopsArmed, "tp", res.TpPlaced, "closed_by_broker", res.ClosedByBroker,
 			"mismatch", res.Mismatch, "errors", res.Errors)
 	}
@@ -364,5 +413,23 @@ func accountProvider(br broker.Broker, price func(protocol.Symbol) (float64, boo
 		}
 		acc.Equity = acc.Deposit + acc.Holdings
 		return acc
+	}
+}
+
+// markFirst — 신호원(flat6)이 실어 보낸 가격을 먼저 쓰고, 없으면 fallback.
+//
+// ★ 순서가 중요하다. flat6 는 판단한 그 순간의 호가를 보내고, 콕핏의 REST 조회는 몇 초 늦다 —
+// paper 체결가가 도장 원장과 대조되려면 **판단자가 본 가격**이어야 한다.
+func markFirst(mark, fallback func(protocol.Symbol) (float64, bool)) func(protocol.Symbol) (float64, bool) {
+	return func(s protocol.Symbol) (float64, bool) {
+		if mark != nil {
+			if p, ok := mark(s); ok {
+				return p, true
+			}
+		}
+		if fallback != nil {
+			return fallback(s)
+		}
+		return 0, false
 	}
 }
