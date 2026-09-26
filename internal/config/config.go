@@ -73,6 +73,8 @@ type Config struct {
 	// ★ 예산(사이징 분모)과 계좌 현금은 다른 값이다. 계좌가 예산보다 작을 때 무슨 일이 나는지도
 	// paper 에서 봐야 하므로 따로 둔다.
 	PaperSeed float64
+	// NotifyPaper — paper 체결도 텔레그램으로 보낼지. 전략 여럿을 paper 로 돌리면 시끄럽다.
+	NotifyPaper bool
 	// BooksFile — 전략별 장부 (internal/book). 비면 {data-dir}/books.json. 파일이 없으면 장부 없음.
 	BooksFile string
 
@@ -97,6 +99,7 @@ func Default() Config {
 		HeartbeatInterval: 20 * time.Second,
 		MaxOrdersPerTick:  5,
 		Broker:            "paper",
+		NotifyPaper:       true, // 지금은 paper 검증 단계 — 체결 알림이 곧 검증 도구다
 		// ★ 국내 주식 기준 **추정치**. 매수 = 위탁수수료만 / 매도 = 위탁수수료 + 증권거래세.
 		//   옛 대칭 15bp 는 매수에 없는 비용(거래세)을 매수에도 물렸다.
 		//
@@ -153,6 +156,8 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 		"paper 시장가 슬리피지 (bp) — ★ 0 으로 두면 손익분기 근처 판정이 뒤집힌다")
 	fs.Float64Var(&c.PaperSeed, "paper-seed", c.PaperSeed,
 		"paper 계좌 시작 현금 (원) — 0 이면 장부 시드 합 + 엔진 예산")
+	fs.BoolVar(&c.NotifyPaper, "notify-paper", c.NotifyPaper,
+		"paper 체결도 텔레그램으로 알림 (기동·오류·경보는 mode 와 무관하게 간다)")
 	fs.StringVar(&c.BooksFile, "books-file", c.BooksFile,
 		"전략별 장부 파일 (기본 {data-dir}/books.json — 없으면 장부 없이 엔진 예산 하나)")
 	fs.BoolVar(&c.UI, "ui", c.UI, "로컬 대시보드 서빙 (--ui=false 로 끔)")
@@ -197,6 +202,11 @@ func KiwoomCreds() (appKey, secret string) {
 // UpbitCreds — 업비트 자격증명도 **환경변수에서만** 읽는다 (KiwoomCreds 와 같은 이유).
 func UpbitCreds() (access, secret string) {
 	return os.Getenv("COCKPIT_UPBIT_ACCESS_KEY"), os.Getenv("COCKPIT_UPBIT_SECRET_KEY")
+}
+
+// TelegramCreds — 텔레그램 봇 토큰·채팅 ID. **환경변수에서만** 읽는다 (토큰이 곧 봇 조종권이다).
+func TelegramCreds() (token, chatID string) {
+	return os.Getenv("COCKPIT_TELEGRAM_BOT_TOKEN"), os.Getenv("COCKPIT_TELEGRAM_CHAT_ID")
 }
 
 // Finish 는 플래그 파싱 후 검증한다.

@@ -52,7 +52,7 @@ func nextBudgetCheck(now time.Time) time.Time {
 // ★ 막지 않고 **크게 경고만** 한다. 줄여서 집행할지는 사람이 정할 일이고, 조용히 예산을
 // 깎으면 "왜 이 크기로 샀는지" 를 원장에서 재현할 수 없게 된다.
 func watchBudget(ctx context.Context, br broker.Broker, budget float64,
-	positions func() []protocol.Position, log *slog.Logger) {
+	positions func() []protocol.Position, log *slog.Logger, alert func(key, text string)) {
 
 	check := func() {
 		c, err := br.Cash(ctx)
@@ -69,6 +69,7 @@ func watchBudget(ctx context.Context, br broker.Broker, budget float64,
 		case !ok:
 			log.Warn("★★ "+msg, "engine_budget", budget, "seed", c.Seed,
 				"orderable", c.Orderable, "deposit", c.Deposit)
+			alert("budget", "💰 "+msg)
 		case msg != "":
 			log.Info(msg, "broker", br.Name())
 		default:

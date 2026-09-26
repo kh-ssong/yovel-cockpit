@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/engine"
 	"github.com/kh-ssong/yovel-cockpit/internal/executor"
 	"github.com/kh-ssong/yovel-cockpit/internal/httpapi"
+	"github.com/kh-ssong/yovel-cockpit/internal/notify"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/quotes"
 	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
@@ -214,8 +216,36 @@ func run() error {
 		log.Warn("이전 세션의 de-risk 가 아직 걸려 있다 — resume 전까지 신규 진입 없음")
 	}
 
+	// ── 알림 ── 설정이 없으면 Nop. ★ 알림은 비동기 큐라 매매를 막지 않는다.
+	nctx, ncancel := context.WithCancel(context.Background())
+	var notifier notify.Notifier = notify.Nop{}
+	var tg *notify.Telegram
+	if tok, chat := config.TelegramCreds(); tok != "" && chat != "" {
+		tg = notify.NewTelegram(nctx, notify.TelegramConfig{
+			Token: tok, ChatID: chat, Log: log,
+			Prefix: fmt.Sprintf("[cockpit:%d]", cfg.Port), // 콕핏 여럿이 한 방을 쓸 때 구분
+		})
+		notifier = tg
+		log.Info("텔레그램 알림 켜짐", "paper_fills", cfg.NotifyPaper)
+	} else {
+		log.Info("텔레그램 알림 꺼짐 — COCKPIT_TELEGRAM_BOT_TOKEN / COCKPIT_TELEGRAM_CHAT_ID")
+	}
+	alerts := notify.NewThrottle(10 * time.Minute)
+	alert := func(key, text string) {
+		if alerts.Allow(key, time.Now()) {
+			notifier.Send(text)
+		}
+	}
+	notifyFill := func(o store.Order, slot string) {
+		if o.Mode == protocol.ModePaper && !cfg.NotifyPaper {
+			return
+		}
+		notifier.Send(notify.Fill(o, slot))
+	}
+
 	exec := executor.New(executor.Deps{
 		Broker: br, Store: st, Engine: eng, Mode: cfg.Mode, DaemonSHA: v.SHA, Log: log,
+		Notify: notifyFill,
 		// 로컬 stop 은 사이징과 **같은 시세원**을 본다 (quotes 패키지 주석 — 두 곳이 각자 조회하면
 		// 같은 틱에서도 다른 값을 본다). 1분보다 늙은 시세로는 stop 을 판정하지 않는다.
 		Quote:       qs.Get,
@@ -225,9 +255,12 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go runLoop(ctx, exec, cfg.ReconcileInterval, wake, log)
+	notifier.Send(fmt.Sprintf("▶️ 콕핏 기동 · %s · broker=%s · 보유 %d · %s",
+		strings.ToUpper(string(cfg.Mode)), br.Name(), len(snap.Positions), v.Version))
+
+	go runLoop(ctx, exec, cfg.ReconcileInterval, wake, log, alert)
 	go watchBudget(ctx, br, books.Total(), // 장부 시드 합 + 엔진 예산
-		func() []protocol.Position { return eng.Snapshot().Positions }, log)
+		func() []protocol.Position { return eng.Snapshot().Positions }, log, alert)
 
 	<-ctx.Done()
 
@@ -238,6 +271,11 @@ func run() error {
 		log.Error("로컬 API 종료 실패", "err", err)
 	}
 	log.Info("cockpitd 종료", "uptime_sec", int64(time.Since(started).Seconds()))
+	notifier.Send(fmt.Sprintf("⏹ 콕핏 종료 · 가동 %s", time.Since(started).Round(time.Second)))
+	ncancel()
+	if tg != nil {
+		tg.Wait() // 종료 알림이 나갈 시간을 준다 (최대 3초)
+	}
 	return nil
 }
 
@@ -334,7 +372,7 @@ func byExchange(feeds map[string]func(protocol.Symbol) (float64, bool)) func(pro
 // runLoop — 집행 루프. ★ 목표 수신과 무관하게 주기적으로 돈다.
 // 목표가 안 와도 브로커 실상태는 바뀔 수 있고(TP 체결·수동 매도), 그걸 못 보면 장부가 썩는다.
 func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duration,
-	wake <-chan struct{}, log *slog.Logger) {
+	wake <-chan struct{}, log *slog.Logger, alert func(key, text string)) {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
@@ -357,6 +395,18 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 			log.Warn("시세가 없어 로컬 stop 을 판정하지 못했다 — 신호원이 죽으면 이 포지션은 stop 없이 방치된다",
 				"positions", res.Blind)
 			lastBlind = time.Now()
+			alert("blind", fmt.Sprintf("👁 시세가 없어 로컬 stop 을 못 지키는 중: %v", res.Blind))
+		}
+		// ★ 같은 오류는 10분에 한 번만 (key = 오류 앞부분). 매 틱 울리면 무시당하고 진짜 사고가 묻힌다.
+		for _, e := range res.Errors {
+			k := e
+			if len(k) > 40 {
+				k = k[:40]
+			}
+			alert("err:"+k, "⚠️ 집행 오류: "+e)
+		}
+		if len(res.Mismatch) > 0 {
+			alert("mismatch", fmt.Sprintf("❓ 장부·실물 불일치: %v", res.Mismatch))
 		}
 
 		// 아무 일도 없었으면 조용히 넘긴다 — 5초마다 로그를 찍으면 진짜 사건이 묻힌다.

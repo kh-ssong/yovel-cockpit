@@ -33,6 +33,9 @@ type Deps struct {
 	Quote func(ctx context.Context, s protocol.Symbol) (float64, time.Time, bool)
 	// MaxPriceAge — 이보다 늙은 시세로는 stop 을 평가하지 않는다 (Blind). 0 이면 검사 안 함.
 	MaxPriceAge time.Duration
+
+	// Notify — 체결을 사람에게 알린다 (텔레그램). nil 이면 안 알린다. ★ 비동기여야 한다.
+	Notify func(o store.Order, slot string)
 }
 
 type Executor struct{ d Deps }
@@ -166,7 +169,7 @@ func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result
 			if p.TpOrderID != "" {
 				reason, src = "tp", store.SourceBot
 			}
-			x.recordOrder(ctx, store.Order{
+			x.recordFill(ctx, p.Slot, store.Order{
 				ID: ids.NewAt(now), IntentID: p.IntentID, Phase: "exit_filled",
 				Symbol: p.Symbol, Side: "sell", Qty: p.Qty, ExitReason: reason, Source: src,
 				Detail: "브로커 조회로 사후 감지 — 체결가·시각 미상",
@@ -233,7 +236,7 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 	if partial {
 		detail = joinDetail(fmt.Sprintf("부분 청산 — 잔량 %v 은 다음 틱에 다시 판다", remaining), detail)
 	}
-	x.recordOrder(ctx, store.Order{
+	x.recordFill(ctx, pos.Slot, store.Order{
 		ID: ids.NewAt(now), IntentID: pos.IntentID, Phase: "exit_filled",
 		Symbol: pos.Symbol, Side: "sell", Qty: fill.Qty, Price: fill.Price,
 		BrokerOrderID: fill.BrokerOrderID, SubmittedAt: &fill.SubmittedAt, FilledAt: &fill.FilledAt,
@@ -293,7 +296,7 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 		signalTS = &bar
 	}
 
-	x.recordOrder(ctx, store.Order{
+	x.recordFill(ctx, t.Slot, store.Order{
 		ID: ids.NewAt(now), IntentID: t.IntentID, Phase: "filled",
 		Symbol: t.Symbol, Side: "buy", Qty: fill.Qty, Price: fill.Price,
 		BrokerOrderID: fill.BrokerOrderID, SignalTS: signalTS,
@@ -358,6 +361,15 @@ func (x *Executor) placeTP(ctx context.Context, pos protocol.Position, price flo
 	}
 	x.d.Engine.UpsertPosition(pos)
 	return nil
+}
+
+// recordFill — 원장에 남기고, 사람에게 알린다. ★ 알림은 비동기라 여기서 막히지 않는다.
+func (x *Executor) recordFill(ctx context.Context, slot string, o store.Order, res *Result) {
+	x.recordOrder(ctx, o, res)
+	if x.d.Notify != nil {
+		o.Mode = x.d.Mode
+		x.d.Notify(o, slot)
+	}
 }
 
 // recordOrder 는 원장에 남기고 업링크 큐에 넣는다.
@@ -450,7 +462,7 @@ func (x *Executor) settleLimits(ctx context.Context, now time.Time, res *Result)
 				"%s: 장부에 없는 지정가가 체결됐다 (order=%s)", f.Symbol.Code, f.OrderID))
 			continue
 		}
-		x.recordOrder(ctx, store.Order{
+		x.recordFill(ctx, p.Slot, store.Order{
 			ID: ids.NewAt(now), IntentID: p.IntentID, Phase: "exit_filled",
 			Symbol: f.Symbol, Side: "sell", Qty: f.Qty, Price: f.Price,
 			BrokerOrderID: f.BrokerOrderID, SubmittedAt: &f.SubmittedAt, FilledAt: &f.FilledAt,
