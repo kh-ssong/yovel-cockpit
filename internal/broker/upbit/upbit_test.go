@@ -416,3 +416,23 @@ func TestTickRounding(t *testing.T) {
 		}
 	}
 }
+
+// 키 없이 시세는 되고, 주문은 서버에 닿지도 않고 막힌다.
+func TestPublicQuotesButCannotTrade(t *testing.T) {
+	f := &fake{t: t, route: map[string]func(call) (int, any){
+		"GET /ticker": ok([]map[string]any{{"market": "KRW-BTC", "trade_price": 101_000_000.0}}),
+	}}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	b := NewPublic(Config{APIURL: srv.URL + "/v1", Sleep: func(time.Duration) {}})
+
+	if q, err := b.Quote(ctx, btc); err != nil || q.Price != 101_000_000 {
+		t.Fatalf("%v %v", q, err)
+	}
+	if _, err := b.Sell(ctx, broker.OrderRequest{Symbol: btc, Qty: 0.001}); err == nil {
+		t.Fatal("키 없이 주문이 통과했다")
+	}
+	if f.count("POST", "/orders") != 0 {
+		t.Fatal("키 없는 주문이 서버에 닿았다")
+	}
+}

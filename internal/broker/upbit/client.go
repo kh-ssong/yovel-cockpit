@@ -31,6 +31,9 @@ import (
 // 따로 만들면 인코딩 차이(`:`·`+`)로 401 "verify the query of Jwt" 가 난다 (reflex-agent
 // 2026-07-18 실계좌). 그래서 호출자가 한 번 만든 query 를 URL 과 해시에 **같이** 쓴다.
 func (b *Broker) token(query string) (string, error) {
+	if b.cfg.AccessKey == "" || b.cfg.SecretKey == "" {
+		return "", errNoKey
+	}
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
@@ -102,6 +105,9 @@ func (e apiError) Unwrap() error {
 	}
 	return nil
 }
+
+// errNoKey — 시세 전용(NewPublic) 드라이버로 인증 동작을 불렀다.
+var errNoKey = errors.New("업비트 키 없음 — 시세 전용 드라이버로는 잔고·주문을 할 수 없다")
 
 // errMaybeSent — 주문 요청이 서버에 닿았는지 모른다.
 var errMaybeSent = errors.New("주문은 나갔을 수 있다")

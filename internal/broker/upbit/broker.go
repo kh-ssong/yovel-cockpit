@@ -37,8 +37,8 @@ const (
 	// MinOrderKRW — KRW 마켓 최소주문금액. 미만이면 under_min_total_* 로 거부된다.
 	MinOrderKRW = 5000.0
 
-	// lot — 코인 수량 최소 단위(소수 8자리). 사이징이 이 단위로 내림한다.
-	lot = 1e-8
+	// Lot — 코인 수량 최소 단위(소수 8자리). 사이징이 이 단위로 내림한다.
+	Lot = 1e-8
 )
 
 type Config struct {
@@ -72,6 +72,19 @@ func New(cfg Config) (*Broker, error) {
 	if cfg.AccessKey == "" || cfg.SecretKey == "" {
 		return nil, fmt.Errorf("access/secret key 가 없다")
 	}
+	return build(cfg), nil
+}
+
+// NewPublic — 키 없이 **시세만** 쓰는 드라이버. 업비트 시세 API 는 공개라 키가 필요 없다.
+//
+// ★ paper 가 코인 시세를 받으려고 쓴다. 인증이 필요한 동작(잔고·주문)은 전부 오류를 낸다 —
+// 키 없는 드라이버가 실수로 브로커 자리에 꽂혀도 주문이 나가지 않는다.
+func NewPublic(cfg Config) *Broker {
+	cfg.AccessKey, cfg.SecretKey = "", ""
+	return build(cfg)
+}
+
+func build(cfg Config) *Broker {
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
@@ -97,7 +110,7 @@ func New(cfg Config) (*Broker, error) {
 	return &Broker{
 		cfg: cfg, apiURL: strings.TrimRight(u, "/"), http: cfg.HTTP,
 		now: cfg.Now, sleep: cfg.Sleep, limit: &limiter{gap: cfg.MinGap},
-	}, nil
+	}
 }
 
 func (b *Broker) Name() string { return "upbit" }
@@ -111,7 +124,7 @@ func market(s protocol.Symbol) (string, error) {
 	return s.Code, nil
 }
 
-func (b *Broker) LotSize(protocol.Symbol) float64       { return lot }
+func (b *Broker) LotSize(protocol.Symbol) float64       { return Lot }
 func (b *Broker) MinOrderValue(protocol.Symbol) float64 { return MinOrderKRW }
 
 // ── 잔고 ────────────────────────────────────────────────────────────────────

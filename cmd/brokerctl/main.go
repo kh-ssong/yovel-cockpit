@@ -84,6 +84,12 @@ func run(args []string) error {
 		return errors.New("명령이 없다: cash | positions | quote SYM | buy SYM | sell SYM")
 	}
 
+	// 업비트 시세는 공개 API — 키 없이도 quote 는 된다.
+	if o.broker == "upbit" && pos[0] == "quote" {
+		if ak, _ := config.UpbitCreds(); ak == "" {
+			o.broker = "upbit-public"
+		}
+	}
 	br, exch, err := build(o)
 	if err != nil {
 		return err
@@ -131,6 +137,8 @@ func build(o opts) (broker.Broker, string, error) {
 		}
 		b, err := upbit.New(upbit.Config{AccessKey: ak, SecretKey: sk})
 		return b, upbit.Exchange, err
+	case "upbit-public":
+		return upbit.NewPublic(upbit.Config{}), upbit.Exchange, nil
 	case "kiwoom":
 		ak, sk := config.KiwoomCreds()
 		if ak == "" || sk == "" {

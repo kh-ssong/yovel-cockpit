@@ -270,7 +270,7 @@ func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) 
 	// 편도 비용. ★ 0 으로 두지 않는다 — 비용 0 시뮬은 손익분기 근처 전략의 판정을 뒤집는다.
 	// ★★ 값은 이제 설정이다(옛 하드코딩 대칭 15bp 는 매수에 없는 비용을 물렸다).
 	//    그리고 기본값도 추정치라, 진짜 요율은 `--paper-fee-bp-*` 로 **자기 원장에서 재서** 넣는다.
-	// 시세 1순위 = flat6 mark_price. 키움이 붙으면 그 뒤를 받친다.
+	// 시세 1순위 = flat6 mark_price. 그 뒤는 거래소별 시세원 (UPBIT = 공개 API, KRX = 키움 키 있을 때).
 	seed := cfg.PaperSeed
 	if seed <= 0 {
 		seed = books.Total()
@@ -278,11 +278,21 @@ func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) 
 	log.Info("paper 시드", "cash", seed)
 	pcfg := paper.Config{
 		Cash: seed, Lot: 1,
+		// 거래소 규칙은 실드라이버의 값을 그대로 쓴다 — paper 만의 규칙을 두지 않는다.
+		Rules: map[string]paper.Rule{
+			// 업비트 KRW 마켓 수수료 0.05% 편도 (거래세 없음). ★ 추정치 — 실요율은 live 원장의 paid_fee 로 확인.
+			upbit.Exchange: {Lot: upbit.Lot, MinOrderValue: upbit.MinOrderKRW, FeeBpBuy: 5, FeeBpSell: 5},
+		},
 		FeeBpBuy:  cfg.PaperFeeBpBuy,
 		FeeBpSell: cfg.PaperFeeBpSell,
 		SlipBp:    cfg.PaperSlipBp,
-		Price:     markFirst(mark, nil),
 	}
+	now := func() time.Time { return time.Now().UTC() }
+	// ★ 업비트 시세는 공개 API 라 키가 없어도 항상 붙인다 — 코인 paper 가 키 없이 제값에 돈다.
+	feeds := map[string]func(protocol.Symbol) (float64, bool){
+		upbit.Exchange: quotes.New(upbit.NewPublic(upbit.Config{}), 3*time.Second, now).Price,
+	}
+	log.Info("paper 브로커에 업비트 공개 시세를 물린다 (키 불필요)")
 	if appKey != "" && secret != "" {
 		kw, err := kiwoom.New(kiwoom.Config{
 			AppKey: appKey, SecretKey: secret, DataDir: cfg.DataDir, Mock: cfg.KiwoomMock,
@@ -290,8 +300,7 @@ func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) 
 		})
 		if err == nil {
 			log.Info("paper 브로커에 키움 실시세를 물린다")
-			src := quotes.New(kw, 3*time.Second, func() time.Time { return time.Now().UTC() })
-			pcfg.Price = markFirst(mark, src.Price)
+			feeds["KRX"] = quotes.New(kw, 3*time.Second, now).Price
 		} else {
 			log.Warn("키움 시세원 연결 실패 — 가격 없이 돈다 (진입 계획은 E_SYMBOL 로 거절된다)", "err", err)
 		}
@@ -304,11 +313,22 @@ func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) 
 		//   막히는 것보다 근사로라도 닫히는 편이 낫다는 판단이고, 남는 degrade 는 아래 둘이다.
 		// ★ 2026-09-26: 이제 1순위 시세는 flat6 의 mark_price 다 (키 없이도 청산이 제값에 나간다).
 		//   flat6 가 mark 를 안 실은 종목만 평단 근사로 떨어진다.
-		log.Warn("키움 시세원 없음 — paper 는 flat6 가 목표에 실은 mark_price 로만 체결가를 정한다. " +
+		log.Warn("키움 시세원 없음 — paper 의 **주식**은 flat6 가 목표에 실은 mark_price 로만 체결가를 정한다. " +
 			"mark 가 없는 종목의 청산은 **보유 평단 근사**라 실현손익이 0 근처로 뭉개진다 — " +
 			"flat6 발행에 mark_price 가 실렸는지 확인할 것")
 	}
+	pcfg.Price = markFirst(mark, byExchange(feeds))
 	return paper.New(pcfg), nil
+}
+
+// byExchange — 종목의 거래소로 시세원을 고른다. 모르는 거래소는 "모른다".
+func byExchange(feeds map[string]func(protocol.Symbol) (float64, bool)) func(protocol.Symbol) (float64, bool) {
+	return func(s protocol.Symbol) (float64, bool) {
+		if f, ok := feeds[s.Exchange]; ok {
+			return f(s)
+		}
+		return 0, false
+	}
 }
 
 // runLoop — 집행 루프. ★ 목표 수신과 무관하게 주기적으로 돈다.
