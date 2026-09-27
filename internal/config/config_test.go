@@ -139,3 +139,18 @@ func TestSecretFromFileAndDotEnv(t *testing.T) {
 		t.Fatal("없는 .env 는 조용히 넘어가야 한다")
 	}
 }
+
+// 한 파일에 라벨로 키 둘 — 업비트가 내려준 모양 그대로.
+func TestSecretLabeledFile(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "upbit.txt")
+	os.WriteFile(f, []byte("\ufeffaccess\r\nAAA111\r\n\r\nsecret:\r\n  BBB222  \r\n"), 0o600)
+	t.Setenv("COCKPIT_T_A_FILE", f+"#access")
+	t.Setenv("COCKPIT_T_S_FILE", f+"#SECRET")
+	t.Setenv("COCKPIT_T_X_FILE", f+"#nope")
+	if a, s := Secret("COCKPIT_T_A"), Secret("COCKPIT_T_S"); a != "AAA111" || s != "BBB222" {
+		t.Fatalf("%q %q", a, s)
+	}
+	if Secret("COCKPIT_T_X") != "" {
+		t.Fatal("없는 라벨에서 값을 만들어냈다")
+	}
+}

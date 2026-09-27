@@ -219,8 +219,37 @@ func Secret(name string) string {
 		return v
 	}
 	if p := os.Getenv(name + "_FILE"); p != "" {
-		if raw, err := os.ReadFile(p); err == nil {
-			return strings.TrimSpace(string(raw))
+		path, label, _ := strings.Cut(p, "#")
+		if raw, err := os.ReadFile(path); err == nil {
+			if label == "" {
+				return strings.TrimSpace(string(raw))
+			}
+			return labeled(string(raw), label)
+		}
+	}
+	return ""
+}
+
+// labeled — 한 파일에 키 여럿이 라벨과 함께 있을 때 (`경로#라벨`). 라벨 줄 다음의 첫 비어 있지 않은 줄.
+//
+//	access
+//	6x....
+//
+//	secret
+//	Vc....
+//
+// ★ 키를 라벨별 파일로 쪼개 복사하지 않으려고 둔다 — 비밀의 사본은 적을수록 좋다.
+func labeled(raw, label string) string {
+	lines := strings.Split(strings.TrimPrefix(raw, "\ufeff"), "\n")
+	for i, l := range lines {
+		k := strings.TrimSuffix(strings.TrimSpace(l), ":")
+		if !strings.EqualFold(k, label) {
+			continue
+		}
+		for _, v := range lines[i+1:] {
+			if v = strings.TrimSpace(v); v != "" {
+				return v
+			}
 		}
 	}
 	return ""
