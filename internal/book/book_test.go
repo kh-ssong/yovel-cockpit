@@ -24,9 +24,9 @@ func TestSourcesMapToBooks(t *testing.T) {
 		active           bool
 	}{
 		{"flat6-1", "intraday/d205", "d205", 16_000_000, true},
-		{"flat6-1", "scalp/coin", "coin", 2_000_000, false},       // 꺼진 전략
-		{"otto-1", "intraday/d205", "", 0, false},                 // ★ 다른 발행자는 남의 장부로 못 산다
-		{"flat6-1", "swing/unknown", "", 0, false},                // 장부에 없는 전략
+		{"flat6-1", "scalp/coin", "coin", 2_000_000, false}, // 꺼진 전략
+		{"otto-1", "intraday/d205", "", 0, false},           // ★ 다른 발행자는 남의 장부로 못 산다
+		{"flat6-1", "swing/unknown", "", 0, false},          // 장부에 없는 전략
 		{"dev-1", "dev/any", "dev", 1_000_000, true},
 	}
 	for _, c := range cases {

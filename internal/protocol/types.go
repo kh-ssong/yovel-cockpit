@@ -252,9 +252,9 @@ type Position struct {
 	TimeExitAt *time.Time `json:"time_exit_at,omitempty"`
 	// Kid · Scope — 이 포지션을 만든 소스 (서명키 × 발행 범위). ★ 이 소스의 목표만 이 포지션을
 	// 건드린다 — 다른 소스의 스냅샷이 이걸 유령으로 신고하거나 팔지 않는다 (pitwall §4).
-	Kid   string `json:"kid,omitempty"`
-	Scope string `json:"scope,omitempty"`
-	UnrealizedPct float64    `json:"unrealized_pct,omitempty"`
+	Kid           string  `json:"kid,omitempty"`
+	Scope         string  `json:"scope,omitempty"`
+	UnrealizedPct float64 `json:"unrealized_pct,omitempty"`
 }
 
 type EventOrder struct {

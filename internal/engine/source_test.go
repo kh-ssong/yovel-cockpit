@@ -84,7 +84,6 @@ func applied(t *testing.T, e *Engine, raw []byte) protocol.Ack {
 	return ack
 }
 
-
 // ★ 한 소스의 스냅샷이 다른 소스의 목표·포지션을 지우지 않는다 (pitwall §4 의 유령 사고).
 func TestSourcesDoNotEraseEachOther(t *testing.T) {
 	flat6, otto := mkSigner("flat6-1", 3), mkSigner("otto-1", 50)

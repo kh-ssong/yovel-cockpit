@@ -143,7 +143,7 @@ func run() error {
 				onInactive(kid, scope, n)
 			}
 		},
-		Price:        qs.Price,
+		Price: qs.Price,
 		Market: func(s protocol.Symbol) sizing.Market {
 			return sizing.Market{LotSize: br.LotSize(s), MinOrderValue: br.MinOrderValue(s)}
 		},
