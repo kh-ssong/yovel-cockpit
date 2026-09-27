@@ -367,6 +367,20 @@ func (b *Broker) CancelOrder(ctx context.Context, s protocol.Symbol, orderID str
 	return b.call(ctx, apiCancel, pathOrder, body, nil)
 }
 
+// LimitStatus — 걸어 둔 지정가(TP)의 체결 현황 (ka10076, 주문번호 매칭).
+// ★ ka10076 은 금일 체결만 준다 — TP 는 당일 주문이라 충분하다. 미체결 여부는 알 수 없어 Open=true.
+func (b *Broker) LimitStatus(ctx context.Context, s protocol.Symbol, orderID string) (broker.LimitStatus, error) {
+	agg, err := b.fetchFills(ctx, s, orderID)
+	if err != nil {
+		return broker.LimitStatus{Open: true}, err
+	}
+	st := broker.LimitStatus{FilledQty: agg.qty, FeeKRW: agg.fee, FilledAt: agg.last, Open: true}
+	if agg.qty > 0 {
+		st.AvgPrice = agg.amount / agg.qty
+	}
+	return st, nil
+}
+
 // ── 체결 확인 ───────────────────────────────────────────────────────────────
 
 // waitFill 은 주문번호로 체결을 확인한다.

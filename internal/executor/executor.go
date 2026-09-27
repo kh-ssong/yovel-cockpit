@@ -39,13 +39,17 @@ type Deps struct {
 	Notify func(o store.Order, slot string)
 }
 
-type Executor struct{ d Deps }
+type Executor struct {
+	d Deps
+	// tpChecked — 로트별 마지막 TP 체결 조회 시각. 5초 틱마다 전부 물으면 조회 한도를 먹는다.
+	tpChecked map[string]time.Time
+}
 
 func New(d Deps) *Executor {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
-	return &Executor{d: d}
+	return &Executor{d: d, tpChecked: map[string]time.Time{}}
 }
 
 // Result — 이번 틱에 실제로 일어난 일.
@@ -87,6 +91,9 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 	// ★ 순서 주의 — 정산을 syncPositions **앞에** 둔다. 뒤에 두면 이번 틱의 포지션 목록이
 	//   이미 팔린 종목을 담고 있어 한 틱 늦게 종결되고, paper 만 라이브보다 굼떠 보인다.
 	x.settleLimits(ctx, now, &res)
+	// 실브로커의 TP 체결을 **주문번호로** 확인한다 — 같은 종목에 로트가 여럿이면 아래 syncPositions
+	// ("종목이 사라졌나")로는 한 로트의 TP 체결을 못 본다.
+	x.checkDelegatedTPs(ctx, now, &res)
 
 	x.syncPositions(ctx, now, &res)
 
@@ -192,8 +199,13 @@ func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result
 				"%s: 장부 %.0f주 vs 실물 %.0f주", p.Symbol.Code, expected[p.Symbol.Code], h.Qty))
 		}
 
+		// ★ 로트의 진입가는 **원장의 체결가**가 진실이다. 브로커 평단은 그 종목의 모든 로트
+		// (+ 장부 밖 보유)를 섞은 값이라, 로트가 둘 이상이면 덮어쓰는 순간 로트별 손익이 틀어진다.
+		// 원장 값이 비었을 때만(사후 복구 등) 브로커 평단으로 채운다.
 		pos := p
-		pos.AvgEntryPrice = h.AvgPrice
+		if pos.AvgEntryPrice <= 0 {
+			pos.AvgEntryPrice = h.AvgPrice
+		}
 		x.d.Engine.UpsertPosition(pos)
 	}
 }

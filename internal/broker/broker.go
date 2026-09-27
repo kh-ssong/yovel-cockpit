@@ -130,6 +130,25 @@ func SlippageBp(side string, ref, filled float64) float64 {
 	return d
 }
 
+// LimitStatus — 걸어 둔 지정가(TP) 하나의 체결 현황. 주문번호로 직접 묻는다.
+//
+// ★ 왜 필요한가: 같은 종목을 로트 여럿이 들고 있으면, 한 로트의 TP 가 체결돼도 계좌엔 그 종목이
+// 남아 있다 → "종목이 계좌에서 사라졌나" 로는 **못 알아챈다.** 그 로트가 장부에 남으면 나중에
+// 그걸 팔 때 **다른 로트의 주식을 판다.**
+type LimitStatus struct {
+	FilledQty float64
+	AvgPrice  float64
+	FeeKRW    float64
+	FilledAt  time.Time // 모르면 zero
+	// Open — 주문이 아직 살아 있다 (남은 수량이 체결될 수 있다). 모르면 true 로 둔다(보수적).
+	Open bool
+}
+
+// LimitChecker — 지정가 체결을 주문번호로 확인할 수 있는 브로커 (실브로커).
+type LimitChecker interface {
+	LimitStatus(ctx context.Context, s protocol.Symbol, orderID string) (LimitStatus, error)
+}
+
 // LimitFill — **브로커가 스스로 들고 있던 지정가**가 체결된 건.
 //
 // ★ 왜 별도 타입인가 — 우리가 낸 주문의 체결(`Fill`)과 달리, 이건 *우리가 부르지 않았는데*

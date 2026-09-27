@@ -322,6 +322,34 @@ func (b *Broker) CancelOrder(ctx context.Context, _ protocol.Symbol, orderID str
 	return b.do(ctx, http.MethodDelete, "/order", url.Values{"uuid": {orderID}}, nil)
 }
 
+// LimitStatus — 걸어 둔 지정가(TP)의 체결 현황 (GET /order).
+func (b *Broker) LimitStatus(ctx context.Context, _ protocol.Symbol, orderID string) (broker.LimitStatus, error) {
+	var o order
+	if err := b.do(ctx, http.MethodGet, "/order", url.Values{"uuid": {orderID}}, &o); err != nil {
+		return broker.LimitStatus{Open: true}, err
+	}
+	st := broker.LimitStatus{Open: !o.final(), FeeKRW: float64(o.PaidFee)}
+	var funds float64
+	for _, t := range o.Trades {
+		st.FilledQty += float64(t.Volume)
+		f := float64(t.Funds)
+		if f <= 0 {
+			f = float64(t.Volume) * float64(t.Price)
+		}
+		funds += f
+		if ts, err := time.Parse(time.RFC3339, t.CreatedAt); err == nil && ts.After(st.FilledAt) {
+			st.FilledAt = ts.UTC()
+		}
+	}
+	if st.FilledQty <= 0 && o.ExecutedVolume > 0 {
+		st.FilledQty, funds = float64(o.ExecutedVolume), float64(o.ExecutedFunds)
+	}
+	if st.FilledQty > 0 && funds > 0 {
+		st.AvgPrice = funds / st.FilledQty
+	}
+	return st, nil
+}
+
 // ── 체결 확인 ───────────────────────────────────────────────────────────────
 
 type trade struct {
