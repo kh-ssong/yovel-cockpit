@@ -15,6 +15,9 @@ import (
 // ★ json 태그를 다는 이유: 이 계획은 로컬 API(/v1/plan)로 그대로 나간다.
 // 와이어 전체가 snake_case 인데 여기만 Go 필드명이면, UI 가 두 가지 규약을 동시에 다뤄야 한다.
 type EnterOrder struct {
+	// Kid · Scope — 이 진입을 지시한 소스. 포지션·원장에 그대로 실린다.
+	Kid      string          `json:"kid,omitempty"`
+	Scope    string          `json:"scope,omitempty"`
 	Target   protocol.Target `json:"target"`
 	Qty      float64         `json:"qty"`
 	Price    float64         `json:"price"` // 사이징에 쓴 참조가. 지정가면 그대로, 시장가면 추정용
@@ -82,12 +85,11 @@ type Options struct {
 	//
 	// ★ 두 번째 엔진이 붙으면 호출자가 kid 로 골라 넣는다 (architecture.md §4). 여기가 스칼라인
 	// 것은 소스가 하나라서이지, 예산이 계좌 전체라는 뜻이 아니다.
-	Budget float64
-	// Book — 슬롯이 속한 장부와 그 예산 (internal/book). nil 이면 모든 슬롯이 Budget 하나를 쓴다.
 	//
-	// ★ 장부가 있으면 사이징 분모와 자본 한도가 **장부마다** 따로다. 한 전략이 다른 전략의
-	// 남은 돈으로 사지 않는다 — 전략별 paper 검증이 서로 섞이지 않게 하는 게 목적이다.
-	Book func(slot string) (name string, budget float64)
+	// ★ 소스(kid × scope)마다 Build 를 따로 부른다 — 이 값은 **그 소스의 장부 예산**이다.
+	Budget float64
+	// Inactive — 이 소스는 이 콕핏에서 활성화되지 않았다 → 진입은 E_INACTIVE, 청산은 그대로.
+	Inactive bool
 	// Price — 사이징 참조가. 없으면 그 종목은 진입하지 않는다.
 	Price func(protocol.Symbol) (float64, bool)
 	// Market — 종목별 주문 제약. nil 이면 주식 기본값.
@@ -103,13 +105,6 @@ func (o Options) terminal(id string) bool {
 	return o.Terminal != nil && o.Terminal(id)
 }
 
-func (o Options) book(slot string) (string, float64) {
-	if o.Book == nil {
-		return "", o.Budget
-	}
-	return o.Book(slot)
-}
-
 func (o Options) market(s protocol.Symbol) sizing.Market {
 	if o.Market == nil {
 		return sizing.StockMarket()
@@ -119,6 +114,9 @@ func (o Options) market(s protocol.Symbol) sizing.Market {
 
 // entryBlocked 는 진입을 막는 로컬 사유를 준다 (없으면 빈 값).
 func (o Options) entryBlocked() protocol.RejectCode {
+	if o.Inactive {
+		return protocol.CodeInactive
+	}
 	if o.Paused {
 		return protocol.CodePaused
 	}
@@ -155,7 +153,7 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 	// 이걸 안 빼면 스냅샷이 재발행될 때마다 예산 전액이 새로 생긴다 — 그리고 재발행(델타가 아니라
 	// 전체 스냅샷)은 이 프로토콜의 **기본 동작**이라 매 봉 반복된다. 즉 조용히, 그러나 빠르게
 	// 예산을 넘는다. 청산 주문이 나가는 자리도 아직 안 팔린 것이므로 그대로 센다.
-	spent := committed(actual, opt) // 장부 이름 → 이미 먹은 금액
+	spent := committed(actual, opt)
 
 	// ★ targets 순회 순서 = 엔진이 정한 우선순위 (protocol.md §6). 예산 소진도 이 순서를 따른다.
 	// 정렬을 넣거나 map 으로 바꾸면 그 순간 우선순위가 사라진다 — 회귀 gate 가 이 순서를 지킨다.
@@ -209,13 +207,12 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 			plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{localBlock}))
 
 		default:
-			name, budget := opt.book(t.Slot)
-			enter, codes := buildEnter(t, opt, budget, budget-spent[name])
+			enter, codes := buildEnter(t, opt, opt.Budget-spent)
 			if len(codes) > 0 {
 				plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", codes))
 				continue
 			}
-			spent[name] += enter.Notional
+			spent += enter.Notional
 			plan.Enters = append(plan.Enters, enter)
 			plan.Acks = append(plan.Acks, ack(t.IntentID, "applied", nil))
 		}
@@ -228,7 +225,7 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 		}
 	}
 
-	applyOrderCap(&plan, opt.MaxOrders)
+	ApplyOrderCap(&plan, opt.MaxOrders)
 	return plan
 }
 
@@ -236,7 +233,9 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 //
 // ★ 자를 때 청산은 절대 건드리지 않는다. 상한은 폭주를 막는 장치지 청산을 미루는 장치가 아니고,
 // 진입 실패는 기회 상실(유한)이지만 청산 실패는 손실 노출(무한)이다.
-func applyOrderCap(plan *Plan, max int) {
+//
+// 소스가 여럿이면 호출자가 계획을 합친 뒤 **한 번 더** 건다 — 상한은 계좌 전체의 폭주 차단이다.
+func ApplyOrderCap(plan *Plan, max int) {
 	if max <= 0 {
 		return
 	}
@@ -260,10 +259,9 @@ func applyOrderCap(plan *Plan, max int) {
 //
 // ★ 평단이 비어 있으면(원장이 아직 못 채운 포지션) 현재가로라도 값을 매긴다. 0 으로 세면
 // 그 포지션이 예산에서 사라져 그만큼 더 사게 되는데, 그건 "모르는 것"을 "없는 것"으로 읽는 것이다.
-func committed(actual []protocol.Position, opt Options) map[string]float64 {
-	sum := map[string]float64{}
+func committed(actual []protocol.Position, opt Options) float64 {
+	var sum float64
 	for _, p := range actual {
-		name, _ := opt.book(p.Slot)
 		price := p.AvgEntryPrice
 		if price <= 0 && opt.Price != nil {
 			if q, ok := opt.Price(p.Symbol); ok {
@@ -271,7 +269,7 @@ func committed(actual []protocol.Position, opt Options) map[string]float64 {
 			}
 		}
 		if price > 0 {
-			sum[name] += p.Qty * price
+			sum += p.Qty * price
 		}
 	}
 	return sum
@@ -282,7 +280,7 @@ func committed(actual []protocol.Position, opt Options) map[string]float64 {
 // ★ 남은 예산을 넘으면 **거절하지 축소하지 않는다.** 줄여서 사면 그건 엔진이 지시한 적 없는
 // 비중이고 (§7 "조용히 1주" 금지와 같은 병), 사용자는 자기가 무엇을 못 샀는지도 모르게 된다.
 // 거절은 ack{E_CAPITAL} 로 남으므로 화면에서 보인다.
-func buildEnter(t protocol.Target, opt Options, budget, remaining float64) (EnterOrder, []protocol.RejectCode) {
+func buildEnter(t protocol.Target, opt Options, remaining float64) (EnterOrder, []protocol.RejectCode) {
 	// ★ 신호를 낸 쪽이 기준가를 실어 보냈으면 그걸 쓴다. 여기서 다시 조회하면
 	// 신호를 낸 가격과 사이징한 가격이 갈리고, 종목 수만큼 왕복이 늘어난다.
 	var price float64
@@ -302,7 +300,7 @@ func buildEnter(t protocol.Target, opt Options, budget, remaining float64) (Ente
 		price = t.Entry.LimitPrice
 	}
 
-	res := sizing.Shares(t.Weight, budget, price, opt.market(t.Symbol))
+	res := sizing.Shares(t.Weight, opt.Budget, price, opt.market(t.Symbol))
 	if len(res.Codes) > 0 {
 		return EnterOrder{}, res.Codes
 	}

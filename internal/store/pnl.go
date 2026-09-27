@@ -13,6 +13,8 @@ import (
 type IntentPnL struct {
 	IntentID string
 	Slot     string
+	Kid      string
+	Scope    string
 	Closed   bool
 	// Cost — 매수 체결금액 + 매수 수수료. Proceeds — 매도 체결금액 − 매도 수수료.
 	Cost     float64
@@ -37,7 +39,7 @@ func (s *Store) PnLByIntent(ctx context.Context, mode protocol.Mode) ([]IntentPn
 		return nil, ErrModeRequired
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT i.intent_id, COALESCE(i.slot, ''), i.closed_at IS NOT NULL,
+SELECT i.intent_id, COALESCE(i.slot, ''), i.kid, i.scope, i.closed_at IS NOT NULL,
        o.side, o.qty, o.price, COALESCE(o.fee_krw, 0)
 FROM orders o JOIN intents i ON i.intent_id = o.intent_id
 WHERE o.mode = ? AND o.phase IN ('filled', 'exit_filled')
@@ -50,17 +52,17 @@ ORDER BY i.intent_id`, string(mode))
 	var out []IntentPnL
 	idx := map[string]int{}
 	for rows.Next() {
-		var id, slot, side string
+		var id, slot, kid, scope, side string
 		var closed bool
 		var qty, price, fee float64
-		if err := rows.Scan(&id, &slot, &closed, &side, &qty, &price, &fee); err != nil {
+		if err := rows.Scan(&id, &slot, &kid, &scope, &closed, &side, &qty, &price, &fee); err != nil {
 			return nil, err
 		}
 		i, ok := idx[id]
 		if !ok {
 			i = len(out)
 			idx[id] = i
-			out = append(out, IntentPnL{IntentID: id, Slot: slot, Closed: closed})
+			out = append(out, IntentPnL{IntentID: id, Slot: slot, Kid: kid, Scope: scope, Closed: closed})
 		}
 		p := &out[i]
 		switch side {

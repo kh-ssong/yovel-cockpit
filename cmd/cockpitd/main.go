@@ -101,15 +101,18 @@ func run() error {
 		return fmt.Errorf("장부 설정: %w", err)
 	}
 	for _, b := range books.Books() {
-		log.Info("장부", "name", b.Name, "seed", b.Seed, "slots", b.Slots)
+		log.Info("활성 전략(장부)", "name", b.Name, "kid", b.Kid, "scope", b.Scope, "seed", b.Seed, "enabled", b.On())
 	}
-	if len(books.Books()) > 0 && cfg.EngineBudget <= 0 {
-		log.Info("엔진 예산 0 — 장부에 없는 슬롯의 진입은 E_CAPITAL 로 거절된다")
+	if books.Configured() {
+		log.Info("장부에 없는 (kid, scope) 의 진입은 E_INACTIVE 로 거절된다 — 청산은 계속")
+	} else {
+		log.Info("장부 설정 없음 — 모든 소스가 엔진 예산 하나로 돈다", "engine_budget", cfg.EngineBudget)
 	}
 
 	// marks — flat6 가 목표에 실어 보낸 가격. 엔진이 생기기 전에 paper 가 참조를 잡아야 해서
 	// 간접 참조로 둔다 (엔진 → 시세 → paper → marks → 엔진 순환을 끊는다).
 	var eng *engine.Engine
+	var onInactive func(kid, scope string, n int)
 	mark := func(s protocol.Symbol) (float64, bool) {
 		if eng == nil {
 			return 0, false
@@ -134,6 +137,12 @@ func run() error {
 		// ★ 자본은 사용자가 정한다. 엔진은 비중만 보낸다 (슬롯 사이 분배 = weight).
 		EngineBudget: cfg.EngineBudget,
 		Books:        books,
+		OnInactive: func(kid, scope string, n int) {
+			// alert 는 아래에서 만든다 — 기동 순서상 엔진이 먼저라 간접으로 부른다.
+			if onInactive != nil {
+				onInactive(kid, scope, n)
+			}
+		},
 		Price:        qs.Price,
 		Market: func(s protocol.Symbol) sizing.Market {
 			return sizing.Market{LotSize: br.LotSize(s), MinOrderValue: br.MinOrderValue(s)}
@@ -239,6 +248,11 @@ func run() error {
 		if alerts.Allow(key, time.Now()) {
 			notifier.Send(text)
 		}
+	}
+	onInactive = func(kid, scope string, n int) {
+		log.Warn("활성화되지 않은 전략의 진입 지시 — E_INACTIVE", "kid", kid, "scope", scope, "targets", n)
+		alert("inactive:"+book.Key(kid, scope), fmt.Sprintf(
+			"🔕 활성화 안 된 전략의 진입 %d 건을 거절했다 — %s (켜려면 books.json 에 추가)", n, book.Key(kid, scope)))
 	}
 	notifyFill := func(o store.Order, slot string) {
 		if o.Mode == protocol.ModePaper && !cfg.NotifyPaper {

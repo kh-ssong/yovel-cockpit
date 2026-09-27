@@ -54,6 +54,9 @@ const (
 	// ★ 서명이 유효해도 거절한다. 서명은 "누가 만들었나" 를 증명하지 "누구에게 가는 것인가" 는
 	// 증명하지 않는다 — 릴레이는 A 의 진짜 서명된 목표를 B 에게 배달할 수 있다.
 	CodeAcct RejectCode = "E_ACCT"
+	// CodeInactive — 이 콕핏에서 활성화하지 않은 (kid, scope) 의 진입. 사용자가 끈 전략이거나
+	// 장부 설정이 없는 전략이다. ★ 청산은 막지 않는다 — 끈다고 보유가 무방비가 되면 안 된다.
+	CodeInactive RejectCode = "E_INACTIVE"
 )
 
 // Envelope 는 모든 메시지가 공유하는 껍데기.
@@ -107,6 +110,12 @@ func SafeBookState(s BookState) BookState {
 
 // IntentTarget 은 이 프로토콜의 본체 — 이벤트가 아니라 목표상태 전체 스냅샷이다.
 type IntentTarget struct {
+	// Scope — 발행 범위 (`카테고리/playbook`, 예: "intraday/d205"). pitwall architecture.md §12.
+	//
+	// ★ 스냅샷의 의미는 "계정 전체의 목표" 가 아니라 **"이 (kid, scope) 의 전체 목표"** 다.
+	// 한 발행자가 여러 전략을 내면 전략마다 따로 스냅샷을 보내고, 서로를 지우지 않는다.
+	// 비어 있으면 그 kid 의 기본 범위 하나로 읽는다 (scope 이전 발행자와 호환).
+	Scope     string    `json:"scope,omitempty"`
 	AsOfBar   time.Time `json:"as_of_bar"`
 	BookState BookState `json:"book_state"`
 	Targets   []Target  `json:"targets"`
@@ -240,7 +249,11 @@ type Position struct {
 	TpArmed   float64 `json:"tp_armed,omitempty"`
 	TpOrderID string  `json:"tp_order_id,omitempty"`
 	// TimeExitAt — 이 시각이 되면 콕핏이 **스스로** 판다 (데드맨). 시세가 없어도 동작한다.
-	TimeExitAt    *time.Time `json:"time_exit_at,omitempty"`
+	TimeExitAt *time.Time `json:"time_exit_at,omitempty"`
+	// Kid · Scope — 이 포지션을 만든 소스 (서명키 × 발행 범위). ★ 이 소스의 목표만 이 포지션을
+	// 건드린다 — 다른 소스의 스냅샷이 이걸 유령으로 신고하거나 팔지 않는다 (pitwall §4).
+	Kid   string `json:"kid,omitempty"`
+	Scope string `json:"scope,omitempty"`
 	UnrealizedPct float64    `json:"unrealized_pct,omitempty"`
 }
 

@@ -6,67 +6,69 @@ import (
 	"testing"
 )
 
-func TestSlotsMapToBooks(t *testing.T) {
+func off() *bool { f := false; return &f }
+
+func TestSourcesMapToBooks(t *testing.T) {
 	s, err := New([]Book{
-		{Name: "d205", Seed: 16_000_000, Slots: []string{"d205", "klev"}},
-		{Name: "places", Seed: 5_000_000},
-	}, 1_000_000)
+		{Name: "d205", Kid: "flat6-1", Scope: "intraday/d205", Seed: 16_000_000},
+		{Name: "klev", Kid: "flat6-1", Scope: "intraday/klev", Seed: 3_000_000},
+		{Name: "coin", Kid: "flat6-1", Scope: "scalp/coin", Seed: 2_000_000, Enabled: off()},
+		{Name: "dev", Scope: "dev/any", Seed: 1_000_000}, // kid 생략 = 아무 kid
+	}, 99)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cases := map[string]struct {
-		name   string
-		budget float64
+	cases := []struct {
+		kid, scope, name string
+		budget           float64
+		active           bool
 	}{
-		"klev":    {"d205", 16_000_000}, // 한 전략의 두 슬롯은 한 장부 — 시드가 곱해지지 않는다
-		"d205":    {"d205", 16_000_000},
-		"places":  {"places", 5_000_000},
-		"unknown": {Default, 1_000_000},
+		{"flat6-1", "intraday/d205", "d205", 16_000_000, true},
+		{"flat6-1", "scalp/coin", "coin", 2_000_000, false},       // 꺼진 전략
+		{"otto-1", "intraday/d205", "", 0, false},                 // ★ 다른 발행자는 남의 장부로 못 산다
+		{"flat6-1", "swing/unknown", "", 0, false},                // 장부에 없는 전략
+		{"dev-1", "dev/any", "dev", 1_000_000, true},
 	}
-	for slot, want := range cases {
-		n, b := s.Of(slot)
-		if n != want.name || b != want.budget {
-			t.Errorf("%s → %s/%v, 기대 %s/%v", slot, n, b, want.name, want.budget)
+	for _, c := range cases {
+		n, b, a := s.Of(c.kid, c.scope)
+		if n != c.name || b != c.budget || a != c.active {
+			t.Errorf("%s/%s → %s/%v/%v, 기대 %s/%v/%v", c.kid, c.scope, n, b, a, c.name, c.budget, c.active)
 		}
 	}
-	if s.Total() != 22_000_000 {
+	if s.Total() != 20_000_000 { // 꺼진 coin 제외
 		t.Fatalf("합계 %v", s.Total())
 	}
 }
 
-// ★ 한 슬롯이 두 장부에 있으면 어느 돈으로 샀는지 모른다 — 기동을 막는다.
-func TestSlotInTwoBooksRejected(t *testing.T) {
-	_, err := New([]Book{
-		{Name: "a", Seed: 1, Slots: []string{"x"}},
-		{Name: "b", Seed: 1, Slots: []string{"x"}},
-	}, 0)
-	if err == nil {
-		t.Fatal("중복 슬롯을 받았다")
+// ★ 한 소스가 두 장부에 걸리면 어느 돈으로 샀는지 모른다 — 기동을 막는다.
+func TestSameSourceInTwoBooksRejected(t *testing.T) {
+	if _, err := New([]Book{
+		{Name: "a", Kid: "k", Scope: "x", Seed: 1},
+		{Name: "b", Scope: "x", Seed: 1}, // kid 생략이 k 를 덮는다
+	}, 0); err == nil {
+		t.Fatal("겹치는 소스를 받았다")
 	}
 }
 
-func TestLoadMissingFileIsDefaultOnly(t *testing.T) {
+// 장부 파일이 없으면 옛 방식 — 모든 소스가 엔진 예산 하나로 돈다.
+func TestNoBooksIsLegacy(t *testing.T) {
 	s, err := Load(filepath.Join(t.TempDir(), "none.json"), 7)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n, b := s.Of("any"); n != Default || b != 7 || len(s.Books()) != 0 {
-		t.Fatalf("%s %v", n, b)
+	if n, b, a := s.Of("any", "whatever"); n != Default || b != 7 || !a {
+		t.Fatalf("%s %v %v", n, b, a)
 	}
 }
 
 func TestLoadFile(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "books.json")
-	os.WriteFile(p, []byte(`{"books":[{"name":"d205","seed":16000000}]}`), 0o600)
+	os.WriteFile(p, []byte(`{"books":[{"name":"d205","kid":"flat6-1","scope":"intraday/d205","seed":16000000}]}`), 0o600)
 	s, err := Load(p, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n, b := s.Of("d205"); n != "d205" || b != 16_000_000 {
-		t.Fatalf("%s %v", n, b)
-	}
-	// 기본 예산 0 → 장부 밖 슬롯은 분모 0 = 거절 대상.
-	if _, b := s.Of("other"); b != 0 {
-		t.Fatalf("장부 밖 슬롯 예산 %v", b)
+	if n, b, a := s.Of("flat6-1", "intraday/d205"); n != "d205" || b != 16_000_000 || !a {
+		t.Fatalf("%s %v %v", n, b, a)
 	}
 }

@@ -128,7 +128,11 @@ created ──submit──▶ submitted ──fill*──▶ partial ──fill*
 
 ## 9. 엔진 계약 (변경 최소)
 
-- `intent.target` 그대로. `slot` → Book 매핑은 콕핏 설정 (Account 별).
+- ★ **Book = 소스 = (kid, scope)** (2026-09-27, pitwall §4·§12 에 맞춤). 전략은 전부 서버에 있고 콕핏은
+  **자기에게 활성화된 소스만** 집행한다. `slot` 은 Book 안의 회계 단위일 뿐 매핑 키가 아니다.
+  v1 에 선반영: 소스별 seq·스냅샷·유령 판정·예산, 원장 `kid`/`scope` 컬럼, `E_INACTIVE` (protocol.md §4.1.1·§7.1.3).
+- 활성화: 과금 차단은 릴레이(전달 안 함), 콕핏은 사용자 취향(켜기/끄기·시드). v2 에선 이 설정도 DB(`book.adjust`)로.
+- 첫 후보 = flat6 의 주식(D-205) · ETF(KODEX 레버리지) · 코인 스캘핑 각 1개 (개발 중, 나중 연동).
 - `weight` 의미 = **장부 시드 대비** 한 자리 크기 (v1 §7.1.3 과 같음).
 - 추가 요구: `mark_price` 싣기 (이미 규격), heartbeat (데드맨용 — 없으면 목표 발행 시각으로 대신).
 

@@ -7,6 +7,12 @@
   "additionalProperties": true,
   "required": ["as_of_bar", "book_state", "targets"],
   "properties": {
+    "scope": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[^|#+ ]*$",
+      "description": "발행 범위 = `카테고리/playbook` (예: intraday/d205). ★ 이 스냅샷은 (서명 kid, scope) 의 전체 목표다 — 다른 소스의 목표·포지션을 지우지 않는다. 비면 kid 의 기본 범위 (protocol.md §4.1.1)."
+    },
     "as_of_bar": {
       "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
       "description": "이 목표를 계산한 완성봉의 시각."

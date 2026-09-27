@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS intents (
   intent_id       TEXT PRIMARY KEY,
   slot            TEXT NOT NULL,
+  kid             TEXT NOT NULL DEFAULT '',  -- 소스 (서명키). v2
+  scope           TEXT NOT NULL DEFAULT '',  -- 발행 범위 (카테고리/playbook). v2
   exchange        TEXT NOT NULL,
   code            TEXT NOT NULL,
   side            TEXT NOT NULL,
@@ -40,6 +42,8 @@ CREATE INDEX IF NOT EXISTS intents_open ON intents (closed_at) WHERE closed_at I
 CREATE TABLE IF NOT EXISTS orders (
   id              TEXT PRIMARY KEY,          -- ULID. 멱등키 (같은 id 재기록은 무해)
   intent_id       TEXT NOT NULL,
+  kid             TEXT NOT NULL DEFAULT '',  -- ★ 원장에도 소스를 남긴다 — 범위별 성과·과금 감사 (pitwall §12.9). v2
+  scope           TEXT NOT NULL DEFAULT '',
   phase           TEXT NOT NULL,
   exchange        TEXT NOT NULL,
   code            TEXT NOT NULL,

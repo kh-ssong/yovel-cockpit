@@ -9,14 +9,18 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/store"
 )
 
-// BookStat — 전략(장부) 하나의 성적. `/v1/books` 로 나간다.
+// BookStat — 활성화된 전략(장부) 하나의 성적. `/v1/books` 로 나간다.
 //
 // ★ 수익률의 분모는 **시드**다 (복리 아님). 도장 원장이 고정 크기(종목당 N원)로 재므로
 // 같은 잣대여야 대조가 된다.
 type BookStat struct {
-	Name  string   `json:"name"`
-	Seed  float64  `json:"seed"`
-	Slots []string `json:"slots,omitempty"`
+	Name    string  `json:"name"`
+	Kid     string  `json:"kid,omitempty"`
+	Scope   string  `json:"scope"`
+	Seed    float64 `json:"seed"`
+	Enabled bool    `json:"enabled"`
+	// Unbooked — 장부 설정에 없는 소스인데 포지션·거래가 있다 (설정 전에 산 것 등). 진입은 막혀 있다.
+	Unbooked bool `json:"unbooked,omitempty"`
 
 	Open     int     `json:"open"`
 	OpenCost float64 `json:"open_cost"`
@@ -44,25 +48,29 @@ func (e *Engine) BookStats(ctx context.Context, mode protocol.Mode) ([]BookStat,
 
 	books := e.cfg.Books
 	stats := map[string]*BookStat{}
-	get := func(slot string) *BookStat {
-		name, seed := books.Of(slot)
+	get := func(kid, scope string) *BookStat {
+		name, seed, active := books.Of(kid, scope)
 		if books == nil {
-			name, seed = book.Default, e.cfg.EngineBudget
+			name, seed, active = book.Default, e.cfg.EngineBudget, true
 		}
-		st, ok := stats[name]
+		key := name
+		if key == "" {
+			key = "?" + book.Key(kid, scope)
+		}
+		st, ok := stats[key]
 		if !ok {
-			st = &BookStat{Name: name, Seed: seed}
-			stats[name] = st
+			st = &BookStat{Name: key, Kid: kid, Scope: scope, Seed: seed, Enabled: active, Unbooked: name == ""}
+			stats[key] = st
 		}
 		return st
 	}
 	// 설정된 장부는 거래가 없어도 보인다 — "안 샀다" 도 성적이다.
 	for _, b := range books.Books() {
-		stats[b.Name] = &BookStat{Name: b.Name, Seed: b.Seed, Slots: b.Slots}
+		stats[b.Name] = &BookStat{Name: b.Name, Kid: b.Kid, Scope: b.Scope, Seed: b.Seed, Enabled: b.On()}
 	}
 
 	for _, p := range open {
-		st := get(p.Slot)
+		st := get(p.Kid, p.Scope)
 		st.Open++
 		st.OpenCost += p.Qty * p.AvgEntryPrice
 	}
@@ -76,7 +84,7 @@ func (e *Engine) BookStats(ctx context.Context, mode protocol.Mode) ([]BookStat,
 			if !r.Closed {
 				continue
 			}
-			st := get(r.Slot)
+			st := get(r.Kid, r.Scope)
 			if r.PriceUnknown {
 				st.PriceUnknown++
 				continue

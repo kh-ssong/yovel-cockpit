@@ -1,12 +1,19 @@
-// Package book 은 **전략별 장부**다 — 시드 하나를 여러 전략이 나눠 쓰지 않게 한다.
+// Package book 은 **활성화된 전략별 장부**다.
 //
-// ★ 왜 슬롯이 아니라 장부인가 (protocol.md §7.1 과의 관계):
-// 슬롯마다 자본을 주면 한 엔진이 슬롯을 여러 개 쓸 때 노출이 슬롯 수만큼 곱해진다 — 그래서
-// 콕핏은 "엔진 예산 하나" 로 갔다. 장부는 그 **엔진 예산을 전략 단위로 여러 개** 두는 것이다.
-// 한 전략이 슬롯을 여럿 쓰면 그 슬롯들을 **한 장부에 묶는다** — 그 안의 분배는 여전히 weight 가 한다.
+// 전략은 전부 서버 엔진에 있다. 콕핏은 그중 **자기에게 활성화된 것만** 집행한다 (pitwall
+// architecture.md §12). 장부 하나 = 소스 하나 = (kid, scope):
+//   - kid   — 서명키 = 발행자 (예: flat6-1)
+//   - scope — 발행 범위 = `카테고리/playbook` (예: intraday/d205)
 //
-// 장부에 없는 슬롯은 기본 장부(= --engine-budget)로 간다. 기본 예산이 0 이면 그 슬롯은
-// E_CAPITAL 로 거절된다 — 장부 설정에서 빠진 전략이 조용히 남의 돈으로 사지 않게.
+// 장부가 정하는 것: 이 전략을 켤지(enabled), 얼마를 줄지(seed = 사이징 분모이자 자본 한도).
+// slot 은 장부 **안의** 회계 단위(변형)라 여기서 다루지 않는다 — 그 사이 분배는 weight 가 한다.
+//
+// ★ 과금·권한 차단은 여기가 아니다. 구독하지 않은 전략의 목표는 릴레이가 **아예 전달하지 않는다**
+// (콕핏은 공개 저장소라 필터는 지우면 그만이다, §12.1). 여기의 enabled 는 **사용자 취향**이다 —
+// 받은 전략 중 무엇을 돌릴지.
+//
+// 장부 파일이 없으면(옛 설정) 모든 소스가 --engine-budget 하나로 돈다. 장부가 하나라도 있으면
+// **장부에 없는 소스의 진입은 E_INACTIVE** — 모르는 전략이 조용히 남의 돈으로 사지 않게.
 package book
 
 import (
@@ -17,56 +24,64 @@ import (
 	"sort"
 )
 
-// Default — 장부에 없는 슬롯이 가는 곳의 이름.
+// Default — 장부 설정이 없을 때 모든 소스가 가는 곳.
 const Default = "_default"
 
 type Book struct {
 	Name string `json:"name"`
+	// Kid — 발행자. 비면 **아무 kid** 나 받는다 (개발용 devsign 키 등).
+	Kid string `json:"kid,omitempty"`
+	// Scope — 발행 범위. 빈 값은 scope 없이 발행하는 옛 발행자.
+	Scope string `json:"scope"`
 	// Seed — 이 전략에 배정한 돈. 사이징의 분모이자 자본 한도다.
 	Seed float64 `json:"seed"`
-	// Slots — 이 장부로 묶을 슬롯. 비면 Name 과 같은 슬롯 하나.
-	Slots []string `json:"slots,omitempty"`
+	// Enabled — 이 전략을 돌릴지. 생략하면 켬. 끄면 진입만 막고 청산은 계속한다.
+	Enabled *bool `json:"enabled,omitempty"`
 }
+
+func (b Book) On() bool { return b.Enabled == nil || *b.Enabled }
+
+// Key — 소스 식별자 문자열 (로그·API 용).
+func Key(kid, scope string) string { return kid + "/" + scope }
 
 type Set struct {
-	books  []Book
-	bySlot map[string]int
-	deflt  float64
-	byName map[string]int
+	books []Book
+	deflt float64
 }
 
-// New 는 장부 목록과 기본 예산으로 만든다. ★ 한 슬롯이 두 장부에 있으면 거부한다 —
-// 어느 돈으로 샀는지 모르는 매수는 장부 대조를 통째로 무효로 만든다.
+// New — ★ 한 소스가 두 장부에 걸리면 기동을 거부한다. 어느 돈으로 샀는지 모르는 매수는
+// 장부 대조를 통째로 무효로 만든다.
 func New(books []Book, defaultBudget float64) (*Set, error) {
-	s := &Set{bySlot: map[string]int{}, byName: map[string]int{}, deflt: defaultBudget}
+	s := &Set{deflt: defaultBudget}
+	names := map[string]bool{}
 	for i, b := range books {
 		if b.Name == "" || b.Name == Default {
 			return nil, fmt.Errorf("장부 %d: 이름이 비었거나 예약어(%s)다", i, Default)
 		}
+		if names[b.Name] {
+			return nil, fmt.Errorf("장부 이름 중복: %s", b.Name)
+		}
+		names[b.Name] = true
 		if b.Seed <= 0 {
 			return nil, fmt.Errorf("장부 %s: seed 가 0 이하", b.Name)
 		}
-		if _, dup := s.byName[b.Name]; dup {
-			return nil, fmt.Errorf("장부 이름 중복: %s", b.Name)
-		}
-		if len(b.Slots) == 0 {
-			b.Slots = []string{b.Name}
-		}
-		for _, sl := range b.Slots {
-			if j, dup := s.bySlot[sl]; dup {
-				return nil, fmt.Errorf("슬롯 %q 가 장부 %s 와 %s 에 동시에 있다", sl, s.books[j].Name, b.Name)
+		for _, o := range s.books {
+			if o.Scope == b.Scope && (o.Kid == b.Kid || o.Kid == "" || b.Kid == "") {
+				return nil, fmt.Errorf("장부 %s 와 %s 가 같은 소스(%s)를 잡는다", o.Name, b.Name, Key(b.Kid, b.Scope))
 			}
-			s.bySlot[sl] = len(s.books)
 		}
-		s.byName[b.Name] = len(s.books)
 		s.books = append(s.books, b)
 	}
 	return s, nil
 }
 
-// Load 는 books.json 을 읽는다. 파일이 없으면 장부 없음(기본 장부만) — 에러가 아니다.
+// Load 는 books.json 을 읽는다. 파일이 없으면 장부 없음 — 에러가 아니다.
 //
-//	{"books": [{"name": "d205", "seed": 16000000, "slots": ["d205", "klev"]}]}
+//	{"books": [
+//	  {"name": "d205",  "kid": "flat6-1", "scope": "intraday/d205",   "seed": 16000000},
+//	  {"name": "klev",  "kid": "flat6-1", "scope": "intraday/klev",   "seed":  3000000},
+//	  {"name": "coin",  "kid": "flat6-1", "scope": "scalp/coin",      "seed":  2000000, "enabled": false}
+//	]}
 func Load(path string, defaultBudget float64) (*Set, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -84,18 +99,27 @@ func Load(path string, defaultBudget float64) (*Set, error) {
 	return New(f.Books, defaultBudget)
 }
 
-// Of 는 슬롯이 속한 장부와 그 예산을 준다. nil Set 은 전부 기본 장부다.
-func (s *Set) Of(slot string) (name string, budget float64) {
-	if s == nil {
-		return Default, 0
+// Of — 소스의 장부. active=false 면 진입 금지 (장부에 없거나 꺼졌다).
+func (s *Set) Of(kid, scope string) (name string, budget float64, active bool) {
+	if s == nil || len(s.books) == 0 {
+		// 장부 설정이 없다 = 옛 방식. 모든 소스가 엔진 예산 하나.
+		if s == nil {
+			return Default, 0, true
+		}
+		return Default, s.deflt, true
 	}
-	if i, ok := s.bySlot[slot]; ok {
-		return s.books[i].Name, s.books[i].Seed
+	for _, b := range s.books {
+		if b.Scope == scope && (b.Kid == "" || b.Kid == kid) {
+			return b.Name, b.Seed, b.On()
+		}
 	}
-	return Default, s.deflt
+	return "", 0, false
 }
 
-// Books 는 설정된 장부들(기본 장부 제외), 이름순.
+// Configured — 장부 설정이 있는가 (없으면 옛 방식).
+func (s *Set) Configured() bool { return s != nil && len(s.books) > 0 }
+
+// Books 는 설정된 장부들, 이름순.
 func (s *Set) Books() []Book {
 	if s == nil {
 		return nil
@@ -105,21 +129,19 @@ func (s *Set) Books() []Book {
 	return out
 }
 
-// Total 은 모든 장부 시드 + 기본 예산 — paper 계좌의 기본 시드로 쓴다.
+// Total 은 **켜진** 장부 시드 합 (장부가 없으면 엔진 예산) — paper 기본 시드·예산 점검의 기준.
 func (s *Set) Total() float64 {
 	if s == nil {
 		return 0
 	}
-	t := s.deflt
+	if len(s.books) == 0 {
+		return s.deflt
+	}
+	var t float64
 	for _, b := range s.books {
-		t += b.Seed
+		if b.On() {
+			t += b.Seed
+		}
 	}
 	return t
-}
-
-func (s *Set) DefaultBudget() float64 {
-	if s == nil {
-		return 0
-	}
-	return s.deflt
 }
