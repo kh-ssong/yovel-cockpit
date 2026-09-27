@@ -43,6 +43,11 @@ flat6 의 `execution/contract.py` 는 처음부터 이 계약의 미러로 쓰�
 | **A. 파일 공유** (권장) | 콕핏을 flat6 의 토큰 파일로 붙인다. 포맷은 이미 맞춰뒀다 (`expires_dt`) |
 | B. 앱키 분리 | 콕핏에 별도 앱키를 발급한다. 계좌가 같으면 여전히 위험하니 확인 필요 |
 
+★ **2026-09-27 — B 로 갔다.** 콕핏 전용 앱키(67326390)를 발급했다. 콕핏은 제3자가 **자기 키**로 쓰는
+제품이라는 컨셉(`redesign-v2.md §10`)에 맞는 쪽이다. 콕핏 토큰은 콕핏 `data/kiwoom_token.json` 에
+따로 있고, **flat6 토큰 파일을 가리키지 않는다** (다른 앱키의 토큰이다). 키는 `.env` 의
+`COCKPIT_KIWOOM_APPKEY_FILE` / `_SECRET_FILE` 로 파일 경로만 준다.
+
 ```bash
 cockpitd --broker kiwoom \
          --kiwoom-token-file ../yovel-flat6/data/kiwoom_token.json

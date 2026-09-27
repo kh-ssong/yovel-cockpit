@@ -54,6 +54,9 @@ type opts struct {
 }
 
 func run(args []string) error {
+	if _, err := config.LoadDotEnv(".env"); err != nil {
+		return fmt.Errorf(".env: %w", err)
+	}
 	fs := flag.NewFlagSet("brokerctl", flag.ContinueOnError)
 	var o opts
 	fs.StringVar(&o.broker, "broker", "", "kiwoom | upbit")

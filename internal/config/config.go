@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
@@ -196,17 +197,64 @@ func (c *Config) applyEnv() {
 // ★ 플래그로 받지 않는 이유: 커맨드라인은 같은 PC 의 다른 프로세스에서 그대로 보인다
 // (ps / 작업관리자). 증권사 앱키가 거기 찍히면 그 순간 유출이다.
 func KiwoomCreds() (appKey, secret string) {
-	return os.Getenv("COCKPIT_KIWOOM_APPKEY"), os.Getenv("COCKPIT_KIWOOM_SECRET")
+	return Secret("COCKPIT_KIWOOM_APPKEY"), Secret("COCKPIT_KIWOOM_SECRET")
 }
 
 // UpbitCreds — 업비트 자격증명도 **환경변수에서만** 읽는다 (KiwoomCreds 와 같은 이유).
 func UpbitCreds() (access, secret string) {
-	return os.Getenv("COCKPIT_UPBIT_ACCESS_KEY"), os.Getenv("COCKPIT_UPBIT_SECRET_KEY")
+	return Secret("COCKPIT_UPBIT_ACCESS_KEY"), Secret("COCKPIT_UPBIT_SECRET_KEY")
 }
 
 // TelegramCreds — 텔레그램 봇 토큰·채팅 ID. **환경변수에서만** 읽는다 (토큰이 곧 봇 조종권이다).
 func TelegramCreds() (token, chatID string) {
-	return os.Getenv("COCKPIT_TELEGRAM_BOT_TOKEN"), os.Getenv("COCKPIT_TELEGRAM_CHAT_ID")
+	return Secret("COCKPIT_TELEGRAM_BOT_TOKEN"), Secret("COCKPIT_TELEGRAM_CHAT_ID")
+}
+
+// Secret 은 환경변수 NAME 을, 없으면 NAME_FILE 이 가리키는 파일 내용을 준다 (앞뒤 공백 제거).
+//
+// ★ 키를 **파일로** 받아 두는 경우(증권사가 txt 로 내려준다)를 위해서다. 경로는 비밀이 아니므로
+// 환경변수·.env 에 둬도 되고, 키 값 자체는 어디에도 복사되지 않는다.
+func Secret(name string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	if p := os.Getenv(name + "_FILE"); p != "" {
+		if raw, err := os.ReadFile(p); err == nil {
+			return strings.TrimSpace(string(raw))
+		}
+	}
+	return ""
+}
+
+// LoadDotEnv 는 KEY=VALUE 줄들을 읽어 **아직 없는** 환경변수만 채운다. 파일이 없으면 아무것도 안 한다.
+//
+// ★ 이미 있는 값은 덮지 않는다 — 셸에서 준 값이 파일보다 우선이어야 일회성 오버라이드가 된다.
+// ★ .env 는 .gitignore 에 있다(공개 저장소). 키 값 대신 `*_FILE` 경로만 적어 두는 걸 권한다.
+func LoadDotEnv(path string) (loaded int, err error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.Trim(strings.TrimSpace(v), `"'`)
+		if _, set := os.LookupEnv(k); set {
+			continue
+		}
+		os.Setenv(k, v)
+		loaded++
+	}
+	return loaded, nil
 }
 
 // Finish 는 플래그 파싱 후 검증한다.

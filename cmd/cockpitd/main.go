@@ -49,6 +49,10 @@ func main() {
 }
 
 func run() error {
+	// ★ 설정보다 먼저 — .env 의 COCKPIT_* 가 기본값·플래그 기본값에 반영되게.
+	if _, err := config.LoadDotEnv(".env"); err != nil {
+		return fmt.Errorf(".env: %w", err)
+	}
 	cfg := config.Default()
 	fs := flag.NewFlagSet("cockpitd", flag.ExitOnError)
 	cfg.Bind(fs)
