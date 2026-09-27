@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/kh-ssong/yovel-cockpit/internal/broker"
 )
 
 // postJSON 은 한 번 쏘고 JSON 으로 받는다 (재시도 없음 — 재시도는 호출자가 판단).
@@ -102,7 +104,20 @@ func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any
 
 		if err != nil {
 			var he httpError
-			if ok := asHTTPError(err, &he); ok && he.retryable() && attempt < 2 {
+			// ★ 주문(매수·매도)은 5xx 를 재시도하지 않는다 (2026-09-27). 서버가 받았는지 모르는 상태에서
+			// 다시 쏘면 **같은 신호로 두 번 산다.** 429 는 "처리 안 했다" 는 뜻이라 재시도해도 된다.
+			// 취소·조회는 다시 해도 결과가 같으므로 그대로 재시도한다.
+			isHTTP := asHTTPError(err, &he)
+			if isOrderAPI(apiID) {
+				switch {
+				case !isHTTP, he.Status >= 500:
+					// 네트워크 오류·5xx — 서버가 받았는지 모른다.
+					return fmt.Errorf("%s: %w — %w", apiID, err, ErrMaybeSent)
+				case he.Status != http.StatusTooManyRequests:
+					return fmt.Errorf("%s: %w", apiID, err) // 4xx = 거부. 나가지 않았다
+				}
+			}
+			if isHTTP && he.retryable() && attempt < 2 {
 				lastErr = err
 				b.sleep(backoff(attempt))
 				continue
@@ -163,6 +178,11 @@ func marginAllowance(err error) (float64, bool) {
 	}
 	return numOK(m[1])
 }
+
+// ErrMaybeSent — broker.ErrMaybeSent 그대로 (집행기가 드라이버를 몰라도 가릴 수 있게).
+var ErrMaybeSent = broker.ErrMaybeSent
+
+func isOrderAPI(apiID string) bool { return apiID == apiBuy || apiID == apiSell }
 
 func backoff(attempt int) time.Duration { return time.Duration(1<<attempt) * time.Second }
 

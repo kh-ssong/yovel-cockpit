@@ -47,6 +47,10 @@ func Fill(o store.Order, slot string) string {
 		}
 		return s
 	}
+	if o.Phase == "rejected" {
+		// ★ 매수 결과 미상 등 — 사람이 계좌를 봐야 하는 건이라 눈에 띄게.
+		return fmt.Sprintf("🚨 [%s] 주문 확인 필요 %s · %s %s\n  ↳ %s", mode, who, o.Symbol.Code, qty(o.Qty), o.Detail)
+	}
 	return fmt.Sprintf("[%s] %s %s %s %s", mode, o.Phase, who, o.Symbol.Code, qty(o.Qty))
 }
 

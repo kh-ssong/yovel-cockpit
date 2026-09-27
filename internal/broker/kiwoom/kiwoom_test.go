@@ -3,6 +3,7 @@ package kiwoom
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -158,11 +159,20 @@ func (f *fakeKiwoom) start(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode(map[string]any{"return_code": 0})
 			return
 		}
-		json.NewEncoder(w).Encode(h(body))
+		out := h(body)
+		if st, isStatus := out.(httpStatus); isStatus {
+			w.WriteHeader(int(st))
+			w.Write([]byte(`{}`))
+			return
+		}
+		json.NewEncoder(w).Encode(out)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+// httpStatus — 핸들러가 이걸 돌려주면 가짜 서버가 그 HTTP 상태로 응답한다.
+type httpStatus int
 
 type clock struct {
 	mu sync.Mutex
@@ -414,6 +424,88 @@ func TestPartialFillWaitsThenReportsPartial(t *testing.T) {
 	}
 	if calls < 2 {
 		t.Fatalf("한 번만 보고 포기했다 (%d회) — 전량까지 기다려야 한다", calls)
+	}
+	// ★ 시간 초과면 잔량 주문을 취소해야 한다 — 살려 두면 나중에 체결돼 장부 밖 유령이 된다.
+	if c := f.bodies(apiCancel); len(c) != 1 || c[0]["orig_ord_no"] != "88" {
+		t.Fatalf("잔량을 취소하지 않았다: %v", c)
+	}
+}
+
+// 취소하는 사이 다 체결됐으면 부분이 아니다.
+func TestTimeoutCancelRaceFullyFilled(t *testing.T) {
+	f := newFake()
+	f.on(apiBuy, func(map[string]any) any { return map[string]any{"return_code": 0, "ord_no": "91"} })
+	cancelled := false
+	f.on(apiCancel, func(map[string]any) any { cancelled = true; return map[string]any{"return_code": 0} })
+	f.on(apiFills, func(map[string]any) any {
+		q := "4"
+		if cancelled {
+			q = "10"
+		}
+		return fillsResp("91", map[string]any{"cntr_qty": q, "cntr_pric": "1000",
+			"tdy_trde_cmsn": "0", "tdy_trde_tax": "0", "ord_tm": "090512"})
+	})
+	b, _ := newBroker(t, f)
+	fill, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 10, RefPrice: 1000})
+	if err != nil || fill.Partial || fill.Qty != 10 {
+		t.Fatalf("%+v %v", fill, err)
+	}
+}
+
+// 잔량 취소에 실패해도 체결분은 버리지 않는다 — 대신 잔량이 살아 있을 수 있다고 적는다.
+func TestTimeoutCancelFailureKeepsFillAndWarns(t *testing.T) {
+	f := newFake()
+	f.on(apiBuy, func(map[string]any) any { return map[string]any{"return_code": 0, "ord_no": "92"} })
+	f.on(apiCancel, func(map[string]any) any { return map[string]any{"return_code": 20, "return_msg": "취소 불가"} })
+	f.on(apiFills, func(map[string]any) any {
+		return fillsResp("92", map[string]any{"cntr_qty": "4", "cntr_pric": "1000",
+			"tdy_trde_cmsn": "0", "tdy_trde_tax": "0", "ord_tm": "090512"})
+	})
+	b, _ := newBroker(t, f)
+	fill, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 10, RefPrice: 1000})
+	if err != nil || !fill.Partial || fill.Qty != 4 || !strings.Contains(fill.Detail, "잔량 취소 실패") {
+		t.Fatalf("%+v %v", fill, err)
+	}
+}
+
+// ★ 주문 요청의 5xx 는 재시도하지 않는다 — 서버가 받았는지 모르는데 다시 쏘면 두 번 산다.
+func TestOrderNotRetriedOn5xx(t *testing.T) {
+	f := newFake()
+	f.on(apiBuy, func(map[string]any) any { return httpStatus(502) })
+	b, _ := newBroker(t, f)
+	_, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 10, RefPrice: 1000})
+	if !errors.Is(err, ErrMaybeSent) {
+		t.Fatalf("'나갔을 수 있다' 로 보고되지 않았다: %v", err)
+	}
+	if n := len(f.bodies(apiBuy)); n != 1 {
+		t.Fatalf("주문이 %d 번 나갔다", n)
+	}
+}
+
+// 429 는 "처리 안 했다" — 주문도 재시도한다. 조회(5xx)는 원래대로 재시도.
+func TestOrderRetriedOn429AndQueriesOn5xx(t *testing.T) {
+	f := newFake()
+	n := 0
+	f.on(apiBuy, func(map[string]any) any {
+		n++
+		if n == 1 {
+			return httpStatus(429)
+		}
+		return map[string]any{"return_code": 0, "ord_no": "93"}
+	})
+	q := 0
+	f.on(apiFills, func(map[string]any) any {
+		q++
+		if q == 1 {
+			return httpStatus(503)
+		}
+		return fillsResp("93", map[string]any{"cntr_qty": "10", "cntr_pric": "1000",
+			"tdy_trde_cmsn": "0", "tdy_trde_tax": "0", "ord_tm": "090512"})
+	})
+	b, _ := newBroker(t, f)
+	fill, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 10, RefPrice: 1000})
+	if err != nil || fill.Qty != 10 || len(f.bodies(apiBuy)) != 2 {
+		t.Fatalf("%+v %v 주문 %d회", fill, err, len(f.bodies(apiBuy)))
 	}
 }
 

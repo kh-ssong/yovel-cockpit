@@ -111,6 +111,9 @@ var (
 	ErrInsufficient   = errors.New("주문가능금액 부족")
 	ErrUnknownSymbol  = errors.New("모르는 종목")
 	ErrNotEnoughShare = errors.New("매도 가능 수량 부족")
+	// ErrMaybeSent — 주문 요청이 서버에 닿았는지 모른다 (네트워크 오류·5xx·체결 확인 실패).
+	// ★ 호출자는 같은 주문을 **다시 내면 안 된다** — 이미 나갔다면 두 번 산다.
+	ErrMaybeSent = errors.New("주문은 나갔을 수 있다")
 )
 
 // SlippageBp 는 기준가 대비 체결 슬리피지를 bp 로 잰다 (매수는 비싸게 사면 +).

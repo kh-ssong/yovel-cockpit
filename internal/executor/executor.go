@@ -10,6 +10,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -280,6 +281,24 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 	}
 
 	fill, err := x.d.Broker.Buy(ctx, req)
+	if errors.Is(err, broker.ErrMaybeSent) {
+		// ★ 매수가 나갔는지 모른다. 그냥 실패로 두면 목표가 그대로라 **다음 틱에 또 산다** —
+		// 드라이버가 재시도를 막아도 여기서 두 번 산다. 이 목표는 종결시켜 재진입을 막고 사람에게 알린다.
+		// 실제로 체결됐다면 그 보유는 장부 밖에 남는다 — 두 번 사는 것보다 낫고, 알림으로 드러난다.
+		x.recordFill(ctx, t.Slot, store.Order{
+			ID: ids.NewAt(now), IntentID: t.IntentID, Phase: "rejected",
+			Symbol: t.Symbol, Side: "buy", Qty: qty, BrokerOrderID: fill.BrokerOrderID,
+			Detail: "★ 매수 결과 미상 — 목표 종결(재진입 차단). 브로커 잔고를 사람이 확인할 것: " + err.Error(),
+		}, res)
+		if cerr := x.d.Store.UpsertIntent(ctx, store.Intent{
+			IntentID: t.IntentID, Slot: t.Slot, Symbol: t.Symbol, Side: string(t.Side),
+		}); cerr == nil {
+			_ = x.d.Store.CloseIntent(ctx, t.IntentID, "unknown", now)
+		}
+		x.d.Engine.MarkClosed(t.IntentID)
+		res.fail("★ 매수 결과 미상 %s(%s) — 재진입 차단, 잔고 확인 필요: %v", t.IntentID, t.Symbol.Code, err)
+		return
+	}
 	if err != nil {
 		res.fail("매수 %s(%s): %v", t.IntentID, t.Symbol.Code, err)
 		return

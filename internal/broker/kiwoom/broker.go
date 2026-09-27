@@ -380,7 +380,7 @@ func (b *Broker) waitFill(ctx context.Context, s protocol.Symbol, ordNo string, 
 	side string, ref float64, submitted time.Time) (broker.Fill, error) {
 
 	if ordNo == "" {
-		return broker.Fill{}, fmt.Errorf("주문번호가 비었다 — 체결을 추적할 수 없다")
+		return broker.Fill{}, fmt.Errorf("주문번호가 비었다 — 체결을 추적할 수 없다 (%w)", broker.ErrMaybeSent)
 	}
 
 	deadline := b.now().Add(b.cfg.FillTimeout)
@@ -400,13 +400,34 @@ func (b *Broker) waitFill(ctx context.Context, s protocol.Symbol, ordNo string, 
 		b.sleep(b.cfg.FillPoll)
 	}
 
+	// ★ 시간 초과 — **남은 주문을 취소하고** 한 번 더 본다 (2026-09-27).
+	// 예전엔 취소 없이 부분으로 돌려줬다. 그러면 잔량 주문이 브로커에 살아 있다가 나중에 체결되고,
+	// 그 수량은 장부 밖 유령이 된다 (stop 도 시간청산도 모르는 보유). 업비트 드라이버와 같은 규칙이다.
+	cancelErr := b.CancelOrder(ctx, s, ordNo)
+	if agg, err := b.fetchFills(ctx, s, ordNo); err == nil {
+		last = agg
+	}
+	if last.qty >= want-1e-9 {
+		// 취소하는 사이 다 체결됐다 — 부분이 아니다.
+		return b.toFill(ordNo, last, side, ref, submitted, false), nil
+	}
+
 	if last.qty <= 0 {
+		if cancelErr == nil {
+			return broker.Fill{BrokerOrderID: ordNo, SubmittedAt: submitted},
+				fmt.Errorf("미체결로 취소됨 (주문번호 %s)", ordNo)
+		}
 		// ★ 조회로 확인 못 했다고 "미체결" 로 단정하지 않는다. 주문은 나갔을 수 있다.
 		// 상위가 다음 틱의 브로커 조회로 실상태를 다시 본다.
 		return broker.Fill{BrokerOrderID: ordNo, SubmittedAt: submitted},
-			fmt.Errorf("체결 확인 실패 (주문번호 %s) — 주문은 나갔을 수 있다", ordNo)
+			fmt.Errorf("체결 확인 실패 + 잔량 취소 실패 (주문번호 %s): %v — %w", ordNo, cancelErr, broker.ErrMaybeSent)
 	}
-	return b.toFill(ordNo, last, side, ref, submitted, true), nil
+	f := b.toFill(ordNo, last, side, ref, submitted, true)
+	if cancelErr != nil {
+		// 체결분은 버리지 않고 돌려준다(버리면 그게 유령이다). 대신 잔량이 살아 있을 수 있다고 적는다.
+		f.Detail = fmt.Sprintf("잔량 취소 실패 — 주문이 브로커에 남았을 수 있다: %v", cancelErr)
+	}
+	return f, nil
 }
 
 type fillAgg struct {

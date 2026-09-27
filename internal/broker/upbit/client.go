@@ -109,8 +109,8 @@ func (e apiError) Unwrap() error {
 // errNoKey — 시세 전용(NewPublic) 드라이버로 인증 동작을 불렀다.
 var errNoKey = errors.New("업비트 키 없음 — 시세 전용 드라이버로는 잔고·주문을 할 수 없다")
 
-// errMaybeSent — 주문 요청이 서버에 닿았는지 모른다.
-var errMaybeSent = errors.New("주문은 나갔을 수 있다")
+// errMaybeSent — broker.ErrMaybeSent (집행기가 드라이버를 몰라도 가릴 수 있게).
+var errMaybeSent = broker.ErrMaybeSent
 
 // do 는 인증 요청을 보낸다.
 //
