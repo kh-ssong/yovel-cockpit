@@ -189,6 +189,14 @@ func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result
 	for _, p := range open {
 		h, ok := byCode[p.Symbol.Code]
 		if !ok || h.Qty <= 0 {
+			// ★ 걸어 둔 TP 가 있으면 먼저 **주문번호로** 체결가를 확인한다 (2026-09-30 e2e 발견).
+			//   TP 가 체결돼 종목이 사라진 것을 여기서 먼저 보면, 예전엔 "체결가 미상" 으로 닫아
+			//   그 로트의 TP 수익이 성과에서 통째로 빠졌다 (주문번호 확인은 10초 간격이라 경합에서 졌다).
+			if lc, isLC := x.d.Broker.(broker.LimitChecker); isLC && p.TpOrderID != "" {
+				if x.closeIfTPFilled(ctx, now, p, lc, res) {
+					continue
+				}
+			}
 			reason, src := "manual", store.SourceManual
 			if p.TpOrderID != "" {
 				reason, src = "tp", store.SourceBot

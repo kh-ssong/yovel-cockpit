@@ -110,3 +110,39 @@ func TestTwoLotsSameSymbol(t *testing.T) {
 		}
 	}
 }
+
+// ★ e2e 발견 재현: TP 가 체결돼 종목이 통째로 사라졌는데, 주문번호 확인(10초 간격)보다 "사라짐" 을
+// 먼저 봤다 → 예전엔 체결가 미상으로 닫혀 TP 수익이 성과에서 빠졌다. 이제 사라짐 경로도 주문번호로 확인한다.
+func TestVanishedLotWithTPGetsFillPrice(t *testing.T) {
+	h := newHarness(t)
+	price := 1000.0
+	pb := paper.New(paper.Config{Cash: 10_000_000, Lot: 1, Now: func() time.Time { return base },
+		Price: func(protocol.Symbol) (float64, bool) { return price, true }})
+	tb := &tpBroker{Broker: pb, filled: map[string]broker.LimitStatus{}}
+	h.br = pb
+	h.rewire(tb)
+	now := base.Add(time.Second)
+
+	const A = "01J9Z8QK3M7X2ABCDEFGHJKMA1"
+	h.applyTargets(t, 1, lot(A, 1000, 1200))
+	h.x.Tick(ctx, now)
+	h.x.Tick(ctx, now) // TP 위임 + 첫 주문번호 확인(미체결) → 10초간 다시 안 묻는다
+	p := h.eng.Positions()[0]
+
+	pb.CancelOrder(ctx, p.Symbol, p.TpOrderID)
+	if _, err := pb.Sell(ctx, broker.OrderRequest{Symbol: p.Symbol, Qty: p.Qty, LimitPrice: 1200}); err != nil {
+		t.Fatal(err)
+	}
+	tb.filled[p.TpOrderID] = broker.LimitStatus{FilledQty: p.Qty, AvgPrice: 1200, FilledAt: now}
+
+	h.x.Tick(ctx, now.Add(2*time.Second)) // 10초 안 — 사라짐 경로가 먼저 본다
+	for _, o := range h.ledger(t) {
+		if o.Phase == "exit_filled" {
+			if o.Price != 1200 || o.ExitReason != "tp" || o.Detail != "" {
+				t.Fatalf("★ 체결가 미상으로 닫혔다: %+v", o)
+			}
+			return
+		}
+	}
+	t.Fatal("청산 기록 없음")
+}
