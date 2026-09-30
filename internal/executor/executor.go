@@ -204,6 +204,7 @@ func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result
 				continue
 			}
 			x.d.Engine.MarkClosed(p.IntentID)
+			x.noteClose(p, reason, 0, now)
 			res.ClosedByBroker++
 			x.d.Log.Warn("브로커에서 사라진 포지션을 종결 처리했다",
 				"intent_id", p.IntentID, "code", p.Symbol.Code, "reason", reason)
@@ -315,6 +316,7 @@ func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Posit
 		return
 	}
 	x.d.Engine.MarkClosed(pos.IntentID)
+	x.noteClose(pos, reason, fill.Price, now)
 	res.Exited++
 }
 
@@ -346,6 +348,7 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 			_ = x.d.Store.CloseIntent(ctx, t.IntentID, "unknown", now)
 		}
 		x.d.Engine.MarkClosed(t.IntentID)
+		x.noteClose(protocol.Position{IntentID: t.IntentID, Kid: kid, Scope: scope, Group: t.Group, Symbol: t.Symbol}, "unknown", 0, now)
 		res.fail("★ 매수 결과 미상 %s(%s) — 재진입 차단, 잔고 확인 필요: %v", t.IntentID, t.Symbol.Code, err)
 		return
 	}
@@ -488,6 +491,18 @@ func joinDetail(a, b string) string {
 	return a + " · " + b
 }
 
+// noteClose — 종결된 로트의 결말을 state.snapshot.recent_closes 에 남긴다 (발행자가 빠른 왕복을 보게).
+func (x *Executor) noteClose(p protocol.Position, reason string, price float64, at time.Time) {
+	c := protocol.ClosedLot{
+		IntentID: p.IntentID, Kid: p.Kid, Scope: p.Scope, Group: p.Group, Symbol: p.Symbol,
+		Reason: reason, Price: price, At: at,
+	}
+	if price > 0 {
+		c.RealizedPct = realizedPct(p.AvgEntryPrice, price)
+	}
+	x.d.Engine.NoteClose(c)
+}
+
 func realizedPct(entry, exit float64) float64 {
 	if entry <= 0 {
 		return 0
@@ -553,6 +568,7 @@ func (x *Executor) settleLimits(ctx context.Context, now time.Time, res *Result)
 			continue
 		}
 		x.d.Engine.MarkClosed(p.IntentID)
+		x.noteClose(p, "tp", f.Price, now)
 		res.Exited++
 		x.d.Log.Info("TP 지정가 체결", "intent_id", p.IntentID, "code", f.Symbol.Code,
 			"price", f.Price, "realized_pct", realizedPct(p.AvgEntryPrice, f.Price))

@@ -230,9 +230,28 @@ type StateSnapshot struct {
 	Positions         []Position        `json:"positions"`
 	// ★ omitempty 를 붙이지 않는다: "유령 없음(빈 배열)" 과 "안 봤음(필드 부재)" 은 다른 말이다.
 	Orphans []Symbol `json:"orphans"`
+	// RecentCloses — 최근(30분) 종결된 로트 (2026-09-30).
+	// ★ 발행자는 positions 만 보면 **상태 조회 사이에 열리고 닫힌 로트**(빠른 TP·stop)를 영영 못 본다 —
+	//   flat6 dummy 통합 테스트에서 진입 1.4초 만에 TP 로 닫혀 발행자가 "진입 대기" 에 갇혔다.
+	RecentCloses []ClosedLot `json:"recent_closes"`
 	// Account — 계좌가 불어나는지 줄어드는지. ★ 조회 실패 시 nil 이고, **0 으로 채우지 않는다**
 	// (잔고 0 과 «못 봤음» 을 합치면 사용자가 파산한 줄 안다).
 	Account *Account `json:"account,omitempty"`
+}
+
+// ClosedLot — 종결된 로트 하나의 결말.
+type ClosedLot struct {
+	IntentID string `json:"intent_id"`
+	Kid      string `json:"kid,omitempty"`
+	Scope    string `json:"scope,omitempty"`
+	Group    string `json:"group,omitempty"`
+	Symbol   Symbol `json:"symbol"`
+	// Reason — flat · time · stop · tp · reduce · derisk · manual · unknown(매수 결과 미상)
+	Reason string `json:"reason"`
+	// Price — 마지막 청산 체결가. 0 = 모름 (브로커 사후 감지 등).
+	Price       float64   `json:"price,omitempty"`
+	RealizedPct float64   `json:"realized_pct,omitempty"`
+	At          time.Time `json:"at"`
 }
 
 // Account — 예수금·평가액. paper 면 가상, live 면 진짜다 (`Mode` 로 구분).

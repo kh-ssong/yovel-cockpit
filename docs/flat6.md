@@ -157,6 +157,13 @@ Content-Type: application/json
 9. **분할매수·분할매도** (`protocol.md §4.1.2`, 2026-09-30) — 추가 매수는 **새 `intent_id`** + 같은 `group`,
    일부 매도는 그 로트의 `exit.hold_frac`(최초 수량 중 남길 비율, 줄이기만). D-205 의 D+보호선 청산은
    전량이라 당장은 안 쓰지만, 코인 스캘핑의 부분 익절 등에 쓸 수 있다.
+10. ★ **결과는 `recent_closes` 와 `per_intent` 로 읽어라** (2026-09-30, `protocol.md §5.1`). 통합 테스트에서
+    진입 1.4초 만에 TP 로 닫힌 로트를 상태 조회(2초)가 못 봐서 dummy 가 "진입 대기" 에 3분 넘게 갇혔다.
+    콕핏 `/v1/state` 의 `recent_closes` 에 종결 로트가 30분간 남는다. 그리고 ack 는 봉투 `status` 가 아니라
+    `per_intent[].codes` 를 세야 거절(`E_TERMINAL`·`E_INACTIVE`·`E_CAPITAL`·`E_LOCAL_GUARD`)이 보인다.
+    `Reject` enum 에 `E_INACTIVE` 추가 필요 (conformance 테스트가 이미 잡았다).
+11. `ref_price` 는 **실제 호가**여야 한다 — 콕핏은 독립 시세와 ±15% 넘게 어긋나면 진입을 거절한다.
+    dummy 의 `DEFAULT_PRICES`(삼성 71,000)는 지금 시세(28만대)와 4배 차이라 이 가드에 걸린다.
 
 응답은 `ack` 다. 거절도 HTTP 200 으로 오고 `codes` 에 이유가 담긴다
 (MQTT 에는 상태코드가 없어서, 두 경로가 다른 모양이면 그게 곧 배선 버그가 된다).

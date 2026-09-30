@@ -74,6 +74,10 @@ type Config struct {
 	// ★ 예산(사이징 분모)과 계좌 현금은 다른 값이다. 계좌가 예산보다 작을 때 무슨 일이 나는지도
 	// paper 에서 봐야 하므로 따로 둔다.
 	PaperSeed float64
+	// RefMaxDev — 신호가(entry.ref_price)가 독립 시세와 이만큼 넘게 어긋나면 진입 거절. 0 = 검사 안 함.
+	RefMaxDev float64
+	// KiwoomAPIURL — 키움 REST 주소 덮어쓰기 (가짜 키움 서버·테스트용). 비면 운영/모의 기본값.
+	KiwoomAPIURL string
 	// NotifyPaper — paper 체결도 텔레그램으로 보낼지. 전략 여럿을 paper 로 돌리면 시끄럽다.
 	NotifyPaper bool
 	// BooksFile — 전략별 장부 (internal/book). 비면 {data-dir}/books.json. 파일이 없으면 장부 없음.
@@ -100,7 +104,8 @@ func Default() Config {
 		HeartbeatInterval: 20 * time.Second,
 		MaxOrdersPerTick:  5,
 		Broker:            "paper",
-		NotifyPaper:       true, // 지금은 paper 검증 단계 — 체결 알림이 곧 검증 도구다
+		NotifyPaper:       true,
+		RefMaxDev:         0.15, // 틱 신호는 몇 초 사이 ±15% 가 안 움직인다 — 넘으면 가격표가 틀린 것이다 // 지금은 paper 검증 단계 — 체결 알림이 곧 검증 도구다
 		// ★ 국내 주식 기준 **추정치**. 매수 = 위탁수수료만 / 매도 = 위탁수수료 + 증권거래세.
 		//   옛 대칭 15bp 는 매수에 없는 비용(거래세)을 매수에도 물렸다.
 		//
@@ -157,6 +162,10 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 		"paper 시장가 슬리피지 (bp) — ★ 0 으로 두면 손익분기 근처 판정이 뒤집힌다")
 	fs.Float64Var(&c.PaperSeed, "paper-seed", c.PaperSeed,
 		"paper 계좌 시작 현금 (원) — 0 이면 장부 시드 합 + 엔진 예산")
+	fs.Float64Var(&c.RefMaxDev, "ref-price-max-dev", c.RefMaxDev,
+		"신호가가 독립 시세와 이 비율 넘게 어긋나면 진입 거절 (0=끔, 기본 0.15)")
+	fs.StringVar(&c.KiwoomAPIURL, "kiwoom-api-url", c.KiwoomAPIURL,
+		"키움 REST 주소 덮어쓰기 — 가짜 키움 서버(cmd/fakekiwoom) 로 붙일 때")
 	fs.BoolVar(&c.NotifyPaper, "notify-paper", c.NotifyPaper,
 		"paper 체결도 텔레그램으로 알림 (기동·오류·경보는 mode 와 무관하게 간다)")
 	fs.StringVar(&c.BooksFile, "books-file", c.BooksFile,

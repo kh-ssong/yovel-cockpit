@@ -55,6 +55,7 @@ func (x *Executor) checkDelegatedTPs(ctx context.Context, now time.Time, res *Re
 			continue
 		}
 		x.d.Engine.MarkClosed(p.IntentID)
+		x.noteClose(p, "tp", st.AvgPrice, now)
 		delete(x.tpChecked, p.IntentID)
 		res.Exited++
 		x.d.Log.Info("TP 체결 (주문번호 확인)", "intent_id", p.IntentID, "code", p.Symbol.Code,

@@ -97,6 +97,15 @@ type Options struct {
 	Budget float64
 	// Inactive — 이 소스는 이 콕핏에서 활성화되지 않았다 → 진입은 E_INACTIVE, 청산은 그대로.
 	Inactive bool
+	// RefCheckPrice · RefMaxDev — ★ 신호가(entry.ref_price) 검증 (2026-09-30).
+	//
+	// 신호가를 쓰는 이유는 "신호를 낸 가격과 사이징한 가격이 갈리지 않게" 다 — 그런데 그 값이 틀리면
+	// **수량이 그대로 틀린다.** flat6 dummy 통합 테스트: 낡은 가격표(71,000 vs 실제 286,500)로
+	// 3주가 맞는 자리를 42주로 샀다. 콕핏이 **독립 시세**를 알면 신호가가 그보다 RefMaxDev 넘게
+	// 어긋난 진입을 E_LOCAL_GUARD 로 거절한다. 독립 시세를 모르면 막지 않는다(신호가의 존재 이유).
+	// ★ paper 에서는 신호원 mark 가 아니라 거래소 시세여야 한다 — mark 는 같은 신호원이 보낸 값이다.
+	RefCheckPrice func(protocol.Symbol) (float64, bool)
+	RefMaxDev     float64
 	// Price — 사이징 참조가. 없으면 그 종목은 진입하지 않는다.
 	Price func(protocol.Symbol) (float64, bool)
 	// Market — 종목별 주문 제약. nil 이면 주식 기본값.
@@ -222,6 +231,11 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 			plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{localBlock}))
 
 		default:
+			if note := refPriceGuard(t, opt); note != "" {
+				plan.Notes = append(plan.Notes, note)
+				plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{protocol.CodeLocalGuard}))
+				continue
+			}
 			enter, codes := buildEnter(t, opt, opt.Budget-spent)
 			if len(codes) > 0 {
 				plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", codes))
@@ -268,6 +282,23 @@ func ApplyOrderCap(plan *Plan, max int) {
 	for _, e := range dropped {
 		replaceAck(plan, e.Target.IntentID, "rejected", []protocol.RejectCode{protocol.CodeRate})
 	}
+}
+
+// refPriceGuard — 신호가가 독립 시세와 RefMaxDev 넘게 어긋나면 사유를 준다 (진입 거절).
+func refPriceGuard(t protocol.Target, opt Options) string {
+	if opt.RefMaxDev <= 0 || opt.RefCheckPrice == nil || t.Entry == nil || t.Entry.RefPrice <= 0 {
+		return ""
+	}
+	q, ok := opt.RefCheckPrice(t.Symbol)
+	if !ok || q <= 0 {
+		return ""
+	}
+	dev := t.Entry.RefPrice/q - 1
+	if math.Abs(dev) <= opt.RefMaxDev {
+		return ""
+	}
+	return fmt.Sprintf("%s(%s): 신호가 %.0f 이 시세 %.0f 와 %+.0f%% 어긋나 진입 거절 (허용 ±%.0f%%) — 신호원 가격을 확인할 것",
+		t.IntentID, t.Symbol.Code, t.Entry.RefPrice, q, dev*100, opt.RefMaxDev*100)
 }
 
 // reduceOrder — hold_frac 을 "몇 주 팔지" 로 바꾼다. 팔 게 없으면 (nil, "").

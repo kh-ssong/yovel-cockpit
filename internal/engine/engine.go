@@ -53,6 +53,9 @@ type Config struct {
 	Price func(protocol.Symbol) (float64, bool)
 	// Market — 종목별 주문 제약.
 	Market func(protocol.Symbol) sizing.Market
+	// RefCheckPrice · RefMaxDev — 신호가(entry.ref_price) 검증 (reconcile.Options 주석).
+	RefCheckPrice func(protocol.Symbol) (float64, bool)
+	RefMaxDev     float64
 }
 
 type Engine struct {
@@ -77,6 +80,10 @@ type Engine struct {
 
 	// terminal — 이미 끝난 intent_id 캐시 (원장에서 복원).
 	terminal map[string]struct{}
+
+	// closes — 최근 종결 로트 (state.snapshot.recent_closes). 기억만 한다 — 재시작하면 비어도 된다
+	// (진실은 원장이고, 이건 발행자가 "상태 조회 사이에 끝난 것" 을 알게 하는 창일 뿐이다).
+	closes []protocol.ClosedLot
 
 	// marks — 신호원이 목표에 실어 보낸 가격 (종목 → 가장 최근 값).
 	//
@@ -279,6 +286,29 @@ func (e *Engine) Restore(ctx context.Context) error {
 	return nil
 }
 
+// recentCloseWindow — recent_closes 에 남기는 시간.
+const recentCloseWindow = 30 * time.Minute
+
+// NoteClose — 종결된 로트의 결말을 기억한다 (state.snapshot.recent_closes).
+func (e *Engine) NoteClose(c protocol.ClosedLot) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closes = append(e.closes, c)
+	if len(e.closes) > 500 {
+		e.closes = e.closes[len(e.closes)-500:]
+	}
+}
+
+func (e *Engine) recentClosesLocked(now time.Time) []protocol.ClosedLot {
+	out := []protocol.ClosedLot{}
+	for _, c := range e.closes {
+		if now.Sub(c.At) <= recentCloseWindow {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // MarkClosed 는 목표를 종결 처리한다 (청산 체결 후 호출).
 func (e *Engine) MarkClosed(intentID string) {
 	e.mu.Lock()
@@ -406,6 +436,8 @@ func (e *Engine) planSourceLocked(src source, now time.Time) reconcile.Plan {
 		MaxOrders:       e.cfg.MaxOrders,
 		Budget:          budget,
 		Inactive:        !active,
+		RefCheckPrice:   e.cfg.RefCheckPrice,
+		RefMaxDev:       e.cfg.RefMaxDev,
 		Price:           e.cfg.Price,
 		Market:          e.cfg.Market,
 		Terminal:        e.isTerminalLocked,
@@ -486,11 +518,13 @@ func (e *Engine) maxSeqLocked() uint64 {
 	return m
 }
 
-func (e *Engine) Snapshot() protocol.StateSnapshot {
+func (e *Engine) Snapshot() protocol.StateSnapshot { return e.SnapshotAt(time.Now().UTC()) }
+
+// SnapshotAt — now 기준 스냅샷 (테스트·리플레이가 가짜 시계를 쓸 수 있게).
+func (e *Engine) SnapshotAt(now time.Time) protocol.StateSnapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	now := time.Now().UTC()
 	v := version.Get()
 
 	positions := make([]protocol.Position, 0, len(e.positions))
@@ -522,7 +556,8 @@ func (e *Engine) Snapshot() protocol.StateSnapshot {
 			// 빈 상태를 정상으로 보이게 두면 아무도 배선이 빠진 걸 눈치채지 못한다.
 			TargetStale: !e.anyEntryAllowedLocked(now),
 		},
-		Positions: positions,
-		Orphans:   orphans,
+		Positions:    positions,
+		Orphans:      orphans,
+		RecentCloses: e.recentClosesLocked(now),
 	}
 }

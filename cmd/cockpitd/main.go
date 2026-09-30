@@ -121,7 +121,7 @@ func run() error {
 		return eng.Mark(s, time.Now().UTC(), cfg.TargetMaxAge)
 	}
 
-	br, err := buildBroker(cfg, books, mark, log)
+	br, refFeed, err := buildBroker(cfg, books, mark, log)
 	if err != nil {
 		return err
 	}
@@ -138,6 +138,9 @@ func run() error {
 		// ★ 자본은 사용자가 정한다. 엔진은 비중만 보낸다 (슬롯 사이 분배 = weight).
 		EngineBudget: cfg.EngineBudget,
 		Books:        books,
+		// 신호가 검증 — 실브로커면 브로커 시세, paper 면 신호원 mark 를 뺀 거래소 시세.
+		RefCheckPrice: refCheck(refFeed, qs.Price),
+		RefMaxDev:     cfg.RefMaxDev,
 		OnInactive: func(kid, scope string, n int) {
 			// alert 는 아래에서 만든다 — 기동 순서상 엔진이 먼저라 간접으로 부른다.
 			if onInactive != nil {
@@ -322,26 +325,31 @@ func run() error {
 //
 // ★ paper 브로커라도 시세는 진짜를 쓰는 게 낫다. 키움 자격증명이 있으면 시세만 키움에서
 // 받아 페이퍼로 체결시킨다 — 가짜 가격으로 만든 페이퍼 성과는 아무것도 증명하지 못한다.
+//
+// 두 번째 반환값 = **독립 시세원** (신호가 검증용, reconcile.Options.RefCheckPrice). 실브로커면 nil
+// — 그 경우 브로커 시세(quotes)를 쓴다. paper 면 신호원 mark 를 뺀 거래소 시세다.
 func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) (float64, bool),
-	log *slog.Logger) (broker.Broker, error) {
+	log *slog.Logger) (broker.Broker, func(protocol.Symbol) (float64, bool), error) {
 	if cfg.Broker == "upbit" {
 		access, sec := config.UpbitCreds()
 		if access == "" || sec == "" {
-			return nil, fmt.Errorf("업비트 자격증명이 없다 — COCKPIT_UPBIT_ACCESS_KEY / COCKPIT_UPBIT_SECRET_KEY 환경변수로 줄 것")
+			return nil, nil, fmt.Errorf("업비트 자격증명이 없다 — COCKPIT_UPBIT_ACCESS_KEY / COCKPIT_UPBIT_SECRET_KEY 환경변수로 줄 것")
 		}
-		return upbit.New(upbit.Config{AccessKey: access, SecretKey: sec})
+		b, err := upbit.New(upbit.Config{AccessKey: access, SecretKey: sec})
+		return b, nil, err
 	}
 
 	appKey, secret := config.KiwoomCreds()
 
 	if cfg.Broker == "kiwoom" {
 		if appKey == "" || secret == "" {
-			return nil, fmt.Errorf("키움 자격증명이 없다 — COCKPIT_KIWOOM_APPKEY / COCKPIT_KIWOOM_SECRET 환경변수로 줄 것 (★ 플래그로 주면 ps 에 노출된다)")
+			return nil, nil, fmt.Errorf("키움 자격증명이 없다 — COCKPIT_KIWOOM_APPKEY / COCKPIT_KIWOOM_SECRET 환경변수로 줄 것 (★ 플래그로 주면 ps 에 노출된다)")
 		}
-		return kiwoom.New(kiwoom.Config{
+		b, err := kiwoom.New(kiwoom.Config{
 			AppKey: appKey, SecretKey: secret, DataDir: cfg.DataDir, Mock: cfg.KiwoomMock,
-			TokenFile: cfg.KiwoomTokenFile,
+			TokenFile: cfg.KiwoomTokenFile, APIURL: cfg.KiwoomAPIURL,
 		})
+		return b, nil, err
 	}
 
 	// 편도 비용. ★ 0 으로 두지 않는다 — 비용 0 시뮬은 손익분기 근처 전략의 판정을 뒤집는다.
@@ -373,7 +381,7 @@ func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) 
 	if appKey != "" && secret != "" {
 		kw, err := kiwoom.New(kiwoom.Config{
 			AppKey: appKey, SecretKey: secret, DataDir: cfg.DataDir, Mock: cfg.KiwoomMock,
-			TokenFile: cfg.KiwoomTokenFile,
+			TokenFile: cfg.KiwoomTokenFile, APIURL: cfg.KiwoomAPIURL,
 		})
 		if err == nil {
 			log.Info("paper 브로커에 키움 실시세를 물린다")
@@ -395,7 +403,7 @@ func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) 
 			"flat6 발행에 mark_price 가 실렸는지 확인할 것")
 	}
 	pcfg.Price = markFirst(mark, byExchange(feeds))
-	return paper.New(pcfg), nil
+	return paper.New(pcfg), byExchange(feeds), nil
 }
 
 // byExchange — 종목의 거래소로 시세원을 고른다. 모르는 거래소는 "모른다".
@@ -549,6 +557,13 @@ func accountProvider(br broker.Broker, price func(protocol.Symbol) (float64, boo
 		acc.Equity = acc.Deposit + acc.Holdings
 		return acc
 	}
+}
+
+func refCheck(feed, fallback func(protocol.Symbol) (float64, bool)) func(protocol.Symbol) (float64, bool) {
+	if feed != nil {
+		return feed
+	}
+	return fallback
 }
 
 // markFirst — 신호원(flat6)이 실어 보낸 가격을 먼저 쓰고, 없으면 fallback.
