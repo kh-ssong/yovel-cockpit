@@ -11,6 +11,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -197,4 +199,16 @@ func post(t *testing.T, url, tok string, body any) map[string]any {
 	var out map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	return out
+}
+
+// 공식 스펙 전체 파일로도 뜬다 (최상위에 API 가 아닌 항목이 섞여 있다). 파일이 없으면 건너뛴다.
+func TestLoadsFullSpecIfPresent(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	p := filepath.Join(home, "Downloads", "kiwoom-rest-api-spec.json")
+	if _, err := os.Stat(p); err != nil {
+		t.Skip("전체 스펙 없음")
+	}
+	if _, err := fakekiwoom.LoadSpec(p); err != nil {
+		t.Fatal(err)
+	}
 }

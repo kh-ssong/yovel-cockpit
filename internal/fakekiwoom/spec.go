@@ -34,16 +34,22 @@ func LoadSpec(path string) (*Spec, error) {
 	if err != nil {
 		return nil, err
 	}
-	var doc map[string]struct {
+	// ★ 스펙 파일 최상위엔 API 가 아닌 항목(배열 등)도 섞여 있다 — 객체로 안 풀리는 건 건너뛴다.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return nil, fmt.Errorf("스펙 파싱: %w", err)
+	}
+	type apiDoc struct {
 		URL        string `json:"url"`
 		RequestIo  []item `json:"requestIo"`
 		ResponseIo []item `json:"responseIo"`
 	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("스펙 파싱: %w", err)
-	}
 	s := &Spec{apis: map[string]apiSpec{}}
-	for id, d := range doc {
+	for id, rawAPI := range top {
+		var d apiDoc
+		if err := json.Unmarshal(rawAPI, &d); err != nil || d.URL == "" {
+			continue
+		}
 		a := apiSpec{URL: d.URL, Request: map[string]bool{}, Lists: map[string][]string{}}
 		for _, it := range d.RequestIo {
 			if !headerFields[it.ItemID] {
