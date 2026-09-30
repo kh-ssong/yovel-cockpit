@@ -64,6 +64,12 @@ type Options struct {
 	// 경로가 생긴다 — 배분은 콕핏이 하되 **엔진은 계좌를 모른다** 는 경계가 무너진다.
 	Account func(ctx context.Context) *protocol.Account
 
+	// Lots — 로트 목록(+ group 합). Holdings — 종목별 대조(브로커 = Σ로트 + 장부 밖).
+	// ★ Account 와 같은 이유로 엔진 밖에서 조립해 넘긴다 (Holdings 는 브로커 조회가 필요하다).
+	// nil 이면 해당 경로는 503.
+	Lots     func(ctx context.Context) (any, error)
+	Holdings func(ctx context.Context) (any, error)
+
 	// UI — 로컬 대시보드(정적 번들). nil 이면 안 서빙한다.
 	//
 	// ★ 이 경로만 Bearer 검사에서 빠진다 (needsToken). 브라우저의 최초 내비게이션에는
@@ -95,6 +101,8 @@ func New(opt Options, eng Engine) *Server {
 	mux.HandleFunc("POST /v1/downlink", s.handleDownlink)
 	mux.HandleFunc("GET /v1/ledger", s.handleLedger)
 	mux.HandleFunc("GET /v1/books", s.handleBooks)
+	mux.HandleFunc("GET /v1/lots", s.provided(func() func(context.Context) (any, error) { return s.opt.Lots }))
+	mux.HandleFunc("GET /v1/holdings", s.provided(func() func(context.Context) (any, error) { return s.opt.Holdings }))
 
 	// 대시보드는 마지막에 건다 — 남는 경로 전부(`/`, `/assets/...`)를 받는다.
 	if opt.UI != nil {
@@ -294,6 +302,23 @@ type ledgerResponse struct {
 // ★ mode 를 기본값으로 채우지 않는다. "전체 보기"가 기본이면 paper 와 live 가 합산돼
 // 실계좌가 손실인데 수익으로 보인다 (실측: live 15건 −18,725원 vs paper 63건 +49,884원).
 // 그래서 호출자가 반드시 고르게 하고, 안 고르면 400 이다.
+// provided — 공급자가 준 값을 그대로 JSON 으로. 공급자가 없으면 503, 실패면 500.
+func (s *Server) provided(get func() func(context.Context) (any, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		f := get()
+		if f == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "이 데몬에 연결되지 않은 조회다"})
+			return
+		}
+		v, err := f(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	}
+}
+
 // booksEngine — 장부별 성적을 주는 엔진. 인터페이스를 넓히지 않고 선택으로 둔다.
 type booksEngine interface {
 	BookStats(ctx context.Context, mode protocol.Mode) ([]engine.BookStat, error)

@@ -112,3 +112,31 @@ func (e *Engine) BookStats(ctx context.Context, mode protocol.Mode) ([]BookStat,
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
+
+// OpenRealized — 열린 로트별로 분할매도로 이미 실현한 손익 (intent_id → 원).
+func (e *Engine) OpenRealized(ctx context.Context, mode protocol.Mode) (map[string]float64, error) {
+	out := map[string]float64{}
+	ps, ok := e.cfg.Store.(pnlStore)
+	if !ok || e.cfg.Store == nil {
+		return out, nil
+	}
+	rows, err := ps.PnLByIntent(ctx, mode)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		if !r.Closed && r.SellQty > 0 && !r.PriceUnknown {
+			out[r.IntentID] = r.Realized()
+		}
+	}
+	return out, nil
+}
+
+// BookName — (kid, scope) 의 장부 이름. 장부 설정이 없으면 기본 장부, 장부에 없는 소스면 빈 값.
+func (e *Engine) BookName(kid, scope string) string {
+	if e.cfg.Books == nil {
+		return book.Default
+	}
+	name, _, _ := e.cfg.Books.Of(kid, scope)
+	return name
+}

@@ -32,6 +32,7 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/engine"
 	"github.com/kh-ssong/yovel-cockpit/internal/executor"
 	"github.com/kh-ssong/yovel-cockpit/internal/httpapi"
+	"github.com/kh-ssong/yovel-cockpit/internal/lots"
 	"github.com/kh-ssong/yovel-cockpit/internal/notify"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/quotes"
@@ -180,6 +181,26 @@ func run() error {
 		},
 		UI:      ui,
 		Account: accountProvider(br, qs.Price, log),
+		Lots: func(ctx context.Context) (any, error) {
+			ls, gs, err := lotsOf(ctx, eng, qs.Price, cfg.Mode)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"as_of": time.Now().UTC(), "mode": cfg.Mode, "lots": ls, "groups": gs}, nil
+		},
+		Holdings: func(ctx context.Context) (any, error) {
+			ls, _, err := lotsOf(ctx, eng, qs.Price, cfg.Mode)
+			if err != nil {
+				return nil, err
+			}
+			hs, err := br.Positions(ctx)
+			if err != nil {
+				// ★ 조회 실패를 "보유 없음" 으로 그리지 않는다 — 전 로트가 short(위험)로 보인다.
+				return nil, fmt.Errorf("브로커 보유 조회 실패: %w", err)
+			}
+			return map[string]any{"as_of": time.Now().UTC(), "mode": cfg.Mode, "broker": br.Name(),
+				"holdings": lots.Reconcile(ls, hs, br.LotSize)}, nil
+		},
 	}, eng)
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("로컬 API 기동 실패: %w", err)
@@ -478,6 +499,20 @@ func logCostModel(ctx context.Context, cfg config.Config, st *store.Store, log *
 		log.Warn("★ 매도 요율이 설정과 다르다 — paper 손익이 실제와 갈린다",
 			"설정", cfg.PaperFeeBpSell, "관측", obs.SellBp)
 	}
+}
+
+// lotsOf — 로트 목록 재료를 모은다 (포지션 · 장부 이름 · 시세 · 분할매도 실현손익).
+func lotsOf(ctx context.Context, eng *engine.Engine, price func(protocol.Symbol) (float64, bool),
+	mode protocol.Mode) ([]lots.Lot, []lots.Group, error) {
+	realized, err := eng.OpenRealized(ctx, mode)
+	if err != nil {
+		return nil, nil, err
+	}
+	ls, gs := lots.Build(lots.Inputs{
+		Now: time.Now().UTC(), Positions: eng.Positions(), BookOf: eng.BookName,
+		Price: price, Realized: realized,
+	})
+	return ls, gs, nil
 }
 
 // accountProvider — 「계좌가 불어나는지 줄어드는지」를 `/v1/state` 에 싣는다.
