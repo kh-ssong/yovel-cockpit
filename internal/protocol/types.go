@@ -222,8 +222,12 @@ type StateSnapshot struct {
 	Daemon     DaemonInfo `json:"daemon"`
 	Mode       Mode       `json:"mode"` // ★ 생략 불가 — paper/live 합산은 허위 표시
 	AppliedSeq uint64     `json:"applied_seq"`
-	Guards     Guards     `json:"guards"`
-	Positions  []Position `json:"positions"`
+	// AppliedSeqByScope — 발행 범위(scope)별로 적용된 seq (2026-09-30).
+	// ★ 발행자는 **자기 scope 의 값**과 비교해야 한다. 전역 applied_seq 는 여러 소스 중 최댓값이라,
+	// 전략이 여럿이면 남의 seq 를 자기 것으로 읽고 "콕핏이 앞섰다" 고 오판한다 (flat6 publisher 가 읽는다).
+	AppliedSeqByScope map[string]uint64 `json:"applied_seq_by_scope,omitempty"`
+	Guards            Guards            `json:"guards"`
+	Positions         []Position        `json:"positions"`
 	// ★ omitempty 를 붙이지 않는다: "유령 없음(빈 배열)" 과 "안 봤음(필드 부재)" 은 다른 말이다.
 	Orphans []Symbol `json:"orphans"`
 	// Account — 계좌가 불어나는지 줄어드는지. ★ 조회 실패 시 nil 이고, **0 으로 채우지 않는다**

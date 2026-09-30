@@ -26,6 +26,11 @@
       "enum": ["paper", "live"],
       "description": "★ 생략 불가. paper 와 live 를 합산해 표시하면 허위 표시가 된다."
     },
+    "applied_seq_by_scope": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 },
+      "description": "scope 별 적용 seq. ★ 발행자는 자기 scope 값과 비교한다 — 전역 applied_seq 는 여러 소스의 최댓값이다."
+    },
     "applied_seq": {
       "type": "integer",
       "minimum": 0,

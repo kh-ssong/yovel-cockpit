@@ -461,6 +461,20 @@ func (e *Engine) anyEntryAllowedLocked(now time.Time) bool {
 	return false
 }
 
+// seqByScopeLocked — scope 별 적용 seq (같은 scope 를 여러 kid 가 내면 그중 최댓값).
+func (e *Engine) seqByScopeLocked() map[string]uint64 {
+	if len(e.targets) == 0 {
+		return nil
+	}
+	out := map[string]uint64{}
+	for k, st := range e.targets {
+		if st.seq > out[k.scope] {
+			out[k.scope] = st.seq
+		}
+	}
+	return out
+}
+
 // maxSeqLocked — 적용된 seq 중 가장 큰 값 (상태 표시용. 소스별 seq 는 Guard 가 따로 센다).
 func (e *Engine) maxSeqLocked() uint64 {
 	var m uint64
@@ -497,8 +511,9 @@ func (e *Engine) Snapshot() protocol.StateSnapshot {
 		Daemon: protocol.DaemonInfo{
 			Version: v.Version, SHA: v.SHA, StartedAt: &e.startedAt,
 		},
-		Mode:       e.cfg.Mode,
-		AppliedSeq: e.maxSeqLocked(),
+		Mode:              e.cfg.Mode,
+		AppliedSeq:        e.maxSeqLocked(),
+		AppliedSeqByScope: e.seqByScopeLocked(),
 		Guards: protocol.Guards{
 			Paused:          e.paused,
 			BlockEntryUntil: e.blockEntryUntil,
