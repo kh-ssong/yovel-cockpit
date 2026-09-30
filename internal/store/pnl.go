@@ -25,12 +25,19 @@ type IntentPnL struct {
 	PriceUnknown bool
 }
 
-// Realized — 종결된 목표의 실현손익. 열린 목표는 0.
+// Realized — 실현손익. 종결된 로트는 전부, 열린 로트는 **이미 판 몫만**(분할매도).
+// 판 몫의 원가 = 매수 원가 × (판 수량 / 산 수량) — 로트 안은 한 평단이다.
 func (p IntentPnL) Realized() float64 {
-	if !p.Closed || p.PriceUnknown {
+	if p.PriceUnknown {
 		return 0
 	}
-	return p.Proceeds - p.Cost
+	if p.Closed {
+		return p.Proceeds - p.Cost
+	}
+	if p.SellQty <= 0 || p.BuyQty <= 0 {
+		return 0
+	}
+	return p.Proceeds - p.Cost*p.SellQty/p.BuyQty
 }
 
 // PnLByIntent — 한 mode 의 목표별 돈 흐름. ★ mode 는 필수다 (paper 와 live 를 합산하지 않는다).

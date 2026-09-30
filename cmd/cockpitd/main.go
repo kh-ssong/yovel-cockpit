@@ -428,11 +428,11 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 		}
 
 		// 아무 일도 없었으면 조용히 넘긴다 — 5초마다 로그를 찍으면 진짜 사건이 묻힌다.
-		if res.Entered+res.Exited+res.PartialExits+res.StopsArmed+res.TpPlaced+res.ClosedByBroker == 0 &&
+		if res.Entered+res.Exited+res.PartialExits+res.Reduced+res.StopsArmed+res.TpPlaced+res.ClosedByBroker == 0 &&
 			len(res.Errors) == 0 && len(res.Mismatch) == 0 {
 			continue
 		}
-		log.Info("집행", "entered", res.Entered, "exited", res.Exited, "partial_exits", res.PartialExits,
+		log.Info("집행", "entered", res.Entered, "exited", res.Exited, "partial_exits", res.PartialExits, "reduced", res.Reduced,
 			"stops", res.StopsArmed, "tp", res.TpPlaced, "closed_by_broker", res.ClosedByBroker,
 			"mismatch", res.Mismatch, "errors", res.Errors)
 	}

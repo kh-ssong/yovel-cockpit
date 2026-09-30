@@ -6,6 +6,8 @@
 package reconcile
 
 import (
+	"fmt"
+	"math"
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
@@ -28,7 +30,9 @@ type EnterOrder struct {
 
 type ExitOrder struct {
 	Position protocol.Position `json:"position"`
-	Reason   string            `json:"reason"` // flat | derisk
+	Reason   string            `json:"reason"` // flat | derisk | reduce
+	// Qty — 팔 수량. 0 이면 로트 전량. 분할매도(hold_frac)만 0 이 아니다.
+	Qty float64 `json:"qty,omitempty"`
 }
 
 type StopUpdate struct {
@@ -61,6 +65,9 @@ type Plan struct {
 	// DroppedEnters — 주문 상한에 걸려 이번 틱에 못 낸 진입 수.
 	// ★ 조용한 절단 금지: 잘렸다는 사실 자체를 보고한다.
 	DroppedEnters int `json:"dropped_enters"`
+	// Notes — 지시를 받았지만 집행할 수 없었던 사유 (예: 최초 진입 수량을 모르는 로트의 hold_frac).
+	// ★ 조용히 무시하지 않는다 — 집행기가 오류로 올려 사람에게 보인다.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // Options 는 계획에 필요한 로컬 사실들.
@@ -175,6 +182,14 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 		case held:
 			// 이미 들고 있다 — 진입이 아니라 숫자 갱신만 한다.
 			// ★ stop 갱신은 만료·일시정지와 무관하게 항상 반영한다. 청산 쪽을 막을 이유가 없다.
+			// ★ 분할매도(hold_frac)도 마찬가지 — 줄이는 방향이라 만료·일시정지가 막지 않는다.
+			if t.Exit != nil && t.Exit.HoldFrac != nil {
+				if e, note := reduceOrder(pos, *t.Exit.HoldFrac, opt); note != "" {
+					plan.Notes = append(plan.Notes, note)
+				} else if e != nil {
+					plan.Exits = append(plan.Exits, *e)
+				}
+			}
 			if t.Exit != nil {
 				if t.Exit.StopPrice > 0 && t.Exit.StopPrice != pos.StopArmed {
 					plan.StopUpdates = append(plan.StopUpdates, StopUpdate{
@@ -253,6 +268,49 @@ func ApplyOrderCap(plan *Plan, max int) {
 	for _, e := range dropped {
 		replaceAck(plan, e.Target.IntentID, "rejected", []protocol.RejectCode{protocol.CodeRate})
 	}
+}
+
+// reduceOrder — hold_frac 을 "몇 주 팔지" 로 바꾼다. 팔 게 없으면 (nil, "").
+//
+// ★ 기준은 **최초 진입 수량**이다. 지금 수량을 기준으로 삼으면 같은 스냅샷이 올 때마다 또 줄인다
+// (50% → 25% → 12.5% …). 최초 수량을 모르는 옛 로트는 줄이지 않고 사유를 남긴다.
+func reduceOrder(pos protocol.Position, frac float64, opt Options) (*ExitOrder, string) {
+	if frac <= 0 {
+		return &ExitOrder{Position: pos, Reason: "flat"}, ""
+	}
+	if pos.EntryQty <= 0 {
+		return nil, fmt.Sprintf("%s(%s): hold_frac 을 받았지만 최초 진입 수량을 모른다 — 줄이지 않았다",
+			pos.IntentID, pos.Symbol.Code)
+	}
+	m := opt.market(pos.Symbol)
+	lot := m.LotSize
+	if lot <= 0 {
+		lot = 1
+	}
+	// 남길 수량 = 최초 × 비율 을 주문 단위로 반올림 (15주 × 0.5 = 7.5 → 8주 남기고 7주 판다).
+	keep := math.Round(pos.EntryQty*frac/lot) * lot
+	if pos.Qty <= keep+lot/2 {
+		return nil, "" // 이미 그 이하 — 되사지 않는다
+	}
+	sell := pos.Qty - keep
+
+	if m.MinOrderValue > 0 {
+		price := pos.AvgEntryPrice
+		if opt.Price != nil {
+			if p, ok := opt.Price(pos.Symbol); ok && p > 0 {
+				price = p
+			}
+		}
+		switch {
+		case keep*price < m.MinOrderValue:
+			// 남길 몫이 최소주문금액 밑이면 나중에 팔 수 없는 먼지가 된다 — 지금 전량 판다.
+			return &ExitOrder{Position: pos, Reason: "reduce"}, ""
+		case sell*price < m.MinOrderValue:
+			return nil, fmt.Sprintf("%s(%s): hold_frac 매도분 %.0f원이 최소주문금액 미만 — 줄이지 않았다",
+				pos.IntentID, pos.Symbol.Code, sell*price)
+		}
+	}
+	return &ExitOrder{Position: pos, Reason: "reduce", Qty: sell}, ""
 }
 
 // committed 는 지금 보유가 예산에서 이미 먹고 있는 금액.

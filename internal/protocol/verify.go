@@ -349,6 +349,12 @@ func validateBody(env *Envelope) []RejectCode {
 			if t.IntentID == "" || t.Symbol.Code == "" || t.Slot == "" {
 				return []RejectCode{CodeSchema}
 			}
+			if len(t.Group) > 128 {
+				return []RejectCode{CodeSchema}
+			}
+			if t.Exit != nil && t.Exit.HoldFrac != nil && (*t.Exit.HoldFrac < 0 || *t.Exit.HoldFrac > 1) {
+				return []RejectCode{CodeSchema}
+			}
 			switch t.Want {
 			case WantFlat:
 			case WantOpen:

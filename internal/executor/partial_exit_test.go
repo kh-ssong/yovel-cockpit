@@ -75,7 +75,7 @@ func TestPartialExitKeepsRemainderAndSellsItNextTick(t *testing.T) {
 	for _, o := range h.ledger(t) {
 		if o.Phase == "exit_filled" {
 			sold += o.Qty
-			partialNoted = partialNoted || strings.Contains(o.Detail, "부분 청산")
+			partialNoted = partialNoted || strings.Contains(o.Detail, "부분 체결")
 		}
 	}
 	if sold != total || !partialNoted {

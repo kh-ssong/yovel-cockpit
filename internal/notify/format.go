@@ -66,6 +66,8 @@ func reasonKo(r string) string {
 		return "🎯 TP"
 	case "derisk":
 		return "🚨 de-risk"
+	case "reduce":
+		return "✂️ 분할매도"
 	case "manual":
 		return "수동/사후감지"
 	}

@@ -82,6 +82,10 @@ func (e *Engine) BookStats(ctx context.Context, mode protocol.Mode) ([]BookStat,
 		}
 		for _, r := range rows {
 			if !r.Closed {
+				// 열린 로트라도 분할매도로 판 몫은 이미 실현됐다.
+				if r.SellQty > 0 && !r.PriceUnknown {
+					get(r.Kid, r.Scope).RealizedKRW += r.Realized()
+				}
 				continue
 			}
 			st := get(r.Kid, r.Scope)

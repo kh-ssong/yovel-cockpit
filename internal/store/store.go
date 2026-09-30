@@ -27,7 +27,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 type Store struct{ db *sql.DB }
 
@@ -87,6 +87,21 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		v.Int64 = 2
 	}
+	if v.Int64 < 3 {
+		// v2 → v3: 분할매수 묶음(grp) · 최초 진입 수량(entry_qty).
+		// ★ 옛 로트의 entry_qty 는 0 = 모름. 지금 수량으로 채우지 않는다 — 이미 부분 청산된 로트면
+		//   그 값이 기준이 되어 hold_frac 이 **또** 줄인다.
+		for _, q := range []string{
+			`ALTER TABLE intents ADD COLUMN grp TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE intents ADD COLUMN entry_qty REAL NOT NULL DEFAULT 0`,
+			`INSERT INTO schema_version(version) VALUES (3)`,
+		} {
+			if _, err := s.db.ExecContext(ctx, q); err != nil {
+				return fmt.Errorf("v2→v3: %w", err)
+			}
+		}
+		v.Int64 = 3
+	}
 	if v.Int64 > schemaVersion {
 		// 옛 바이너리가 새 DB 를 열면 모르는 컬럼을 조용히 무시하며 돈다. 그게 최악이다.
 		return fmt.Errorf("DB 스키마 v%d 인데 이 바이너리는 v%d 까지만 안다 — 데몬을 업데이트할 것",
@@ -98,10 +113,13 @@ func (s *Store) migrate(ctx context.Context) error {
 // ── intents ─────────────────────────────────────────────────────────────────
 
 type Intent struct {
-	IntentID      string
-	Slot          string
-	Kid           string
-	Scope         string
+	IntentID string
+	Slot     string
+	Kid      string
+	Scope    string
+	Group    string
+	// EntryQty — 처음 산 수량. 한 번 기록되면 바뀌지 않는다 (0 으로 부르면 기존 값 유지).
+	EntryQty      float64
 	Symbol        protocol.Symbol
 	Side          string
 	Qty           float64
@@ -118,8 +136,9 @@ type Intent struct {
 func (s *Store) UpsertIntent(ctx context.Context, in Intent) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO intents (intent_id, slot, exchange, code, side, qty, avg_entry_price,
-                     stop_armed, tp_price, tp_order_id, time_exit_at, entry_at, updated_at, kid, scope)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     stop_armed, tp_price, tp_order_id, time_exit_at, entry_at, updated_at, kid, scope,
+                     grp, entry_qty)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(intent_id) DO UPDATE SET
   qty=excluded.qty, avg_entry_price=excluded.avg_entry_price,
   stop_armed=excluded.stop_armed, tp_price=excluded.tp_price,
@@ -131,10 +150,14 @@ ON CONFLICT(intent_id) DO UPDATE SET
   -- ★ 소스는 처음 기록된 값을 지킨다. stop 조임·TP 위임은 소스를 모른 채 부른다.
   kid=CASE WHEN excluded.kid <> '' THEN excluded.kid ELSE intents.kid END,
   scope=CASE WHEN excluded.scope <> '' THEN excluded.scope ELSE intents.scope END,
+  grp=CASE WHEN excluded.grp <> '' THEN excluded.grp ELSE intents.grp END,
+  -- ★ 최초 진입 수량은 처음 값을 지킨다 — 부분 청산 뒤 갱신이 이걸 덮으면 hold_frac 기준이 무너진다.
+  entry_qty=CASE WHEN intents.entry_qty > 0 THEN intents.entry_qty ELSE excluded.entry_qty END,
   updated_at=excluded.updated_at`,
 		in.IntentID, in.Slot, in.Symbol.Exchange, in.Symbol.Code, in.Side,
 		in.Qty, in.AvgEntryPrice, in.StopArmed, in.TpPrice, nullStr(in.TpOrderID),
-		nullTime(in.TimeExitAt), nullTime(in.EntryAt), nowStr(), in.Kid, in.Scope)
+		nullTime(in.TimeExitAt), nullTime(in.EntryAt), nowStr(), in.Kid, in.Scope,
+		in.Group, in.EntryQty)
 	return err
 }
 
@@ -177,7 +200,7 @@ WHERE intent_id=?`, ts(at), reason, nowStr(), intentID)
 func (s *Store) OpenIntents(ctx context.Context) ([]protocol.Position, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT intent_id, slot, exchange, code, qty, avg_entry_price, stop_armed, tp_price, tp_order_id, entry_at,
-       time_exit_at, kid, scope
+       time_exit_at, kid, scope, grp, entry_qty
 FROM intents WHERE closed_at IS NULL ORDER BY intent_id`)
 	if err != nil {
 		return nil, err
@@ -193,7 +216,7 @@ FROM intents WHERE closed_at IS NULL ORDER BY intent_id`)
 		//   "이미 건 TP" 를 몰라 매번 새로 걸었다.
 		if err := rows.Scan(&p.IntentID, &p.Slot, &p.Symbol.Exchange, &p.Symbol.Code,
 			&p.Qty, &p.AvgEntryPrice, &p.StopArmed, &p.TpArmed, &tpOrder, &entryAt, &timeExit,
-			&p.Kid, &p.Scope); err != nil {
+			&p.Kid, &p.Scope, &p.Group, &p.EntryQty); err != nil {
 			return nil, err
 		}
 		p.TpOrderID = tpOrder.String

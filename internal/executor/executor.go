@@ -60,6 +60,8 @@ type Result struct {
 	TpPlaced   int `json:"tp_placed"`
 	// PartialExits — 청산을 냈는데 일부만 팔렸다. 잔량은 다음 틱에 다시 판다.
 	PartialExits int `json:"partial_exits,omitempty"`
+	// Reduced — 분할매도(hold_frac)로 일부러 줄인 로트 수.
+	Reduced int `json:"reduced,omitempty"`
 	// ClosedByBroker — 우리가 안 팔았는데 브로커에서 사라진 포지션 (TP 체결 또는 수동 매도).
 	ClosedByBroker int `json:"closed_by_broker"`
 	// Blind — stop 이 걸려 있는데 시세가 없거나 늙어 평가하지 못한 포지션.
@@ -103,16 +105,27 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 
 	plan := x.d.Engine.Plan(now)
 
+	// 집행할 수 없었던 지시는 조용히 버리지 않는다.
+	for _, n := range plan.Notes {
+		res.fail("지시 불가: %s", n)
+	}
+
 	// ① 청산 먼저. 진입 실패는 기회 상실(유한)이지만 청산 실패는 손실 노출(무한)이다.
 	for _, e := range plan.Exits {
 		if sold[e.Position.IntentID] {
 			continue
 		}
-		x.doExit(ctx, now, e.Position, e.Reason, &res)
+		x.doSell(ctx, now, e.Position, e.Qty, e.Reason, &res)
+		sold[e.Position.IntentID] = true
 	}
 
 	// ② stop 갱신 — 브로커에 낼 주문이 아니라 우리가 기억할 숫자다.
+	// ★ 이번 틱에 팔았거나 줄인 로트는 건너뛴다 — 계획의 포지션은 **매도 전 수량**이라, 그걸로
+	//   원장을 갱신하면 방금 줄인 수량이 되돌아가고 TP 는 가진 것보다 많이 걸린다. 다음 틱이 다시 계획한다.
 	for _, u := range plan.StopUpdates {
+		if sold[u.Position.IntentID] {
+			continue
+		}
 		if err := x.armStop(ctx, u.Position, u.To); err != nil {
 			res.fail("stop 갱신 %s: %v", u.Position.IntentID, err)
 			continue
@@ -122,6 +135,9 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 
 	// ③ TP 위임 — exit 3층 중 제일 튼튼한 층. 데몬도 서버도 죽어도 이건 체결된다.
 	for _, u := range plan.TpUpdates {
+		if sold[u.Position.IntentID] {
+			continue
+		}
 		if err := x.placeTP(ctx, u.Position, u.To); err != nil {
 			res.fail("TP 위임 %s: %v", u.Position.IntentID, err)
 			continue
@@ -211,6 +227,16 @@ func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result
 }
 
 func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Position, reason string, res *Result) {
+	x.doSell(ctx, now, pos, pos.Qty, reason, res)
+}
+
+// doSell — 로트에서 qty 만큼 판다. qty 가 로트 전량이면 청산, 아니면 분할매도(hold_frac).
+func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Position, qty float64,
+	reason string, res *Result) {
+	if qty <= 0 || qty > pos.Qty {
+		qty = pos.Qty
+	}
+	lot := x.d.Broker.LotSize(pos.Symbol)
 	// ★ 걸어둔 TP 지정가를 먼저 취소하지 않으면 그 수량이 잠겨 시장가 매도가 거부된다.
 	if pos.TpOrderID != "" {
 		if err := x.d.Broker.CancelOrder(ctx, pos.Symbol, pos.TpOrderID); err != nil {
@@ -226,7 +252,7 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 	}
 
 	fill, err := x.d.Broker.Sell(ctx, broker.OrderRequest{
-		IntentID: pos.IntentID, Symbol: pos.Symbol, Qty: pos.Qty,
+		IntentID: pos.IntentID, Symbol: pos.Symbol, Qty: qty,
 	})
 	if err != nil {
 		res.fail("매도 %s(%s): %v", pos.IntentID, pos.Symbol.Code, err)
@@ -237,7 +263,9 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 	// 원장 밖 유령이 됐다 (stop·시간청산·판단자 신호 어느 것도 다시는 그걸 팔지 않는다).
 	// 남은 수량으로 줄여 두면, 청산 사유(flat·derisk)가 그대로 살아 있으므로 다음 틱이 나머지를 판다.
 	remaining := pos.Qty - fill.Qty
-	partial := fill.Qty > 0 && remaining > x.d.Broker.LotSize(pos.Symbol)/2
+	partial := fill.Qty > 0 && remaining > lot/2
+	// short — 내려던 것보다 덜 팔렸다 (분할체결 중 시간 초과 등). 분할매도로 일부러 남긴 것과 구분한다.
+	short := fill.Qty < qty-lot/2
 
 	detail := fill.Detail
 	// ★ 잔량이 최소주문금액 밑이면 다시 팔 수 없다(거래소가 거부) — 매 틱 거부만 반복하느니
@@ -246,8 +274,11 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 		partial = false
 		detail = joinDetail(fmt.Sprintf("잔량 %v 은 최소주문금액 미만 먼지라 종결", remaining), detail)
 	}
-	if partial {
-		detail = joinDetail(fmt.Sprintf("부분 청산 — 잔량 %v 은 다음 틱에 다시 판다", remaining), detail)
+	switch {
+	case partial && short:
+		detail = joinDetail(fmt.Sprintf("부분 체결 — 잔량 %v 은 다음 틱에 다시 판다", remaining), detail)
+	case partial:
+		detail = joinDetail(fmt.Sprintf("분할매도 — %v 남김", remaining), detail)
 	}
 	x.recordFill(ctx, pos.Slot, pos.Kid, pos.Scope, store.Order{
 		ID: ids.NewAt(now), IntentID: pos.IntentID, Phase: "exit_filled",
@@ -265,10 +296,17 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 			res.fail("★ 부분 청산 잔량 기록 실패 %s: %v", pos.IntentID, err)
 		}
 		pos.Qty = remaining
+		pos.TpOrderID, pos.TpArmed = "", 0 // ReduceIntent 가 TP 를 지운다 — 다음 틱이 남은 수량으로 다시 건다
 		x.d.Engine.UpsertPosition(pos)
-		res.PartialExits++
-		x.d.Log.Warn("부분 청산 — 잔량이 남았다", "intent_id", pos.IntentID,
-			"code", pos.Symbol.Code, "sold", fill.Qty, "remaining", remaining)
+		if short {
+			res.PartialExits++
+			x.d.Log.Warn("부분 체결 — 잔량이 남았다", "intent_id", pos.IntentID,
+				"code", pos.Symbol.Code, "sold", fill.Qty, "remaining", remaining)
+		} else {
+			res.Reduced++
+			x.d.Log.Info("분할매도", "intent_id", pos.IntentID, "code", pos.Symbol.Code,
+				"sold", fill.Qty, "remaining", remaining)
+		}
 		return
 	}
 
@@ -336,7 +374,8 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 	}, res)
 
 	in := store.Intent{
-		IntentID: t.IntentID, Slot: t.Slot, Kid: kid, Scope: scope, Symbol: t.Symbol, Side: string(t.Side),
+		IntentID: t.IntentID, Slot: t.Slot, Kid: kid, Scope: scope, Group: t.Group,
+		EntryQty: fill.Qty, Symbol: t.Symbol, Side: string(t.Side),
 		Qty: fill.Qty, AvgEntryPrice: fill.Price, EntryAt: &fill.FilledAt,
 	}
 	if t.Exit != nil {
@@ -348,8 +387,8 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 	}
 
 	x.d.Engine.UpsertPosition(protocol.Position{
-		IntentID: t.IntentID, Slot: t.Slot, Kid: kid, Scope: scope, Symbol: t.Symbol,
-		Qty: fill.Qty, AvgEntryPrice: fill.Price, EntryAt: &fill.FilledAt,
+		IntentID: t.IntentID, Slot: t.Slot, Kid: kid, Scope: scope, Group: t.Group, Symbol: t.Symbol,
+		Qty: fill.Qty, EntryQty: fill.Qty, AvgEntryPrice: fill.Price, EntryAt: &fill.FilledAt,
 		StopArmed: in.StopArmed, TimeExitAt: in.TimeExitAt,
 	})
 	res.Entered++

@@ -372,6 +372,7 @@ func (e *Engine) planLocked(now time.Time) reconcile.Plan {
 		plan.Orphans = append(plan.Orphans, p.Orphans...)
 		plan.Acks = append(plan.Acks, p.Acks...)
 		plan.DroppedEnters += p.DroppedEnters
+		plan.Notes = append(plan.Notes, p.Notes...)
 	}
 	// 상한은 계좌 전체의 폭주 차단이라 합친 뒤 한 번 더 건다.
 	reconcile.ApplyOrderCap(&plan, e.cfg.MaxOrders)

@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS intents (
   slot            TEXT NOT NULL,
   kid             TEXT NOT NULL DEFAULT '',  -- 소스 (서명키). v2
   scope           TEXT NOT NULL DEFAULT '',  -- 발행 범위 (카테고리/playbook). v2
+  grp             TEXT NOT NULL DEFAULT '',  -- 분할매수 로트 묶음 (target.group). v3
+  entry_qty       REAL NOT NULL DEFAULT 0,   -- 처음 산 수량 — 분할매도(hold_frac) 기준. v3
   exchange        TEXT NOT NULL,
   code            TEXT NOT NULL,
   side            TEXT NOT NULL,

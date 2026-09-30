@@ -129,14 +129,18 @@ const (
 )
 
 type Target struct {
-	IntentID string  `json:"intent_id"`
-	Slot     string  `json:"slot"`
-	Symbol   Symbol  `json:"symbol"`
-	Side     string  `json:"side"`
-	Want     Want    `json:"want"`
-	Weight   float64 `json:"weight,omitempty"` // 슬롯 예산 대비 비중. ★ 원화가 아니다 (§7)
-	Entry    *Entry  `json:"entry,omitempty"`
-	Exit     *Exit   `json:"exit,omitempty"`
+	IntentID string `json:"intent_id"`
+	// Group — 같은 포지션으로 묶을 로트들의 이름 (분할매수, 2026-09-30). 선택.
+	// ★ 추가 매수는 새 intent_id(= 새 로트)로 낸다 — 진입가·시점이 달라서 로트가 따로여야 한다.
+	// group 은 UI·성과를 "포지션 단위" 로 묶어 보이기 위한 표지일 뿐 집행에 쓰지 않는다.
+	Group  string  `json:"group,omitempty"`
+	Slot   string  `json:"slot"`
+	Symbol Symbol  `json:"symbol"`
+	Side   string  `json:"side"`
+	Want   Want    `json:"want"`
+	Weight float64 `json:"weight,omitempty"` // 슬롯 예산 대비 비중. ★ 원화가 아니다 (§7)
+	Entry  *Entry  `json:"entry,omitempty"`
+	Exit   *Exit   `json:"exit,omitempty"`
 
 	// MarkPrice / MarkAt — 신호를 낸 쪽이 본 **지금 가격** (선택).
 	//
@@ -163,6 +167,12 @@ type Exit struct {
 	TpPrice    float64    `json:"tp_price,omitempty"`
 	TpDelegate bool       `json:"tp_delegate,omitempty"`
 	TimeExitAt *time.Time `json:"time_exit_at,omitempty"`
+	// HoldFrac — 이 로트를 **처음 산 수량의 몇 %만 남길지** (분할매도, 2026-09-30). 0~1, 선택.
+	//
+	// ★ 줄이기만 한다 — 이미 그 이하로 들고 있으면 아무것도 안 한다(되사지 않는다). 그래서 같은
+	// 스냅샷이 다시 와도 두 번 팔지 않는다(목표상태 멱등). 0 은 want=flat 과 같다.
+	// 남길 수량 = round(최초 진입 수량 × hold_frac) 을 주문 단위로.
+	HoldFrac *float64 `json:"hold_frac,omitempty"`
 }
 
 type DeriskAction string
@@ -234,10 +244,13 @@ type Account struct {
 }
 
 type Position struct {
-	IntentID      string     `json:"intent_id"`
-	Slot          string     `json:"slot,omitempty"`
-	Symbol        Symbol     `json:"symbol"`
-	Qty           float64    `json:"qty"`
+	IntentID string  `json:"intent_id"`
+	Group    string  `json:"group,omitempty"`
+	Slot     string  `json:"slot,omitempty"`
+	Symbol   Symbol  `json:"symbol"`
+	Qty      float64 `json:"qty"`
+	// EntryQty — 이 로트를 **처음 산 수량**. 분할매도(hold_frac)의 기준이다. 0 = 모름(옛 로트).
+	EntryQty      float64    `json:"entry_qty,omitempty"`
 	AvgEntryPrice float64    `json:"avg_entry_price"`
 	EntryAt       *time.Time `json:"entry_at,omitempty"`
 	StopArmed     float64    `json:"stop_armed,omitempty"`
