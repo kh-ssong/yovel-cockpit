@@ -6,6 +6,8 @@
 package reconcile
 
 import (
+	"fmt"
+	"math"
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
@@ -15,6 +17,9 @@ import (
 // ★ json 태그를 다는 이유: 이 계획은 로컬 API(/v1/plan)로 그대로 나간다.
 // 와이어 전체가 snake_case 인데 여기만 Go 필드명이면, UI 가 두 가지 규약을 동시에 다뤄야 한다.
 type EnterOrder struct {
+	// Kid · Scope — 이 진입을 지시한 소스. 포지션·원장에 그대로 실린다.
+	Kid      string          `json:"kid,omitempty"`
+	Scope    string          `json:"scope,omitempty"`
 	Target   protocol.Target `json:"target"`
 	Qty      float64         `json:"qty"`
 	Price    float64         `json:"price"` // 사이징에 쓴 참조가. 지정가면 그대로, 시장가면 추정용
@@ -25,7 +30,9 @@ type EnterOrder struct {
 
 type ExitOrder struct {
 	Position protocol.Position `json:"position"`
-	Reason   string            `json:"reason"` // flat | derisk
+	Reason   string            `json:"reason"` // flat | derisk | reduce
+	// Qty — 팔 수량. 0 이면 로트 전량. 분할매도(hold_frac)만 0 이 아니다.
+	Qty float64 `json:"qty,omitempty"`
 }
 
 type StopUpdate struct {
@@ -58,6 +65,9 @@ type Plan struct {
 	// DroppedEnters — 주문 상한에 걸려 이번 틱에 못 낸 진입 수.
 	// ★ 조용한 절단 금지: 잘렸다는 사실 자체를 보고한다.
 	DroppedEnters int `json:"dropped_enters"`
+	// Notes — 지시를 받았지만 집행할 수 없었던 사유 (예: 최초 진입 수량을 모르는 로트의 hold_frac).
+	// ★ 조용히 무시하지 않는다 — 집행기가 오류로 올려 사람에게 보인다.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // Options 는 계획에 필요한 로컬 사실들.
@@ -82,7 +92,23 @@ type Options struct {
 	//
 	// ★ 두 번째 엔진이 붙으면 호출자가 kid 로 골라 넣는다 (architecture.md §4). 여기가 스칼라인
 	// 것은 소스가 하나라서이지, 예산이 계좌 전체라는 뜻이 아니다.
+	//
+	// ★ 소스(kid × scope)마다 Build 를 따로 부른다 — 이 값은 **그 소스의 장부 예산**이다.
 	Budget float64
+	// Inactive — 이 소스는 이 콕핏에서 활성화되지 않았다 → 진입은 E_INACTIVE, 청산은 그대로.
+	Inactive bool
+	// RefCheckPrice · RefMaxDev — ★ 신호가(entry.ref_price) 검증 (2026-09-30).
+	//
+	// 신호가를 쓰는 이유는 "신호를 낸 가격과 사이징한 가격이 갈리지 않게" 다 — 그런데 그 값이 틀리면
+	// **수량이 그대로 틀린다.** flat6 dummy 통합 테스트: 낡은 가격표(71,000 vs 실제 286,500)로
+	// 3주가 맞는 자리를 42주로 샀다. 콕핏이 **독립 시세**를 알면 신호가가 그보다 RefMaxDev 넘게
+	// 어긋난 진입을 E_LOCAL_GUARD 로 거절한다. 독립 시세를 모르면 막지 않는다(신호가의 존재 이유).
+	// ★ paper 에서는 신호원 mark 가 아니라 거래소 시세여야 한다 — mark 는 같은 신호원이 보낸 값이다.
+	RefCheckPrice func(protocol.Symbol) (float64, bool)
+	RefMaxDev     float64
+	// CanEnter — 지금 이 종목에 새 진입을 낼 수 있는가 (장 시간·동시호가·휴장일). nil 이면 안 본다.
+	// ★ 장 밖 진입은 E_MARKET_CLOSED 로 **계획 단계에서** 거절한다 — 발행자가 ack 로 알 수 있게.
+	CanEnter func(protocol.Symbol) bool
 	// Price — 사이징 참조가. 없으면 그 종목은 진입하지 않는다.
 	Price func(protocol.Symbol) (float64, bool)
 	// Market — 종목별 주문 제약. nil 이면 주식 기본값.
@@ -107,6 +133,9 @@ func (o Options) market(s protocol.Symbol) sizing.Market {
 
 // entryBlocked 는 진입을 막는 로컬 사유를 준다 (없으면 빈 값).
 func (o Options) entryBlocked() protocol.RejectCode {
+	if o.Inactive {
+		return protocol.CodeInactive
+	}
 	if o.Paused {
 		return protocol.CodePaused
 	}
@@ -165,6 +194,14 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 		case held:
 			// 이미 들고 있다 — 진입이 아니라 숫자 갱신만 한다.
 			// ★ stop 갱신은 만료·일시정지와 무관하게 항상 반영한다. 청산 쪽을 막을 이유가 없다.
+			// ★ 분할매도(hold_frac)도 마찬가지 — 줄이는 방향이라 만료·일시정지가 막지 않는다.
+			if t.Exit != nil && t.Exit.HoldFrac != nil {
+				if e, note := reduceOrder(pos, *t.Exit.HoldFrac, opt); note != "" {
+					plan.Notes = append(plan.Notes, note)
+				} else if e != nil {
+					plan.Exits = append(plan.Exits, *e)
+				}
+			}
 			if t.Exit != nil {
 				if t.Exit.StopPrice > 0 && t.Exit.StopPrice != pos.StopArmed {
 					plan.StopUpdates = append(plan.StopUpdates, StopUpdate{
@@ -196,7 +233,15 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 		case localBlock != "":
 			plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{localBlock}))
 
+		case opt.CanEnter != nil && !opt.CanEnter(t.Symbol):
+			plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{protocol.CodeMarketClosed}))
+
 		default:
+			if note := refPriceGuard(t, opt); note != "" {
+				plan.Notes = append(plan.Notes, note)
+				plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{protocol.CodeLocalGuard}))
+				continue
+			}
 			enter, codes := buildEnter(t, opt, opt.Budget-spent)
 			if len(codes) > 0 {
 				plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", codes))
@@ -215,7 +260,7 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 		}
 	}
 
-	applyOrderCap(&plan, opt.MaxOrders)
+	ApplyOrderCap(&plan, opt.MaxOrders)
 	return plan
 }
 
@@ -223,7 +268,9 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 //
 // ★ 자를 때 청산은 절대 건드리지 않는다. 상한은 폭주를 막는 장치지 청산을 미루는 장치가 아니고,
 // 진입 실패는 기회 상실(유한)이지만 청산 실패는 손실 노출(무한)이다.
-func applyOrderCap(plan *Plan, max int) {
+//
+// 소스가 여럿이면 호출자가 계획을 합친 뒤 **한 번 더** 건다 — 상한은 계좌 전체의 폭주 차단이다.
+func ApplyOrderCap(plan *Plan, max int) {
 	if max <= 0 {
 		return
 	}
@@ -241,6 +288,66 @@ func applyOrderCap(plan *Plan, max int) {
 	for _, e := range dropped {
 		replaceAck(plan, e.Target.IntentID, "rejected", []protocol.RejectCode{protocol.CodeRate})
 	}
+}
+
+// refPriceGuard — 신호가가 독립 시세와 RefMaxDev 넘게 어긋나면 사유를 준다 (진입 거절).
+func refPriceGuard(t protocol.Target, opt Options) string {
+	if opt.RefMaxDev <= 0 || opt.RefCheckPrice == nil || t.Entry == nil || t.Entry.RefPrice <= 0 {
+		return ""
+	}
+	q, ok := opt.RefCheckPrice(t.Symbol)
+	if !ok || q <= 0 {
+		return ""
+	}
+	dev := t.Entry.RefPrice/q - 1
+	if math.Abs(dev) <= opt.RefMaxDev {
+		return ""
+	}
+	return fmt.Sprintf("%s(%s): 신호가 %.0f 이 시세 %.0f 와 %+.0f%% 어긋나 진입 거절 (허용 ±%.0f%%) — 신호원 가격을 확인할 것",
+		t.IntentID, t.Symbol.Code, t.Entry.RefPrice, q, dev*100, opt.RefMaxDev*100)
+}
+
+// reduceOrder — hold_frac 을 "몇 주 팔지" 로 바꾼다. 팔 게 없으면 (nil, "").
+//
+// ★ 기준은 **최초 진입 수량**이다. 지금 수량을 기준으로 삼으면 같은 스냅샷이 올 때마다 또 줄인다
+// (50% → 25% → 12.5% …). 최초 수량을 모르는 옛 로트는 줄이지 않고 사유를 남긴다.
+func reduceOrder(pos protocol.Position, frac float64, opt Options) (*ExitOrder, string) {
+	if frac <= 0 {
+		return &ExitOrder{Position: pos, Reason: "flat"}, ""
+	}
+	if pos.EntryQty <= 0 {
+		return nil, fmt.Sprintf("%s(%s): hold_frac 을 받았지만 최초 진입 수량을 모른다 — 줄이지 않았다",
+			pos.IntentID, pos.Symbol.Code)
+	}
+	m := opt.market(pos.Symbol)
+	lot := m.LotSize
+	if lot <= 0 {
+		lot = 1
+	}
+	// 남길 수량 = 최초 × 비율 을 주문 단위로 반올림 (15주 × 0.5 = 7.5 → 8주 남기고 7주 판다).
+	keep := math.Round(pos.EntryQty*frac/lot) * lot
+	if pos.Qty <= keep+lot/2 {
+		return nil, "" // 이미 그 이하 — 되사지 않는다
+	}
+	sell := pos.Qty - keep
+
+	if m.MinOrderValue > 0 {
+		price := pos.AvgEntryPrice
+		if opt.Price != nil {
+			if p, ok := opt.Price(pos.Symbol); ok && p > 0 {
+				price = p
+			}
+		}
+		switch {
+		case keep*price < m.MinOrderValue:
+			// 남길 몫이 최소주문금액 밑이면 나중에 팔 수 없는 먼지가 된다 — 지금 전량 판다.
+			return &ExitOrder{Position: pos, Reason: "reduce"}, ""
+		case sell*price < m.MinOrderValue:
+			return nil, fmt.Sprintf("%s(%s): hold_frac 매도분 %.0f원이 최소주문금액 미만 — 줄이지 않았다",
+				pos.IntentID, pos.Symbol.Code, sell*price)
+		}
+	}
+	return &ExitOrder{Position: pos, Reason: "reduce", Qty: sell}, ""
 }
 
 // committed 는 지금 보유가 예산에서 이미 먹고 있는 금액.

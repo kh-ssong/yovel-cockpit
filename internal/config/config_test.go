@@ -114,3 +114,43 @@ func TestMissingKeyFileIsNotAnError(t *testing.T) {
 		t.Fatal("없는 키가 생겼다")
 	}
 }
+
+func TestSecretFromFileAndDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "appkey.txt")
+	os.WriteFile(keyFile, []byte("  abc123\r\n"), 0o600) // 증권사 txt — 공백·CRLF 가 붙어 온다
+	env := filepath.Join(dir, ".env")
+	os.WriteFile(env, []byte("# 주석\nCOCKPIT_TEST_KEY_FILE="+keyFile+"\nCOCKPIT_TEST_SET=fromfile\n"), 0o600)
+
+	t.Setenv("COCKPIT_TEST_SET", "fromshell") // 셸 값이 이긴다
+	os.Unsetenv("COCKPIT_TEST_KEY_FILE")
+	t.Cleanup(func() { os.Unsetenv("COCKPIT_TEST_KEY_FILE") })
+
+	if _, err := LoadDotEnv(env); err != nil {
+		t.Fatal(err)
+	}
+	if got := Secret("COCKPIT_TEST_KEY"); got != "abc123" {
+		t.Fatalf("파일 키 %q", got)
+	}
+	if os.Getenv("COCKPIT_TEST_SET") != "fromshell" {
+		t.Fatal(".env 가 셸 값을 덮었다")
+	}
+	if n, err := LoadDotEnv(filepath.Join(dir, "none")); n != 0 || err != nil {
+		t.Fatal("없는 .env 는 조용히 넘어가야 한다")
+	}
+}
+
+// 한 파일에 라벨로 키 둘 — 업비트가 내려준 모양 그대로.
+func TestSecretLabeledFile(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "upbit.txt")
+	os.WriteFile(f, []byte("\ufeffaccess\r\nAAA111\r\n\r\nsecret:\r\n  BBB222  \r\n"), 0o600)
+	t.Setenv("COCKPIT_T_A_FILE", f+"#access")
+	t.Setenv("COCKPIT_T_S_FILE", f+"#SECRET")
+	t.Setenv("COCKPIT_T_X_FILE", f+"#nope")
+	if a, s := Secret("COCKPIT_T_A"), Secret("COCKPIT_T_S"); a != "AAA111" || s != "BBB222" {
+		t.Fatalf("%q %q", a, s)
+	}
+	if Secret("COCKPIT_T_X") != "" {
+		t.Fatal("없는 라벨에서 값을 만들어냈다")
+	}
+}

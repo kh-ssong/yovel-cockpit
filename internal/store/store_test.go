@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -343,5 +344,95 @@ func TestStopUpdateMustNotWipeTpPrice(t *testing.T) {
 	}
 	if got[0].TpArmed != 1200 {
 		t.Fatalf("★ stop 을 조였더니 tp_price 가 지워졌다: %+v", got[0])
+	}
+}
+
+// ★ UpsertIntent 는 전체 갱신이다. stop 조임·TP 위임은 시간청산 값을 모른 채 부르므로,
+// 비어 있는 값이 기존 15:20 을 지우면 안 된다.
+func TestTimeExitSurvivesPartialUpserts(t *testing.T) {
+	s := open(t)
+	at := time.Date(2026, 9, 28, 6, 20, 0, 0, time.UTC)
+	if err := s.UpsertIntent(ctx, Intent{IntentID: "i1", Symbol: sym("005930"), Side: "long", Qty: 10, TimeExitAt: &at}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertIntent(ctx, Intent{IntentID: "i1", Symbol: sym("005930"), Side: "long", Qty: 10, StopArmed: 1005}); err != nil {
+		t.Fatal(err)
+	}
+	var got sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT time_exit_at FROM intents WHERE intent_id='i1'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Valid || got.String == "" {
+		t.Fatal("stop 을 올렸더니 시간청산이 지워졌다")
+	}
+}
+
+func TestPnLByIntentFromLedger(t *testing.T) {
+	s := open(t)
+	put := func(id, slot string) {
+		if err := s.UpsertIntent(ctx, Intent{IntentID: id, Slot: slot, Symbol: sym("005930"), Side: "long", Qty: 10}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := func(oid, intent, phase, side string, qty, price, fee float64, mode protocol.Mode) {
+		if err := s.RecordOrder(ctx, Order{ID: oid, IntentID: intent, Phase: phase, Symbol: sym("005930"),
+			Side: side, Qty: qty, Price: price, FeeKRW: fee, Mode: mode}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("w", "d205")
+	rec("1", "w", "filled", "buy", 10, 1000, 10, protocol.ModePaper)
+	rec("2", "w", "exit_filled", "sell", 4, 1100, 5, protocol.ModePaper) // 부분 청산
+	rec("3", "w", "exit_filled", "sell", 6, 1100, 5, protocol.ModePaper)
+	rec("9", "w", "filled", "buy", 99, 1, 0, protocol.ModeLive) // live 는 섞이지 않는다
+	if err := s.CloseIntent(ctx, "w", "flat", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	put("u", "d205")
+	rec("4", "u", "filled", "buy", 1, 1000, 0, protocol.ModePaper)
+	rec("5", "u", "exit_filled", "sell", 1, 0, 0, protocol.ModePaper) // 사후 감지 — 체결가 미상
+	s.CloseIntent(ctx, "u", "manual", time.Now())
+
+	got, err := s.PnLByIntent(ctx, protocol.ModePaper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("%+v", got)
+	}
+	for _, p := range got {
+		switch p.IntentID {
+		case "u":
+			if !p.PriceUnknown || p.Realized() != 0 {
+				t.Fatalf("체결가 미상 건을 손익에 넣었다: %+v", p)
+			}
+		case "w":
+			// 매도 (4400−5)+(6600−5)=10990 − 매수 10010 = 980
+			if p.Realized() != 980 || p.Slot != "d205" || p.BuyQty != 10 {
+				t.Fatalf("%+v realized=%v", p, p.Realized())
+			}
+		}
+	}
+}
+
+func TestDayRealized(t *testing.T) {
+	s := open(t)
+	for _, id := range []string{"a", "b", "c"} {
+		s.UpsertIntent(ctx, Intent{IntentID: id, Slot: "x", Symbol: sym("005930"), Side: "long", Qty: 10, AvgEntryPrice: 1000})
+	}
+	day := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	rec := func(id, intent string, qty, px, fee float64, at time.Time) {
+		if err := s.RecordOrder(ctx, Order{ID: id, IntentID: intent, Phase: "exit_filled", Symbol: sym("005930"),
+			Side: "sell", Qty: qty, Price: px, FeeKRW: fee, Mode: protocol.ModeLive, CreatedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec("1", "a", 10, 900, 10, day.Add(time.Hour))    // −1,010
+	rec("2", "b", 10, 1100, 10, day.Add(2*time.Hour)) // +990
+	rec("3", "c", 10, 0, 0, day.Add(3*time.Hour))     // 체결가 미상 — 빼야 한다
+	rec("4", "a", 10, 500, 0, day.Add(-2*time.Hour))  // 어제 — 빼야 한다
+	krw, losses, err := s.DayRealized(ctx, protocol.ModeLive, day)
+	if err != nil || krw != -20 || losses != 1 {
+		t.Fatalf("%v %v %v", krw, losses, err)
 	}
 }

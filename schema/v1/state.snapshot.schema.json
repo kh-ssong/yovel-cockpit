@@ -26,6 +26,16 @@
       "enum": ["paper", "live"],
       "description": "★ 생략 불가. paper 와 live 를 합산해 표시하면 허위 표시가 된다."
     },
+    "recent_closes": {
+      "type": "array",
+      "description": "최근 30분 종결 로트 {intent_id, kid, scope, group, symbol, reason, price, realized_pct, at}. ★ 발행자는 positions 만 보면 상태 조회 사이에 열리고 닫힌 로트(빠른 TP·stop)를 못 본다.",
+      "items": { "type": "object", "required": ["intent_id", "symbol", "reason", "at"] }
+    },
+    "applied_seq_by_scope": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 },
+      "description": "scope 별 적용 seq. ★ 발행자는 자기 scope 값과 비교한다 — 전역 applied_seq 는 여러 소스의 최댓값이다."
+    },
     "applied_seq": {
       "type": "integer",
       "minimum": 0,

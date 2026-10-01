@@ -40,6 +40,10 @@ type Config struct {
 	Lot float64
 	// MinOrderValue — 최소 주문 금액.
 	MinOrderValue float64
+	// Rules — 거래소별 주문 제약. 있으면 Lot·MinOrderValue 보다 우선한다.
+	// ★ paper 가 "주식 1주 단위" 하나만 알면 코인(0.001 BTC)은 사이징에서 0 이 되어 영영 못 산다.
+	// 실계좌 드라이버와 **같은 값**을 넣어야 paper 가 라이브를 흉내 낸다.
+	Rules map[string]Rule
 	// Now — 시각 주입 (테스트용). nil 이면 time.Now().
 	Now func() time.Time
 	// Price — 기준가 공급. 없으면 Quote 가 실패한다.
@@ -94,7 +98,7 @@ func (b *Broker) Cash(context.Context) (broker.Cash, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	// paper 에서는 두 층이 같다. ★ 라이브에서는 절대 같지 않다는 걸 잊지 말 것.
-	return broker.Cash{Deposit: b.cash, Orderable: b.cash, Currency: "KRW"}, nil
+	return broker.Cash{Deposit: b.cash, Orderable: b.cash, Seed: b.cash, Currency: "KRW"}, nil
 }
 
 func (b *Broker) Quote(_ context.Context, s protocol.Symbol) (broker.Quote, error) {
@@ -108,8 +112,40 @@ func (b *Broker) Quote(_ context.Context, s protocol.Symbol) (broker.Quote, erro
 	return broker.Quote{Symbol: s, Price: p, AsOf: b.cfg.Now()}, nil
 }
 
-func (b *Broker) LotSize(protocol.Symbol) float64       { return b.cfg.Lot }
-func (b *Broker) MinOrderValue(protocol.Symbol) float64 { return b.cfg.MinOrderValue }
+// Rule — 한 거래소의 주문 제약.
+type Rule struct {
+	Lot           float64
+	MinOrderValue float64
+	// FeeBpBuy / FeeBpSell — 이 거래소의 편도 비용. ★ 둘 다 0 이면 기본(Config) 요율을 쓴다 —
+	// 코인에 주식 매도세(거래세 포함 ~20bp)를 물리면 코인 전략이 억울하게 진다.
+	FeeBpBuy  float64
+	FeeBpSell float64
+}
+
+func (b *Broker) fees(s protocol.Symbol) (buy, sell float64) {
+	if r, ok := b.cfg.Rules[s.Exchange]; ok && (r.FeeBpBuy > 0 || r.FeeBpSell > 0) {
+		return r.FeeBpBuy, r.FeeBpSell
+	}
+	return b.cfg.FeeBpBuy, b.cfg.FeeBpSell
+}
+
+func (b *Broker) LotSize(s protocol.Symbol) float64 {
+	if r, ok := b.cfg.Rules[s.Exchange]; ok && r.Lot > 0 {
+		return r.Lot
+	}
+	return b.cfg.Lot
+}
+
+func (b *Broker) MinOrderValue(s protocol.Symbol) float64 {
+	if r, ok := b.cfg.Rules[s.Exchange]; ok {
+		return r.MinOrderValue
+	}
+	return b.cfg.MinOrderValue
+}
+
+// dust — 소수 수량을 빼고 남는 표현 오차. 이 밑이면 다 판 것이다.
+// ★ 없으면 0.1+0.2 류 오차(1e-17)로 코인 보유가 "남아 있는" 것으로 보여 영영 종결되지 않는다.
+const dust = 1e-12
 
 // fillPrice — 지정가면 그대로, 시장가면 기준가에서 SlipBp 만큼 불리하게.
 func (b *Broker) fillPrice(req broker.OrderRequest, side string, ref float64) float64 {
@@ -141,7 +177,8 @@ func (b *Broker) Buy(_ context.Context, req broker.OrderRequest) (broker.Fill, e
 	}
 	price := b.fillPrice(req, "buy", ref)
 	notional := price * req.Qty
-	fee := notional * b.cfg.FeeBpBuy / 10000
+	feeBuy, _ := b.fees(req.Symbol)
+	fee := notional * feeBuy / 10000
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -209,12 +246,13 @@ func (b *Broker) Sell(_ context.Context, req broker.OrderRequest) (broker.Fill, 
 	}
 
 	notional := price * req.Qty
-	fee := notional * b.cfg.FeeBpSell / 10000
+	_, feeSell := b.fees(req.Symbol)
+	fee := notional * feeSell / 10000
 	b.cash += notional - fee
 
 	h.Qty -= req.Qty
 	h.Sellable = h.Qty
-	if h.Qty <= 0 {
+	if h.Qty <= dust {
 		delete(b.holdings, key(req.Symbol))
 	}
 
@@ -310,12 +348,13 @@ func (b *Broker) SettleLimits(context.Context) ([]broker.LimitFill, error) {
 		}
 
 		notional := o.price * o.qty
-		fee := notional * b.cfg.FeeBpSell / 10000
+		_, feeSell := b.fees(o.symbol)
+		fee := notional * feeSell / 10000
 		b.cash += notional - fee
 
 		h.Qty -= o.qty
 		h.Sellable = h.Qty
-		if h.Qty <= 0 {
+		if h.Qty <= dust {
 			delete(b.holdings, key(o.symbol))
 		}
 		delete(b.tpOrders, id)

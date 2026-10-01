@@ -1,0 +1,1082 @@
+{
+ "au10001": {
+  "apiId": "au10001",
+  "apiNm": "접근토큰 발급",
+  "url": "/oauth2/token",
+  "requestIo": [
+   {
+    "itemId": "grant_type"
+   },
+   {
+    "itemId": "appkey"
+   },
+   {
+    "itemId": "secretkey"
+   }
+  ],
+  "responseIo": [
+   {
+    "itemId": "expires_dt"
+   },
+   {
+    "itemId": "token_type"
+   },
+   {
+    "itemId": "token"
+   }
+  ]
+ },
+ "kt10000": {
+  "apiId": "kt10000",
+  "apiNm": "주식 매수주문",
+  "url": "/api/dostk/ordr",
+  "requestIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "authorization"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "dmst_stex_tp"
+   },
+   {
+    "itemId": "stk_cd"
+   },
+   {
+    "itemId": "ord_qty"
+   },
+   {
+    "itemId": "ord_uv"
+   },
+   {
+    "itemId": "trde_tp"
+   },
+   {
+    "itemId": "cond_uv"
+   }
+  ],
+  "responseIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "ord_no"
+   },
+   {
+    "itemId": "dmst_stex_tp"
+   }
+  ]
+ },
+ "kt10001": {
+  "apiId": "kt10001",
+  "apiNm": "주식 매도주문",
+  "url": "/api/dostk/ordr",
+  "requestIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "authorization"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "dmst_stex_tp"
+   },
+   {
+    "itemId": "stk_cd"
+   },
+   {
+    "itemId": "ord_qty"
+   },
+   {
+    "itemId": "ord_uv"
+   },
+   {
+    "itemId": "trde_tp"
+   },
+   {
+    "itemId": "cond_uv"
+   }
+  ],
+  "responseIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "ord_no"
+   },
+   {
+    "itemId": "dmst_stex_tp"
+   }
+  ]
+ },
+ "kt10003": {
+  "apiId": "kt10003",
+  "apiNm": "주식 취소주문",
+  "url": "/api/dostk/ordr",
+  "requestIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "authorization"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "dmst_stex_tp"
+   },
+   {
+    "itemId": "orig_ord_no"
+   },
+   {
+    "itemId": "stk_cd"
+   },
+   {
+    "itemId": "cncl_qty"
+   }
+  ],
+  "responseIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "ord_no"
+   },
+   {
+    "itemId": "base_orig_ord_no"
+   },
+   {
+    "itemId": "cncl_qty"
+   }
+  ]
+ },
+ "kt00005": {
+  "apiId": "kt00005",
+  "apiNm": "체결잔고요청",
+  "url": "/api/dostk/acnt",
+  "requestIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "authorization"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "dmst_stex_tp"
+   }
+  ],
+  "responseIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "entr"
+   },
+   {
+    "itemId": "entr_d1"
+   },
+   {
+    "itemId": "entr_d2"
+   },
+   {
+    "itemId": "pymn_alow_amt"
+   },
+   {
+    "itemId": "uncl_stk_amt"
+   },
+   {
+    "itemId": "repl_amt"
+   },
+   {
+    "itemId": "rght_repl_amt"
+   },
+   {
+    "itemId": "ord_alowa"
+   },
+   {
+    "itemId": "ch_uncla"
+   },
+   {
+    "itemId": "crd_int_npay_gold"
+   },
+   {
+    "itemId": "etc_loana"
+   },
+   {
+    "itemId": "nrpy_loan"
+   },
+   {
+    "itemId": "profa_ch"
+   },
+   {
+    "itemId": "repl_profa"
+   },
+   {
+    "itemId": "stk_buy_tot_amt"
+   },
+   {
+    "itemId": "evlt_amt_tot"
+   },
+   {
+    "itemId": "tot_pl_tot"
+   },
+   {
+    "itemId": "tot_pl_rt"
+   },
+   {
+    "itemId": "tot_re_buy_alowa"
+   },
+   {
+    "itemId": "20ord_alow_amt"
+   },
+   {
+    "itemId": "30ord_alow_amt"
+   },
+   {
+    "itemId": "40ord_alow_amt"
+   },
+   {
+    "itemId": "50ord_alow_amt"
+   },
+   {
+    "itemId": "60ord_alow_amt"
+   },
+   {
+    "itemId": "100ord_alow_amt"
+   },
+   {
+    "itemId": "crd_loan_tot"
+   },
+   {
+    "itemId": "crd_loan_ls_tot"
+   },
+   {
+    "itemId": "crd_grnt_rt"
+   },
+   {
+    "itemId": "dpst_grnt_use_amt_amt"
+   },
+   {
+    "itemId": "grnt_loan_amt"
+   },
+   {
+    "itemId": "stk_cntr_remn"
+   },
+   {
+    "itemId": "- crd_tp"
+   },
+   {
+    "itemId": "- loan_dt"
+   },
+   {
+    "itemId": "- expr_dt"
+   },
+   {
+    "itemId": "- stk_cd"
+   },
+   {
+    "itemId": "- stk_nm"
+   },
+   {
+    "itemId": "- setl_remn"
+   },
+   {
+    "itemId": "- cur_qty"
+   },
+   {
+    "itemId": "- cur_prc"
+   },
+   {
+    "itemId": "- buy_uv"
+   },
+   {
+    "itemId": "- pur_amt"
+   },
+   {
+    "itemId": "- evlt_amt"
+   },
+   {
+    "itemId": "- evltv_prft"
+   },
+   {
+    "itemId": "- pl_rt"
+   }
+  ]
+ },
+ "kt00011": {
+  "apiId": "kt00011",
+  "apiNm": "증거금율별주문가능수량조회요청",
+  "url": "/api/dostk/acnt",
+  "requestIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "authorization"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "stk_cd"
+   },
+   {
+    "itemId": "uv"
+   }
+  ],
+  "responseIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "stk_profa_rt"
+   },
+   {
+    "itemId": "profa_rt"
+   },
+   {
+    "itemId": "aplc_rt"
+   },
+   {
+    "itemId": "profa_20ord_alow_amt"
+   },
+   {
+    "itemId": "profa_20ord_alowq"
+   },
+   {
+    "itemId": "profa_20pred_reu_amt"
+   },
+   {
+    "itemId": "profa_20tdy_reu_amt"
+   },
+   {
+    "itemId": "profa_30ord_alow_amt"
+   },
+   {
+    "itemId": "profa_30ord_alowq"
+   },
+   {
+    "itemId": "profa_30pred_reu_amt"
+   },
+   {
+    "itemId": "profa_30tdy_reu_amt"
+   },
+   {
+    "itemId": "profa_40ord_alow_amt"
+   },
+   {
+    "itemId": "profa_40ord_alowq"
+   },
+   {
+    "itemId": "profa_40pred_reu_amt"
+   },
+   {
+    "itemId": "profa_40tdy_reu_amt"
+   },
+   {
+    "itemId": "profa_50ord_alow_amt"
+   },
+   {
+    "itemId": "profa_50ord_alowq"
+   },
+   {
+    "itemId": "profa_50pred_reu_amt"
+   },
+   {
+    "itemId": "profa_50tdy_reu_amt"
+   },
+   {
+    "itemId": "profa_60ord_alow_amt"
+   },
+   {
+    "itemId": "profa_60ord_alowq"
+   },
+   {
+    "itemId": "profa_60pred_reu_amt"
+   },
+   {
+    "itemId": "profa_60tdy_reu_amt"
+   },
+   {
+    "itemId": "profa_100ord_alow_amt"
+   },
+   {
+    "itemId": "profa_100ord_alowq"
+   },
+   {
+    "itemId": "profa_100pred_reu_amt"
+   },
+   {
+    "itemId": "profa_100tdy_reu_amt"
+   },
+   {
+    "itemId": "min_ord_alow_amt"
+   },
+   {
+    "itemId": "min_ord_alowq"
+   },
+   {
+    "itemId": "min_pred_reu_amt"
+   },
+   {
+    "itemId": "min_tdy_reu_amt"
+   },
+   {
+    "itemId": "entr"
+   },
+   {
+    "itemId": "repl_amt"
+   },
+   {
+    "itemId": "uncla"
+   },
+   {
+    "itemId": "ord_pos_repl"
+   },
+   {
+    "itemId": "ord_alowa"
+   }
+  ]
+ },
+ "ka10076": {
+  "apiId": "ka10076",
+  "apiNm": "체결요청",
+  "url": "/api/dostk/acnt",
+  "requestIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "authorization"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "stk_cd"
+   },
+   {
+    "itemId": "qry_tp"
+   },
+   {
+    "itemId": "sell_tp"
+   },
+   {
+    "itemId": "ord_no"
+   },
+   {
+    "itemId": "stex_tp"
+   }
+  ],
+  "responseIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "cntr"
+   },
+   {
+    "itemId": "- ord_no"
+   },
+   {
+    "itemId": "- stk_nm"
+   },
+   {
+    "itemId": "- io_tp_nm"
+   },
+   {
+    "itemId": "- ord_pric"
+   },
+   {
+    "itemId": "- ord_qty"
+   },
+   {
+    "itemId": "- cntr_pric"
+   },
+   {
+    "itemId": "- cntr_qty"
+   },
+   {
+    "itemId": "- oso_qty"
+   },
+   {
+    "itemId": "- tdy_trde_cmsn"
+   },
+   {
+    "itemId": "- tdy_trde_tax"
+   },
+   {
+    "itemId": "- ord_stt"
+   },
+   {
+    "itemId": "- trde_tp"
+   },
+   {
+    "itemId": "- orig_ord_no"
+   },
+   {
+    "itemId": "- ord_tm"
+   },
+   {
+    "itemId": "- stk_cd"
+   },
+   {
+    "itemId": "- stex_tp"
+   },
+   {
+    "itemId": "- stex_tp_txt"
+   },
+   {
+    "itemId": "- sor_yn"
+   },
+   {
+    "itemId": "- stop_pric"
+   }
+  ]
+ },
+ "ka10007": {
+  "apiId": "ka10007",
+  "apiNm": "시세표성정보요청",
+  "url": "/api/dostk/mrkcond",
+  "requestIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "authorization"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "stk_cd"
+   }
+  ],
+  "responseIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "stk_nm"
+   },
+   {
+    "itemId": "stk_cd"
+   },
+   {
+    "itemId": "date"
+   },
+   {
+    "itemId": "tm"
+   },
+   {
+    "itemId": "pred_close_pric"
+   },
+   {
+    "itemId": "pred_trde_qty"
+   },
+   {
+    "itemId": "upl_pric"
+   },
+   {
+    "itemId": "lst_pric"
+   },
+   {
+    "itemId": "pred_trde_prica"
+   },
+   {
+    "itemId": "flo_stkcnt"
+   },
+   {
+    "itemId": "cur_prc"
+   },
+   {
+    "itemId": "smbol"
+   },
+   {
+    "itemId": "flu_rt"
+   },
+   {
+    "itemId": "pred_rt"
+   },
+   {
+    "itemId": "open_pric"
+   },
+   {
+    "itemId": "high_pric"
+   },
+   {
+    "itemId": "low_pric"
+   },
+   {
+    "itemId": "cntr_qty"
+   },
+   {
+    "itemId": "trde_qty"
+   },
+   {
+    "itemId": "trde_prica"
+   },
+   {
+    "itemId": "exp_cntr_pric"
+   },
+   {
+    "itemId": "exp_cntr_qty"
+   },
+   {
+    "itemId": "exp_sel_pri_bid"
+   },
+   {
+    "itemId": "exp_buy_pri_bid"
+   },
+   {
+    "itemId": "trde_strt_dt"
+   },
+   {
+    "itemId": "exec_pric"
+   },
+   {
+    "itemId": "hgst_pric"
+   },
+   {
+    "itemId": "lwst_pric"
+   },
+   {
+    "itemId": "hgst_pric_dt"
+   },
+   {
+    "itemId": "lwst_pric_dt"
+   },
+   {
+    "itemId": "sel_1bid"
+   },
+   {
+    "itemId": "sel_2bid"
+   },
+   {
+    "itemId": "sel_3bid"
+   },
+   {
+    "itemId": "sel_4bid"
+   },
+   {
+    "itemId": "sel_5bid"
+   },
+   {
+    "itemId": "sel_6bid"
+   },
+   {
+    "itemId": "sel_7bid"
+   },
+   {
+    "itemId": "sel_8bid"
+   },
+   {
+    "itemId": "sel_9bid"
+   },
+   {
+    "itemId": "sel_10bid"
+   },
+   {
+    "itemId": "buy_1bid"
+   },
+   {
+    "itemId": "buy_2bid"
+   },
+   {
+    "itemId": "buy_3bid"
+   },
+   {
+    "itemId": "buy_4bid"
+   },
+   {
+    "itemId": "buy_5bid"
+   },
+   {
+    "itemId": "buy_6bid"
+   },
+   {
+    "itemId": "buy_7bid"
+   },
+   {
+    "itemId": "buy_8bid"
+   },
+   {
+    "itemId": "buy_9bid"
+   },
+   {
+    "itemId": "buy_10bid"
+   },
+   {
+    "itemId": "sel_1bid_req"
+   },
+   {
+    "itemId": "sel_2bid_req"
+   },
+   {
+    "itemId": "sel_3bid_req"
+   },
+   {
+    "itemId": "sel_4bid_req"
+   },
+   {
+    "itemId": "sel_5bid_req"
+   },
+   {
+    "itemId": "sel_6bid_req"
+   },
+   {
+    "itemId": "sel_7bid_req"
+   },
+   {
+    "itemId": "sel_8bid_req"
+   },
+   {
+    "itemId": "sel_9bid_req"
+   },
+   {
+    "itemId": "sel_10bid_req"
+   },
+   {
+    "itemId": "buy_1bid_req"
+   },
+   {
+    "itemId": "buy_2bid_req"
+   },
+   {
+    "itemId": "buy_3bid_req"
+   },
+   {
+    "itemId": "buy_4bid_req"
+   },
+   {
+    "itemId": "buy_5bid_req"
+   },
+   {
+    "itemId": "buy_6bid_req"
+   },
+   {
+    "itemId": "buy_7bid_req"
+   },
+   {
+    "itemId": "buy_8bid_req"
+   },
+   {
+    "itemId": "buy_9bid_req"
+   },
+   {
+    "itemId": "buy_10bid_req"
+   },
+   {
+    "itemId": "sel_1bid_jub_pre"
+   },
+   {
+    "itemId": "sel_2bid_jub_pre"
+   },
+   {
+    "itemId": "sel_3bid_jub_pre"
+   },
+   {
+    "itemId": "sel_4bid_jub_pre"
+   },
+   {
+    "itemId": "sel_5bid_jub_pre"
+   },
+   {
+    "itemId": "sel_6bid_jub_pre"
+   },
+   {
+    "itemId": "sel_7bid_jub_pre"
+   },
+   {
+    "itemId": "sel_8bid_jub_pre"
+   },
+   {
+    "itemId": "sel_9bid_jub_pre"
+   },
+   {
+    "itemId": "sel_10bid_jub_pre"
+   },
+   {
+    "itemId": "buy_1bid_jub_pre"
+   },
+   {
+    "itemId": "buy_2bid_jub_pre"
+   },
+   {
+    "itemId": "buy_3bid_jub_pre"
+   },
+   {
+    "itemId": "buy_4bid_jub_pre"
+   },
+   {
+    "itemId": "buy_5bid_jub_pre"
+   },
+   {
+    "itemId": "buy_6bid_jub_pre"
+   },
+   {
+    "itemId": "buy_7bid_jub_pre"
+   },
+   {
+    "itemId": "buy_8bid_jub_pre"
+   },
+   {
+    "itemId": "buy_9bid_jub_pre"
+   },
+   {
+    "itemId": "buy_10bid_jub_pre"
+   },
+   {
+    "itemId": "sel_1bid_cnt"
+   },
+   {
+    "itemId": "sel_2bid_cnt"
+   },
+   {
+    "itemId": "sel_3bid_cnt"
+   },
+   {
+    "itemId": "sel_4bid_cnt"
+   },
+   {
+    "itemId": "sel_5bid_cnt"
+   },
+   {
+    "itemId": "buy_1bid_cnt"
+   },
+   {
+    "itemId": "buy_2bid_cnt"
+   },
+   {
+    "itemId": "buy_3bid_cnt"
+   },
+   {
+    "itemId": "buy_4bid_cnt"
+   },
+   {
+    "itemId": "buy_5bid_cnt"
+   },
+   {
+    "itemId": "lpsel_1bid_req"
+   },
+   {
+    "itemId": "lpsel_2bid_req"
+   },
+   {
+    "itemId": "lpsel_3bid_req"
+   },
+   {
+    "itemId": "lpsel_4bid_req"
+   },
+   {
+    "itemId": "lpsel_5bid_req"
+   },
+   {
+    "itemId": "lpsel_6bid_req"
+   },
+   {
+    "itemId": "lpsel_7bid_req"
+   },
+   {
+    "itemId": "lpsel_8bid_req"
+   },
+   {
+    "itemId": "lpsel_9bid_req"
+   },
+   {
+    "itemId": "lpsel_10bid_req"
+   },
+   {
+    "itemId": "lpbuy_1bid_req"
+   },
+   {
+    "itemId": "lpbuy_2bid_req"
+   },
+   {
+    "itemId": "lpbuy_3bid_req"
+   },
+   {
+    "itemId": "lpbuy_4bid_req"
+   },
+   {
+    "itemId": "lpbuy_5bid_req"
+   },
+   {
+    "itemId": "lpbuy_6bid_req"
+   },
+   {
+    "itemId": "lpbuy_7bid_req"
+   },
+   {
+    "itemId": "lpbuy_8bid_req"
+   },
+   {
+    "itemId": "lpbuy_9bid_req"
+   },
+   {
+    "itemId": "lpbuy_10bid_req"
+   },
+   {
+    "itemId": "tot_buy_req"
+   },
+   {
+    "itemId": "tot_sel_req"
+   },
+   {
+    "itemId": "tot_buy_cnt"
+   },
+   {
+    "itemId": "tot_sel_cnt"
+   }
+  ]
+ },
+ "ka10100": {
+  "apiId": "ka10100",
+  "apiNm": "종목정보 조회",
+  "url": "/api/dostk/stkinfo",
+  "requestIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "authorization"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "stk_cd"
+   }
+  ],
+  "responseIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "code"
+   },
+   {
+    "itemId": "name"
+   },
+   {
+    "itemId": "listCount"
+   },
+   {
+    "itemId": "auditInfo"
+   },
+   {
+    "itemId": "regDay"
+   },
+   {
+    "itemId": "lastPrice"
+   },
+   {
+    "itemId": "state"
+   },
+   {
+    "itemId": "marketCode"
+   },
+   {
+    "itemId": "marketName"
+   },
+   {
+    "itemId": "upName"
+   },
+   {
+    "itemId": "upSizeName"
+   },
+   {
+    "itemId": "companyClassName"
+   },
+   {
+    "itemId": "orderWarning"
+   },
+   {
+    "itemId": "nxtEnable"
+   }
+  ]
+ }
+}

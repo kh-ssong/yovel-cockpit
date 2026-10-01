@@ -43,6 +43,11 @@ flat6 의 `execution/contract.py` 는 처음부터 이 계약의 미러로 쓰�
 | **A. 파일 공유** (권장) | 콕핏을 flat6 의 토큰 파일로 붙인다. 포맷은 이미 맞춰뒀다 (`expires_dt`) |
 | B. 앱키 분리 | 콕핏에 별도 앱키를 발급한다. 계좌가 같으면 여전히 위험하니 확인 필요 |
 
+★ **2026-09-27 — B 로 갔다.** 콕핏 전용 앱키(67326390)를 발급했다. 콕핏은 제3자가 **자기 키**로 쓰는
+제품이라는 컨셉(`redesign-v2.md §10`)에 맞는 쪽이다. 콕핏 토큰은 콕핏 `data/kiwoom_token.json` 에
+따로 있고, **flat6 토큰 파일을 가리키지 않는다** (다른 앱키의 토큰이다). 키는 `.env` 의
+`COCKPIT_KIWOOM_APPKEY_FILE` / `_SECRET_FILE` 로 파일 경로만 준다.
+
 ```bash
 cockpitd --broker kiwoom \
          --kiwoom-token-file ../yovel-flat6/data/kiwoom_token.json
@@ -133,6 +138,36 @@ Content-Type: application/json
    `main.py` 의 `weight = 1.0 / max_open` 은 그대로 **맞다** — 그게 "한 자리의 크기" 다.
 6. ★ **`targets[]` 순서 = 우선순위.** 콕핏이 cap·자본으로 자를 때 위에서부터 산다.
    중요한 것을 앞에 실어라 — 도착 순서나 종목명으로 자르지 않는다.
+7. ★ **`mark_price` 를 실어라** (2026-09-26). `ref_price` 는 진입 때만 오므로, 청산(`want=flat`)
+   때 콕핏은 가격을 모른다 — paper 가 평단으로 근사 체결해 **전략 검증이 안 된다.** 청산이면
+   매수1호가, 보유 중이면 현재가를 `mark_price`(+ 가능하면 `mark_at`)로 싣는다. 콕핏은 시세 API
+   키 없이 이 값만으로 paper 를 굴린다.
+8. ★ **전략마다 `scope` 를 실어 따로 발행하라** (`protocol.md §4.1.1`, 2026-09-27). 한 스냅샷 =
+   한 전략의 전체 목표다. 첫 후보 3개(개발 중)는 예컨대:
+
+   | 전략 | `scope` (예시 — flat6 가 확정) |
+   |---|---|
+   | 주식 D-205 | `intraday/d205` |
+   | ETF (KODEX 레버리지) | `intraday/klev` |
+   | 코인 스캘핑 | `scalp/coin` |
+
+   ★ scope 이름은 **권한 경계**가 된다(pitwall §12.8 — 개명 = 과금 사고). 한 번 정하면 바꾸지 말 것.
+   콕핏은 `books.json` 에 있는 (kid, scope) 만 진입시키고, 없는 것은 `E_INACTIVE` + 알림이다.
+   전략 사이 seq 는 따로 센다 — 전략마다 자기 seq 를 단조 증가시키면 된다.
+9. **분할매수·분할매도** (`protocol.md §4.1.2`, 2026-09-30) — 추가 매수는 **새 `intent_id`** + 같은 `group`,
+   일부 매도는 그 로트의 `exit.hold_frac`(최초 수량 중 남길 비율, 줄이기만). D-205 의 D+보호선 청산은
+   전량이라 당장은 안 쓰지만, 코인 스캘핑의 부분 익절 등에 쓸 수 있다.
+10. ★ **결과는 `recent_closes` 와 `per_intent` 로 읽어라** (2026-09-30, `protocol.md §5.1`). 통합 테스트에서
+    진입 1.4초 만에 TP 로 닫힌 로트를 상태 조회(2초)가 못 봐서 dummy 가 "진입 대기" 에 3분 넘게 갇혔다.
+    콕핏 `/v1/state` 의 `recent_closes` 에 종결 로트가 30분간 남는다. 그리고 ack 는 봉투 `status` 가 아니라
+    `per_intent[].codes` 를 세야 거절(`E_TERMINAL`·`E_INACTIVE`·`E_CAPITAL`·`E_LOCAL_GUARD`)이 보인다.
+    `Reject` enum 에 `E_INACTIVE` 추가 필요 (conformance 테스트가 이미 잡았다).
+11. `ref_price` 는 **실제 호가**여야 한다 — 콕핏은 독립 시세와 ±15% 넘게 어긋나면 진입을 거절한다.
+    dummy 의 `DEFAULT_PRICES`(삼성 71,000)는 지금 시세(28만대)와 4배 차이라 이 가드에 걸린다.
+12. ★ **D-205 시간청산은 15:15 (장중)** — `time_exit_at` 을 15:15 로 보낼 것 (user 2026-10-01). 15:20 은 장마감
+    동시호가 시작이라 장중 매도가 안 된다. 콕핏도 KRX 시간청산을 15:15 로 당기지만(`--krx-exit-cutoff`), 판단자 신호
+    (`want=flat`)도 15:15 전에 내야 연속매매로 나간다. 장 밖 진입은 `E_MARKET_CLOSED`, 접수됐지만 미확정 진입은
+    `positions[].pending: true` 로 보인다 (`protocol.md §8.1`).
 
 응답은 `ack` 다. 거절도 HTTP 200 으로 오고 `codes` 에 이유가 담긴다
 (MQTT 에는 상태코드가 없어서, 두 경로가 다른 모양이면 그게 곧 배선 버그가 된다).

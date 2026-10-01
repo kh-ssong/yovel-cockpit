@@ -3,6 +3,7 @@ package kiwoom
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -158,11 +159,20 @@ func (f *fakeKiwoom) start(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode(map[string]any{"return_code": 0})
 			return
 		}
-		json.NewEncoder(w).Encode(h(body))
+		out := h(body)
+		if st, isStatus := out.(httpStatus); isStatus {
+			w.WriteHeader(int(st))
+			w.Write([]byte(`{}`))
+			return
+		}
+		json.NewEncoder(w).Encode(out)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+// httpStatus — 핸들러가 이걸 돌려주면 가짜 서버가 그 HTTP 상태로 응답한다.
+type httpStatus int
 
 type clock struct {
 	mu sync.Mutex
@@ -304,6 +314,63 @@ func TestBuyShrinksToBrokerAllowance(t *testing.T) {
 	}
 }
 
+// ★ kt00011 로 줄였는데도 855056 이 난다 — 직전 매수가 주문가능금액에 아직 안 잡힌 채
+// 조회된 경우. 거부 메시지의 "N주 매수가능" 으로 딱 한 번 다시 낸다.
+func TestBuyRetriesOnceWithMarginAllowance(t *testing.T) {
+	f := newFake()
+	f.on(apiBuyableQt, func(map[string]any) any {
+		return map[string]any{"return_code": 0, "min_ord_alowq": "9"} // 늦은 값
+	})
+	f.on(apiBuy, func(body map[string]any) any {
+		if body["ord_qty"] == "9" {
+			return map[string]any{"return_code": 20, "return_msg": "[2000](855056:매수증거금이 부족합니다. 6주 매수가능)"}
+		}
+		return map[string]any{"return_code": 0, "ord_no": "00031"}
+	})
+	f.on(apiFills, func(map[string]any) any {
+		return fillsResp("00031", map[string]any{
+			"cntr_qty": "6", "cntr_pric": "72,100",
+			"tdy_trde_cmsn": "0", "tdy_trde_tax": "0", "ord_tm": "090512",
+		})
+	})
+	b, _ := newBroker(t, f)
+
+	fill, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 9, RefPrice: 72_100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := f.bodies(apiBuy)
+	if len(sent) != 2 || sent[1]["ord_qty"] != "6" || fill.Qty != 6 {
+		t.Fatalf("재주문 %d회 %v, 체결 %v", len(sent), sent, fill.Qty)
+	}
+}
+
+// 재시도는 한 번뿐이다 — 두 번째도 거부면 그대로 올린다(무한 축소 루프 금지).
+// 그리고 855056 이 아닌 거부는 재시도하지 않는다.
+func TestMarginRetryIsBounded(t *testing.T) {
+	f := newFake()
+	f.on(apiBuy, func(body map[string]any) any {
+		return map[string]any{"return_code": 20, "return_msg": "[2000](855056:매수증거금이 부족합니다. 3주 매수가능)"}
+	})
+	b, _ := newBroker(t, f)
+	if _, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 9, RefPrice: 72_100}); err == nil {
+		t.Fatal("거부가 삼켜졌다")
+	}
+	if n := len(f.bodies(apiBuy)); n != 2 {
+		t.Fatalf("주문 %d회, 기대 2", n)
+	}
+
+	g := newFake()
+	g.on(apiBuy, func(map[string]any) any {
+		return map[string]any{"return_code": 20, "return_msg": "[2000](800033:장 종료. 6주 매수가능)"}
+	})
+	b2, _ := newBroker(t, g)
+	_, _ = b2.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 9, RefPrice: 72_100})
+	if n := len(g.bodies(apiBuy)); n != 1 {
+		t.Fatalf("855056 아닌 거부를 %d회 냈다", n)
+	}
+}
+
 // ★ 수수료는 요율로 추정하지 않고 브로커가 준 실측을 쓴다.
 // 요율 추정이 "기록 수수료 왕복 1.9배 과다" 를 만든 전례가 있다.
 func TestFeeComesFromBrokerNotRate(t *testing.T) {
@@ -357,6 +424,88 @@ func TestPartialFillWaitsThenReportsPartial(t *testing.T) {
 	}
 	if calls < 2 {
 		t.Fatalf("한 번만 보고 포기했다 (%d회) — 전량까지 기다려야 한다", calls)
+	}
+	// ★ 시간 초과면 잔량 주문을 취소해야 한다 — 살려 두면 나중에 체결돼 장부 밖 유령이 된다.
+	if c := f.bodies(apiCancel); len(c) != 1 || c[0]["orig_ord_no"] != "88" {
+		t.Fatalf("잔량을 취소하지 않았다: %v", c)
+	}
+}
+
+// 취소하는 사이 다 체결됐으면 부분이 아니다.
+func TestTimeoutCancelRaceFullyFilled(t *testing.T) {
+	f := newFake()
+	f.on(apiBuy, func(map[string]any) any { return map[string]any{"return_code": 0, "ord_no": "91"} })
+	cancelled := false
+	f.on(apiCancel, func(map[string]any) any { cancelled = true; return map[string]any{"return_code": 0} })
+	f.on(apiFills, func(map[string]any) any {
+		q := "4"
+		if cancelled {
+			q = "10"
+		}
+		return fillsResp("91", map[string]any{"cntr_qty": q, "cntr_pric": "1000",
+			"tdy_trde_cmsn": "0", "tdy_trde_tax": "0", "ord_tm": "090512"})
+	})
+	b, _ := newBroker(t, f)
+	fill, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 10, RefPrice: 1000})
+	if err != nil || fill.Partial || fill.Qty != 10 {
+		t.Fatalf("%+v %v", fill, err)
+	}
+}
+
+// 잔량 취소에 실패해도 체결분은 버리지 않는다 — 대신 잔량이 살아 있을 수 있다고 적는다.
+func TestTimeoutCancelFailureKeepsFillAndWarns(t *testing.T) {
+	f := newFake()
+	f.on(apiBuy, func(map[string]any) any { return map[string]any{"return_code": 0, "ord_no": "92"} })
+	f.on(apiCancel, func(map[string]any) any { return map[string]any{"return_code": 20, "return_msg": "취소 불가"} })
+	f.on(apiFills, func(map[string]any) any {
+		return fillsResp("92", map[string]any{"cntr_qty": "4", "cntr_pric": "1000",
+			"tdy_trde_cmsn": "0", "tdy_trde_tax": "0", "ord_tm": "090512"})
+	})
+	b, _ := newBroker(t, f)
+	fill, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 10, RefPrice: 1000})
+	if err != nil || !fill.Partial || fill.Qty != 4 || !strings.Contains(fill.Detail, "잔량 취소 실패") {
+		t.Fatalf("%+v %v", fill, err)
+	}
+}
+
+// ★ 주문 요청의 5xx 는 재시도하지 않는다 — 서버가 받았는지 모르는데 다시 쏘면 두 번 산다.
+func TestOrderNotRetriedOn5xx(t *testing.T) {
+	f := newFake()
+	f.on(apiBuy, func(map[string]any) any { return httpStatus(502) })
+	b, _ := newBroker(t, f)
+	_, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 10, RefPrice: 1000})
+	if !errors.Is(err, ErrMaybeSent) {
+		t.Fatalf("'나갔을 수 있다' 로 보고되지 않았다: %v", err)
+	}
+	if n := len(f.bodies(apiBuy)); n != 1 {
+		t.Fatalf("주문이 %d 번 나갔다", n)
+	}
+}
+
+// 429 는 "처리 안 했다" — 주문도 재시도한다. 조회(5xx)는 원래대로 재시도.
+func TestOrderRetriedOn429AndQueriesOn5xx(t *testing.T) {
+	f := newFake()
+	n := 0
+	f.on(apiBuy, func(map[string]any) any {
+		n++
+		if n == 1 {
+			return httpStatus(429)
+		}
+		return map[string]any{"return_code": 0, "ord_no": "93"}
+	})
+	q := 0
+	f.on(apiFills, func(map[string]any) any {
+		q++
+		if q == 1 {
+			return httpStatus(503)
+		}
+		return fillsResp("93", map[string]any{"cntr_qty": "10", "cntr_pric": "1000",
+			"tdy_trde_cmsn": "0", "tdy_trde_tax": "0", "ord_tm": "090512"})
+	})
+	b, _ := newBroker(t, f)
+	fill, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 10, RefPrice: 1000})
+	if err != nil || fill.Qty != 10 || len(f.bodies(apiBuy)) != 2 {
+		t.Fatalf("%+v %v 주문 %d회", fill, err, len(f.bodies(apiBuy)))
 	}
 }
 
@@ -606,5 +755,59 @@ func TestReadsFlat6TokenFormat(t *testing.T) {
 	}
 	if f.tokens != 0 {
 		t.Fatalf("★ flat6 가 발급해 둔 토큰을 못 읽고 %d회 재발급했다", f.tokens)
+	}
+}
+
+// ★ 요청 한도 초과([1700])는 키움이 처리하지 않은 거절이다 — 쉬었다 다시 낸다(주문이어도 이중 주문 아님).
+func TestRateLimitRejectRetried(t *testing.T) {
+	f := newFake()
+	n := 0
+	f.on(apiBuy, func(map[string]any) any {
+		n++
+		if n == 1 {
+			return map[string]any{"return_code": 5, "return_msg": "허용된 요청 개수를 초과하였습니다[1700]"}
+		}
+		return map[string]any{"return_code": 0, "ord_no": "0000301"}
+	})
+	f.on(apiFills, func(map[string]any) any {
+		return fillsResp("0000301", map[string]any{"cntr_qty": "3", "cntr_pric": "1000",
+			"tdy_trde_cmsn": "0", "tdy_trde_tax": "0", "ord_tm": "090512"})
+	})
+	b, _ := newBroker(t, f)
+	fill, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 3, RefPrice: 1000})
+	if err != nil || fill.Qty != 3 || len(f.bodies(apiBuy)) != 2 {
+		t.Fatalf("%+v %v 주문 %d", fill, err, len(f.bodies(apiBuy)))
+	}
+}
+
+// 같은 API 를 연달아 부르면 250ms 간격을 둔다 (키움 한도 ~5/s).
+func TestPacerSpacesSameAPI(t *testing.T) {
+	f := newFake()
+	f.on(apiBalance, func(map[string]any) any {
+		return map[string]any{"return_code": 0, "entr": "0", "ord_alowa": "0", "stk_cntr_remn": []any{}}
+	})
+	b, cl := newBroker(t, f)
+	t0 := cl.now()
+	for i := 0; i < 3; i++ {
+		if _, err := b.Cash(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d := cl.now().Sub(t0); d < 500*time.Millisecond {
+		t.Fatalf("세 번 부르는 데 %v — 간격을 안 뒀다", d)
+	}
+}
+
+// ★ 시세 시각은 키움이 준 시각이다 — 거래정지 종목의 낡은 가격이 "지금" 으로 보이면 stop 이 그 가격으로 판정된다.
+func TestQuoteAsOfFromExchange(t *testing.T) {
+	f := newFake()
+	f.on(apiQuote, func(map[string]any) any {
+		return map[string]any{"return_code": 0, "cur_prc": "+72100", "date": "20260815", "tm": "100005"}
+	})
+	b, _ := newBroker(t, f)
+	q, err := b.Quote(ctx, sym)
+	want := time.Date(2026, 8, 15, 1, 0, 5, 0, time.UTC) // 10:00:05 KST
+	if err != nil || q.Price != 72100 || !q.AsOf.Equal(want) {
+		t.Fatalf("%+v %v (기대 %v)", q, err, want)
 	}
 }

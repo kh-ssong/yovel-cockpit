@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
@@ -36,7 +37,7 @@ type Config struct {
 	// MaxOrdersPerTick — reconcile 한 번에 낼 수 있는 주문 수 상한 (폭주 차단).
 	MaxOrdersPerTick int
 
-	// Broker — paper | kiwoom. 기본 paper.
+	// Broker — paper | kiwoom | upbit. 기본 paper.
 	Broker string
 	// KiwoomMock — 모의투자 도메인.
 	KiwoomMock bool
@@ -69,6 +70,32 @@ type Config struct {
 	PaperFeeBpBuy  float64
 	PaperFeeBpSell float64
 	PaperSlipBp    float64
+	// PaperSeed — paper 계좌의 시작 현금. 0 이면 장부 시드 합 + 엔진 예산.
+	// ★ 예산(사이징 분모)과 계좌 현금은 다른 값이다. 계좌가 예산보다 작을 때 무슨 일이 나는지도
+	// paper 에서 봐야 하므로 따로 둔다.
+	PaperSeed float64
+	// BlockStockStatus — 진입을 막을 종목 상태 (쉼표 구분, 키움 감리구분·투자유의 이름). 빈 값 = 안 막는다.
+	BlockStockStatus string
+	// DailyLossLimit — 오늘(KST) 실현손실이 이 금액(원)에 닿으면 신규 진입을 멈춘다 (청산은 계속, 다음 날 자동 해제). 0 = 끔.
+	DailyLossLimit float64
+	// StopMaxPriceAge — 로컬 stop 은 이보다 늙은 시세(마지막 체결 시각 기준)로 판정하지 않는다 (Blind 경보).
+	StopMaxPriceAge time.Duration
+	// KRXExitCutoff — KRX 시간청산 상한 (KST "15:04"). 늦게 잡힌 시간청산을 이 시각 장중 매도로 당긴다.
+	KRXExitCutoff string
+	// EntryFillTimeout — 실브로커 진입 주문이 이 안에 다 안 차면 잔량 취소.
+	EntryFillTimeout time.Duration
+	// IgnoreMarketHours — ★ 테스트 전용. 장 시간·동시호가·휴장일을 무시한다 (가짜 키움 e2e 를 밤에 돌릴 때).
+	IgnoreMarketHours bool
+	// HolidaysFile — KRX 휴장일 (["2026-01-01", …]). 비면 {data-dir}/holidays_krx.json, 없으면 내장 목록.
+	HolidaysFile string
+	// RefMaxDev — 신호가(entry.ref_price)가 독립 시세와 이만큼 넘게 어긋나면 진입 거절. 0 = 검사 안 함.
+	RefMaxDev float64
+	// KiwoomAPIURL — 키움 REST 주소 덮어쓰기 (가짜 키움 서버·테스트용). 비면 운영/모의 기본값.
+	KiwoomAPIURL string
+	// NotifyPaper — paper 체결도 텔레그램으로 보낼지. 전략 여럿을 paper 로 돌리면 시끄럽다.
+	NotifyPaper bool
+	// BooksFile — 전략별 장부 (internal/book). 비면 {data-dir}/books.json. 파일이 없으면 장부 없음.
+	BooksFile string
 
 	// UI — 로컬 대시보드를 서빙할지. 기본 켜짐.
 	// ★ 끌 수 있게 둔 이유는 헤드리스 상주다 (서버·CI). 화면이 없어야 하는 자리에서
@@ -91,6 +118,13 @@ func Default() Config {
 		HeartbeatInterval: 20 * time.Second,
 		MaxOrdersPerTick:  5,
 		Broker:            "paper",
+		NotifyPaper:       true,
+		RefMaxDev:         0.15,
+		// 단기과열 = 30분 단위 단일가 매매라 초 단위 신호가 성립하지 않는다. 투자주의는 매매 제한이 없어 허용.
+		BlockStockStatus: "거래정지,관리종목,정리매매,투자위험,투자경고,단기과열",
+		KRXExitCutoff:    "15:15",
+		StopMaxPriceAge:  3 * time.Minute,  // 시세 시각이 이제 '마지막 체결' 이라 거래가 뜸한 종목은 몇십 초 늙는 게 정상          // 15:20 부터 장마감 동시호가 — 장중 매도는 그 전에 (user 2026-10-01)
+		EntryFillTimeout: 60 * time.Second, // 틱 신호는 몇 초 사이 ±15% 가 안 움직인다 — 넘으면 가격표가 틀린 것이다 // 지금은 paper 검증 단계 — 체결 알림이 곧 검증 도구다
 		// ★ 국내 주식 기준 **추정치**. 매수 = 위탁수수료만 / 매도 = 위탁수수료 + 증권거래세.
 		//   옛 대칭 15bp 는 매수에 없는 비용(거래세)을 매수에도 물렸다.
 		//
@@ -130,7 +164,7 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 	fs.BoolVar(&c.Policy.AcceptUnsignedDerisk, "accept-unsigned-derisk", c.Policy.AcceptUnsignedDerisk,
 		"서명 없는 de-risk 를 수용할지 (★ 진입은 어느 쪽이든 서명 필수)")
 	fs.DurationVar(&c.Policy.MaxSkew, "max-skew", c.Policy.MaxSkew, "허용 시계 오차")
-	fs.StringVar(&c.Broker, "broker", c.Broker, "paper | kiwoom")
+	fs.StringVar(&c.Broker, "broker", c.Broker, "paper | kiwoom | upbit")
 	fs.BoolVar(&c.KiwoomMock, "kiwoom-mock", c.KiwoomMock, "키움 모의투자 도메인 사용")
 	fs.StringVar(&c.KiwoomTokenFile, "kiwoom-token-file", c.KiwoomTokenFile,
 		"토큰 파일 경로 (★ flat6 와 같은 앱키면 flat6 의 파일을 가리킬 것)")
@@ -145,6 +179,30 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 		"paper 매도 편도 비용 (bp) — 국내는 여기에 증권거래세가 포함된다")
 	fs.Float64Var(&c.PaperSlipBp, "paper-slip-bp", c.PaperSlipBp,
 		"paper 시장가 슬리피지 (bp) — ★ 0 으로 두면 손익분기 근처 판정이 뒤집힌다")
+	fs.Float64Var(&c.PaperSeed, "paper-seed", c.PaperSeed,
+		"paper 계좌 시작 현금 (원) — 0 이면 장부 시드 합 + 엔진 예산")
+	fs.StringVar(&c.BlockStockStatus, "block-stock-status", c.BlockStockStatus,
+		"진입을 막을 종목 상태 (쉼표 구분: 거래정지,관리종목,정리매매,투자위험,투자경고,단기과열,투자주의,ETF투자주의) — 빈 값=끔")
+	fs.Float64Var(&c.DailyLossLimit, "daily-loss-limit", c.DailyLossLimit,
+		"일일 손실 한도 (원) — 오늘 실현손실이 닿으면 신규 진입 중지, 청산은 계속, 다음 날 자동 해제 (0=끔)")
+	fs.DurationVar(&c.StopMaxPriceAge, "stop-max-price-age", c.StopMaxPriceAge,
+		"로컬 stop 판정에 쓸 시세의 최대 나이 (마지막 체결 시각 기준) — 넘으면 판정하지 않고 Blind 경보")
+	fs.StringVar(&c.KRXExitCutoff, "krx-exit-cutoff", c.KRXExitCutoff,
+		"KRX 시간청산 상한 (KST HH:MM) — 더 늦게 잡힌 시간청산은 이 시각 장중 매도로 당긴다 (빈 값=끔)")
+	fs.DurationVar(&c.EntryFillTimeout, "entry-fill-timeout", c.EntryFillTimeout,
+		"실브로커 진입 주문 체결 마감 — 넘으면 잔량 취소 (늦은 체결은 다른 가격이다)")
+	fs.BoolVar(&c.IgnoreMarketHours, "ignore-market-hours", c.IgnoreMarketHours,
+		"★ 테스트 전용 — 장 시간·동시호가·휴장일을 무시한다 (가짜 키움 e2e). 실계좌에 쓰지 말 것")
+	fs.StringVar(&c.HolidaysFile, "holidays-file", c.HolidaysFile,
+		"KRX 휴장일 JSON 배열 파일 (기본 {data-dir}/holidays_krx.json, 없으면 내장 2026 목록)")
+	fs.Float64Var(&c.RefMaxDev, "ref-price-max-dev", c.RefMaxDev,
+		"신호가가 독립 시세와 이 비율 넘게 어긋나면 진입 거절 (0=끔, 기본 0.15)")
+	fs.StringVar(&c.KiwoomAPIURL, "kiwoom-api-url", c.KiwoomAPIURL,
+		"키움 REST 주소 덮어쓰기 — 가짜 키움 서버(cmd/fakekiwoom) 로 붙일 때")
+	fs.BoolVar(&c.NotifyPaper, "notify-paper", c.NotifyPaper,
+		"paper 체결도 텔레그램으로 알림 (기동·오류·경보는 mode 와 무관하게 간다)")
+	fs.StringVar(&c.BooksFile, "books-file", c.BooksFile,
+		"전략별 장부 파일 (기본 {data-dir}/books.json — 없으면 장부 없이 엔진 예산 하나)")
 	fs.BoolVar(&c.UI, "ui", c.UI, "로컬 대시보드 서빙 (--ui=false 로 끔)")
 	fs.StringVar(&c.Policy.Acct, "acct", c.Policy.Acct,
 		"이 콕핏의 계정 핸들 — 다른 acct 의 목표는 E_ACCT 로 거절 (★ 비우면 검사 안 함)")
@@ -181,7 +239,93 @@ func (c *Config) applyEnv() {
 // ★ 플래그로 받지 않는 이유: 커맨드라인은 같은 PC 의 다른 프로세스에서 그대로 보인다
 // (ps / 작업관리자). 증권사 앱키가 거기 찍히면 그 순간 유출이다.
 func KiwoomCreds() (appKey, secret string) {
-	return os.Getenv("COCKPIT_KIWOOM_APPKEY"), os.Getenv("COCKPIT_KIWOOM_SECRET")
+	return Secret("COCKPIT_KIWOOM_APPKEY"), Secret("COCKPIT_KIWOOM_SECRET")
+}
+
+// UpbitCreds — 업비트 자격증명도 **환경변수에서만** 읽는다 (KiwoomCreds 와 같은 이유).
+func UpbitCreds() (access, secret string) {
+	return Secret("COCKPIT_UPBIT_ACCESS_KEY"), Secret("COCKPIT_UPBIT_SECRET_KEY")
+}
+
+// TelegramCreds — 텔레그램 봇 토큰·채팅 ID. **환경변수에서만** 읽는다 (토큰이 곧 봇 조종권이다).
+func TelegramCreds() (token, chatID string) {
+	return Secret("COCKPIT_TELEGRAM_BOT_TOKEN"), Secret("COCKPIT_TELEGRAM_CHAT_ID")
+}
+
+// Secret 은 환경변수 NAME 을, 없으면 NAME_FILE 이 가리키는 파일 내용을 준다 (앞뒤 공백 제거).
+//
+// ★ 키를 **파일로** 받아 두는 경우(증권사가 txt 로 내려준다)를 위해서다. 경로는 비밀이 아니므로
+// 환경변수·.env 에 둬도 되고, 키 값 자체는 어디에도 복사되지 않는다.
+func Secret(name string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	if p := os.Getenv(name + "_FILE"); p != "" {
+		path, label, _ := strings.Cut(p, "#")
+		if raw, err := os.ReadFile(path); err == nil {
+			if label == "" {
+				return strings.TrimSpace(string(raw))
+			}
+			return labeled(string(raw), label)
+		}
+	}
+	return ""
+}
+
+// labeled — 한 파일에 키 여럿이 라벨과 함께 있을 때 (`경로#라벨`). 라벨 줄 다음의 첫 비어 있지 않은 줄.
+//
+//	access
+//	6x....
+//
+//	secret
+//	Vc....
+//
+// ★ 키를 라벨별 파일로 쪼개 복사하지 않으려고 둔다 — 비밀의 사본은 적을수록 좋다.
+func labeled(raw, label string) string {
+	lines := strings.Split(strings.TrimPrefix(raw, "\ufeff"), "\n")
+	for i, l := range lines {
+		k := strings.TrimSuffix(strings.TrimSpace(l), ":")
+		if !strings.EqualFold(k, label) {
+			continue
+		}
+		for _, v := range lines[i+1:] {
+			if v = strings.TrimSpace(v); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// LoadDotEnv 는 KEY=VALUE 줄들을 읽어 **아직 없는** 환경변수만 채운다. 파일이 없으면 아무것도 안 한다.
+//
+// ★ 이미 있는 값은 덮지 않는다 — 셸에서 준 값이 파일보다 우선이어야 일회성 오버라이드가 된다.
+// ★ .env 는 .gitignore 에 있다(공개 저장소). 키 값 대신 `*_FILE` 경로만 적어 두는 걸 권한다.
+func LoadDotEnv(path string) (loaded int, err error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.Trim(strings.TrimSpace(v), `"'`)
+		if _, set := os.LookupEnv(k); set {
+			continue
+		}
+		os.Setenv(k, v)
+		loaded++
+	}
+	return loaded, nil
 }
 
 // Finish 는 플래그 파싱 후 검증한다.
@@ -195,9 +339,14 @@ func (c *Config) Finish() error {
 		return fmt.Errorf("mode 는 paper 또는 live 여야 한다 (받은 값 %q)", c.Mode)
 	}
 	switch c.Broker {
-	case "paper", "kiwoom":
+	case "paper", "kiwoom", "upbit":
 	default:
-		return fmt.Errorf("broker 는 paper 또는 kiwoom 이어야 한다 (받은 값 %q)", c.Broker)
+		return fmt.Errorf("broker 는 paper · kiwoom · upbit 중 하나여야 한다 (받은 값 %q)", c.Broker)
+	}
+	// ★ 업비트엔 모의투자 도메인이 없다. mode=paper 로 upbit 를 붙이면 **실주문이 나가는데
+	// 원장엔 paper 로 찍힌다** — 연습인 줄 알고 진짜 돈을 쓰는 형태라 아예 막는다.
+	if c.Mode == protocol.ModePaper && c.Broker == "upbit" {
+		return fmt.Errorf("broker=upbit 는 실주문뿐이다(모의 도메인 없음) — 연습은 broker=paper, 실주문은 mode=live 로 둘 것")
 	}
 	// ★ live 모드인데 paper 브로커면 실주문이 안 나간다. 그 상태를 "돌고 있다" 로 보이게 두지 않는다.
 	if c.Mode == protocol.ModeLive && c.Broker == "paper" {

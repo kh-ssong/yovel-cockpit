@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gowebpki/jcs"
@@ -176,16 +177,42 @@ func reject(codes ...RejectCode) Admission {
 // ★ seq 와 nonce 를 헷갈리면 안 된다: retained 로 같은 intent.target 이 재접속마다 다시 오는 건
 // 정상이므로 nonce 로 판정하면 정상 스냅샷을 replay 로 버리게 된다. 그래서 intent 는 seq,
 // 일회성 명령은 nonce 로 나눈다.
+//
+// ★ seq 는 **소스(kid × scope)마다** 따로 센다 (pitwall architecture.md §4). 하나로 세면 두 발행자가
+// 각자 seq 를 올리다 **낮은 쪽이 조용히 무시**된다 — 계약상 정상 동작이라 에러도 안 난다.
 type Guard struct {
-	lastSeq map[Type]uint64
+	lastSeq map[string]uint64 // typ|kid|scope → seq
 	nonces  map[string]time.Time
 }
 
 func NewGuard() *Guard {
-	return &Guard{lastSeq: map[Type]uint64{}, nonces: map[string]time.Time{}}
+	return &Guard{lastSeq: map[string]uint64{}, nonces: map[string]time.Time{}}
 }
 
-func (g *Guard) LastSeq(t Type) uint64 { return g.lastSeq[t] }
+func seqKey(t Type, kid, scope string) string { return string(t) + "|" + kid + "|" + scope }
+
+// LastSeq — 그 타입의 모든 소스 중 가장 큰 seq (진단용).
+func (g *Guard) LastSeq(t Type) uint64 {
+	var max uint64
+	for k, v := range g.lastSeq {
+		if strings.HasPrefix(k, string(t)+"|") && v > max {
+			max = v
+		}
+	}
+	return max
+}
+
+// LastSeqOf — 한 소스의 seq.
+func (g *Guard) LastSeqOf(t Type, kid, scope string) uint64 { return g.lastSeq[seqKey(t, kid, scope)] }
+
+// TargetScope 는 intent.target 본문의 scope 를 꺼낸다 (본문 파싱 실패면 빈 값).
+func TargetScope(body []byte) string {
+	var it struct {
+		Scope string `json:"scope"`
+	}
+	_ = json.Unmarshal(body, &it)
+	return it.Scope
+}
 
 func (g *Guard) forgetExpiredNonces(now time.Time) {
 	for n, exp := range g.nonces {
@@ -265,7 +292,7 @@ func Admit(raw []byte, now time.Time, p Policy, g *Guard) Admission {
 	// ── 순서·재생 ──
 	switch env.Typ {
 	case TypeIntentTarget:
-		if *env.Seq <= g.LastSeq(TypeIntentTarget) {
+		if *env.Seq <= g.LastSeqOf(TypeIntentTarget, env.Sig.Kid, TargetScope(env.Body)) {
 			// 재접속 시 retained 로 같은 메시지가 다시 오는 건 정상 동작이다.
 			return Admission{Env: &env, Ignored: true}
 		}
@@ -296,7 +323,7 @@ func Admit(raw []byte, now time.Time, p Policy, g *Guard) Admission {
 	// 여기까지 왔을 때만 상태를 갱신한다.
 	switch env.Typ {
 	case TypeIntentTarget:
-		g.lastSeq[TypeIntentTarget] = *env.Seq
+		g.lastSeq[seqKey(TypeIntentTarget, env.Sig.Kid, TargetScope(env.Body))] = *env.Seq
 	case TypeCmdDerisk:
 		g.nonces[env.Nonce] = *env.Exp
 	}
@@ -314,8 +341,18 @@ func validateBody(env *Envelope) []RejectCode {
 		if it.AsOfBar.IsZero() {
 			return []RejectCode{CodeSchema}
 		}
+		if len(it.Scope) > 128 || strings.ContainsAny(it.Scope, "|#+ ") {
+			// 토픽 계층에 들어갈 이름이다 — MQTT 와일드카드·구분자가 섞이면 구독 범위가 새어 나간다.
+			return []RejectCode{CodeSchema}
+		}
 		for _, t := range it.Targets {
 			if t.IntentID == "" || t.Symbol.Code == "" || t.Slot == "" {
+				return []RejectCode{CodeSchema}
+			}
+			if len(t.Group) > 128 {
+				return []RejectCode{CodeSchema}
+			}
+			if t.Exit != nil && t.Exit.HoldFrac != nil && (*t.Exit.HoldFrac < 0 || *t.Exit.HoldFrac > 1) {
 				return []RejectCode{CodeSchema}
 			}
 			switch t.Want {

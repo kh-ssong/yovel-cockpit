@@ -18,18 +18,26 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/kh-ssong/yovel-cockpit/internal/book"
 	"github.com/kh-ssong/yovel-cockpit/internal/broker"
 	"github.com/kh-ssong/yovel-cockpit/internal/broker/kiwoom"
 	"github.com/kh-ssong/yovel-cockpit/internal/broker/paper"
+	"github.com/kh-ssong/yovel-cockpit/internal/broker/upbit"
 	"github.com/kh-ssong/yovel-cockpit/internal/config"
 	"github.com/kh-ssong/yovel-cockpit/internal/engine"
 	"github.com/kh-ssong/yovel-cockpit/internal/executor"
 	"github.com/kh-ssong/yovel-cockpit/internal/httpapi"
+	"github.com/kh-ssong/yovel-cockpit/internal/lots"
+	"github.com/kh-ssong/yovel-cockpit/internal/notify"
+	"github.com/kh-ssong/yovel-cockpit/internal/proc"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/quotes"
+	"github.com/kh-ssong/yovel-cockpit/internal/session"
 	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
 	"github.com/kh-ssong/yovel-cockpit/internal/store"
 	"github.com/kh-ssong/yovel-cockpit/internal/version"
@@ -44,6 +52,10 @@ func main() {
 }
 
 func run() error {
+	// ★ 설정보다 먼저 — .env 의 COCKPIT_* 가 기본값·플래그 기본값에 반영되게.
+	if _, err := config.LoadDotEnv(".env"); err != nil {
+		return fmt.Errorf(".env: %w", err)
+	}
 	cfg := config.Default()
 	fs := flag.NewFlagSet("cockpitd", flag.ExitOnError)
 	cfg.Bind(fs)
@@ -77,13 +89,83 @@ func run() error {
 
 	started := time.Now()
 
+	// ── 단일 실행 잠금 (원장을 열기 전) ── data-dir 하나에 하나, 같은 브로커 키(=계좌)에 하나.
+	beatPath := filepath.Join(cfg.DataDir, "heartbeat.json")
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		return err
+	}
+	lockInfo := proc.LockInfo{PID: os.Getpid(), Started: started, DataDir: cfg.DataDir, Heartbeat: beatPath}
+	releaseDir, err := proc.Acquire(filepath.Join(cfg.DataDir, "cockpitd.lock"), lockInfo, time.Now())
+	if err != nil {
+		return fmt.Errorf("data-dir 잠금: %w", err)
+	}
+	defer releaseDir()
+	// ★ 하트비트는 잠금을 잡은 **뒤에** 쓴다 — 먼저 쓰면 잠금에 막힐 두 번째 인스턴스가 살아 있는 주인의
+	//   하트비트를 덮어쓴다 (스모크 테스트 2026-10-01 실측).
+	_ = proc.WriteBeat(beatPath, proc.Beat{TS: time.Now().UTC(), PID: os.Getpid(), Version: v.Version, SHA: v.SHA})
+	if key := accountLockKey(cfg); key != "" {
+		dir, _ := os.UserConfigDir()
+		releaseAcct, err := proc.Acquire(filepath.Join(dir, "yovel-cockpit", "locks", key+".lock"), lockInfo, time.Now())
+		if err != nil {
+			// ★ data-dir 이 달라도 같은 계좌에 주문을 낼 수 있는 프로세스가 둘이면 같은 신호로 두 번 산다.
+			return fmt.Errorf("계좌 잠금(%s): %w", key, err)
+		}
+		defer releaseAcct()
+	}
+
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		return fmt.Errorf("로컬 저장소: %w", err)
 	}
 	defer st.Close()
 
-	br, err := buildBroker(cfg, log)
+	booksPath := cfg.BooksFile
+	if booksPath == "" {
+		booksPath = filepath.Join(cfg.DataDir, "books.json")
+	}
+	books, err := book.Load(booksPath, cfg.EngineBudget)
+	if err != nil {
+		return fmt.Errorf("장부 설정: %w", err)
+	}
+	for _, b := range books.Books() {
+		log.Info("활성 전략(장부)", "name", b.Name, "kid", b.Kid, "scope", b.Scope, "seed", b.Seed, "enabled", b.On())
+	}
+	if books.Configured() {
+		log.Info("장부에 없는 (kid, scope) 의 진입은 E_INACTIVE 로 거절된다 — 청산은 계속")
+	} else {
+		log.Info("장부 설정 없음 — 모든 소스가 엔진 예산 하나로 돈다", "engine_budget", cfg.EngineBudget)
+	}
+
+	// 장 달력 — 동시호가·장 밖·휴장일·점검 (internal/session).
+	holPath := cfg.HolidaysFile
+	if holPath == "" {
+		holPath = filepath.Join(cfg.DataDir, "holidays_krx.json")
+	}
+	cal, err := session.LoadCalendar(holPath)
+	if err != nil {
+		return fmt.Errorf("휴장일: %w", err)
+	}
+	log.Info("KRX 휴장일 달력", "file", holPath, "until", cal.Last().Format("2006-01-02"))
+	calStale := !cal.CoversUntil(time.Now().AddDate(0, 0, 30))
+	if cfg.IgnoreMarketHours {
+		log.Warn("★ --ignore-market-hours — 장 시간·동시호가·휴장일을 무시한다 (테스트 전용)")
+		if cfg.Mode == protocol.ModeLive && cfg.KiwoomAPIURL == "" {
+			return fmt.Errorf("--ignore-market-hours 는 실계좌(live + 실제 키움 주소)에 쓸 수 없다")
+		}
+	}
+
+	// marks — flat6 가 목표에 실어 보낸 가격. 엔진이 생기기 전에 paper 가 참조를 잡아야 해서
+	// 간접 참조로 둔다 (엔진 → 시세 → paper → marks → 엔진 순환을 끊는다).
+	var eng *engine.Engine
+	var onInactive func(kid, scope string, n int)
+	mark := func(s protocol.Symbol) (float64, bool) {
+		if eng == nil {
+			return 0, false
+		}
+		return eng.Mark(s, time.Now().UTC(), cfg.TargetMaxAge)
+	}
+
+	br, refFeed, err := buildBroker(cfg, books, mark, log)
 	if err != nil {
 		return err
 	}
@@ -92,14 +174,25 @@ func run() error {
 	// 배선이 빠진 상태와 정상 상태가 같아 보인다.
 	qs := quotes.New(br, 3*time.Second, func() time.Time { return time.Now().UTC() })
 
-	eng := engine.New(engine.Config{
+	eng = engine.New(engine.Config{
 		Mode:         cfg.Mode,
 		Policy:       cfg.Policy,
 		TargetMaxAge: cfg.TargetMaxAge,
 		MaxOrders:    cfg.MaxOrdersPerTick,
 		// ★ 자본은 사용자가 정한다. 엔진은 비중만 보낸다 (슬롯 사이 분배 = weight).
 		EngineBudget: cfg.EngineBudget,
-		Price:        qs.Price,
+		Books:        books,
+		// 신호가 검증 — 실브로커면 브로커 시세, paper 면 신호원 mark 를 뺀 거래소 시세.
+		RefCheckPrice: refCheck(refFeed, qs.Price),
+		RefMaxDev:     cfg.RefMaxDev,
+		CanEnter:      canEnter(cal, cfg.IgnoreMarketHours),
+		OnInactive: func(kid, scope string, n int) {
+			// alert 는 아래에서 만든다 — 기동 순서상 엔진이 먼저라 간접으로 부른다.
+			if onInactive != nil {
+				onInactive(kid, scope, n)
+			}
+		},
+		Price: qs.Price,
 		Market: func(s protocol.Symbol) sizing.Market {
 			return sizing.Market{LotSize: br.LotSize(s), MinOrderValue: br.MinOrderValue(s)}
 		},
@@ -136,6 +229,26 @@ func run() error {
 		},
 		UI:      ui,
 		Account: accountProvider(br, qs.Price, log),
+		Lots: func(ctx context.Context) (any, error) {
+			ls, gs, err := lotsOf(ctx, eng, qs.Price, cfg.Mode)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"as_of": time.Now().UTC(), "mode": cfg.Mode, "lots": ls, "groups": gs}, nil
+		},
+		Holdings: func(ctx context.Context) (any, error) {
+			ls, _, err := lotsOf(ctx, eng, qs.Price, cfg.Mode)
+			if err != nil {
+				return nil, err
+			}
+			hs, err := br.Positions(ctx)
+			if err != nil {
+				// ★ 조회 실패를 "보유 없음" 으로 그리지 않는다 — 전 로트가 short(위험)로 보인다.
+				return nil, fmt.Errorf("브로커 보유 조회 실패: %w", err)
+			}
+			return map[string]any{"as_of": time.Now().UTC(), "mode": cfg.Mode, "broker": br.Name(),
+				"holdings": lots.Reconcile(ls, hs, br.LotSize)}, nil
+		},
 	}, eng)
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("로컬 API 기동 실패: %w", err)
@@ -185,14 +298,74 @@ func run() error {
 		log.Warn("이전 세션의 de-risk 가 아직 걸려 있다 — resume 전까지 신규 진입 없음")
 	}
 
+	// ── 알림 ── 설정이 없으면 Nop. ★ 알림은 비동기 큐라 매매를 막지 않는다.
+	nctx, ncancel := context.WithCancel(context.Background())
+	var notifier notify.Notifier = notify.Nop{}
+	var tg *notify.Telegram
+	if tok, chat := config.TelegramCreds(); tok != "" && chat != "" {
+		tg = notify.NewTelegram(nctx, notify.TelegramConfig{
+			Token: tok, ChatID: chat, Log: log,
+			Prefix: fmt.Sprintf("[cockpit:%d]", cfg.Port), // 콕핏 여럿이 한 방을 쓸 때 구분
+		})
+		notifier = tg
+		log.Info("텔레그램 알림 켜짐", "paper_fills", cfg.NotifyPaper)
+	} else {
+		log.Info("텔레그램 알림 꺼짐 — COCKPIT_TELEGRAM_BOT_TOKEN / COCKPIT_TELEGRAM_CHAT_ID")
+	}
+	alerts := notify.NewThrottle(10 * time.Minute)
+	alert := func(key, text string) {
+		if alerts.Allow(key, time.Now()) {
+			notifier.Send(text)
+		}
+	}
+	onInactive = func(kid, scope string, n int) {
+		log.Warn("활성화되지 않은 전략의 진입 지시 — E_INACTIVE", "kid", kid, "scope", scope, "targets", n)
+		alert("inactive:"+book.Key(kid, scope), fmt.Sprintf(
+			"🔕 활성화 안 된 전략의 진입 %d 건을 거절했다 — %s (켜려면 books.json 에 추가)", n, book.Key(kid, scope)))
+	}
+	notifyFill := func(o store.Order, slot string) {
+		if o.Mode == protocol.ModePaper && !cfg.NotifyPaper {
+			return
+		}
+		notifier.Send(notify.Fill(o, slot))
+	}
+
 	exec := executor.New(executor.Deps{
 		Broker: br, Store: st, Engine: eng, Mode: cfg.Mode, DaemonSHA: v.SHA, Log: log,
+		Notify: notifyFill,
+		// 로컬 stop 은 사이징과 **같은 시세원**을 본다 (quotes 패키지 주석 — 두 곳이 각자 조회하면
+		// 같은 틱에서도 다른 값을 본다). 시세가 너무 늙었으면(마지막 체결 기준) stop 을 판정하지 않는다.
+		Quote:       qs.Get,
+		MaxPriceAge: cfg.StopMaxPriceAge,
+		// 장 시간·동시호가 — 주문 제출과 체결 추적이 분리돼 있어 동시호가 중 청산을 취소하지 않는다.
+		Session:          sessionOrNil(cal, cfg.IgnoreMarketHours),
+		EntryFillTimeout: cfg.EntryFillTimeout,
+		ExitCutoff:       exitCutoff(cfg),
+		BrokerExchange:   brokerExchange(cfg.Broker),
+		BlockStatus:      labelSet(cfg.BlockStockStatus),
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go runLoop(ctx, exec, cfg.ReconcileInterval, wake, log)
+	if calStale {
+		msg := fmt.Sprintf("📅 KRX 휴장일 목록이 %s 에서 끝난다 — %s 를 갱신할 것 (모르는 휴장일엔 주문이 전부 거부된다)",
+			cal.Last().Format("2006-01-02"), holPath)
+		log.Warn(msg)
+		notifier.Send(msg)
+	}
+	notifier.Send(fmt.Sprintf("▶️ 콕핏 기동 · %s · broker=%s · 보유 %d · %s",
+		strings.ToUpper(string(cfg.Mode)), br.Name(), len(snap.Positions), v.Version))
+
+	live := &liveness{}
+	go runLoop(ctx, exec, cfg.ReconcileInterval, wake, log, alert, live)
+	go beatLoop(ctx, beatPath, live, eng, v, cfg, br.Name(), log)
+	if cfg.DailyLossLimit > 0 {
+		log.Info("일일 손실 한도", "krw", cfg.DailyLossLimit)
+	}
+	go watchLoss(ctx, st, eng, cfg.Mode, cfg.DailyLossLimit, log, alert)
+	go watchBudget(ctx, br, books.Total(), // 장부 시드 합 + 엔진 예산
+		func() []protocol.Position { return eng.Snapshot().Positions }, log, alert)
 
 	<-ctx.Done()
 
@@ -203,6 +376,11 @@ func run() error {
 		log.Error("로컬 API 종료 실패", "err", err)
 	}
 	log.Info("cockpitd 종료", "uptime_sec", int64(time.Since(started).Seconds()))
+	notifier.Send(fmt.Sprintf("⏹ 콕핏 종료 · 가동 %s", time.Since(started).Round(time.Second)))
+	ncancel()
+	if tg != nil {
+		tg.Wait() // 종료 알림이 나갈 시간을 준다 (최대 3초)
+	}
 	return nil
 }
 
@@ -210,37 +388,67 @@ func run() error {
 //
 // ★ paper 브로커라도 시세는 진짜를 쓰는 게 낫다. 키움 자격증명이 있으면 시세만 키움에서
 // 받아 페이퍼로 체결시킨다 — 가짜 가격으로 만든 페이퍼 성과는 아무것도 증명하지 못한다.
-func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
+//
+// 두 번째 반환값 = **독립 시세원** (신호가 검증용, reconcile.Options.RefCheckPrice). 실브로커면 nil
+// — 그 경우 브로커 시세(quotes)를 쓴다. paper 면 신호원 mark 를 뺀 거래소 시세다.
+func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) (float64, bool),
+	log *slog.Logger) (broker.Broker, func(protocol.Symbol) (float64, bool), error) {
+	if cfg.Broker == "upbit" {
+		access, sec := config.UpbitCreds()
+		if access == "" || sec == "" {
+			return nil, nil, fmt.Errorf("업비트 자격증명이 없다 — COCKPIT_UPBIT_ACCESS_KEY / COCKPIT_UPBIT_SECRET_KEY 환경변수로 줄 것")
+		}
+		b, err := upbit.New(upbit.Config{AccessKey: access, SecretKey: sec})
+		return b, nil, err
+	}
+
 	appKey, secret := config.KiwoomCreds()
 
 	if cfg.Broker == "kiwoom" {
 		if appKey == "" || secret == "" {
-			return nil, fmt.Errorf("키움 자격증명이 없다 — COCKPIT_KIWOOM_APPKEY / COCKPIT_KIWOOM_SECRET 환경변수로 줄 것 (★ 플래그로 주면 ps 에 노출된다)")
+			return nil, nil, fmt.Errorf("키움 자격증명이 없다 — COCKPIT_KIWOOM_APPKEY / COCKPIT_KIWOOM_SECRET 환경변수로 줄 것 (★ 플래그로 주면 ps 에 노출된다)")
 		}
-		return kiwoom.New(kiwoom.Config{
+		b, err := kiwoom.New(kiwoom.Config{
 			AppKey: appKey, SecretKey: secret, DataDir: cfg.DataDir, Mock: cfg.KiwoomMock,
-			TokenFile: cfg.KiwoomTokenFile,
+			TokenFile: cfg.KiwoomTokenFile, APIURL: cfg.KiwoomAPIURL,
 		})
+		return b, nil, err
 	}
 
 	// 편도 비용. ★ 0 으로 두지 않는다 — 비용 0 시뮬은 손익분기 근처 전략의 판정을 뒤집는다.
 	// ★★ 값은 이제 설정이다(옛 하드코딩 대칭 15bp 는 매수에 없는 비용을 물렸다).
 	//    그리고 기본값도 추정치라, 진짜 요율은 `--paper-fee-bp-*` 로 **자기 원장에서 재서** 넣는다.
+	// 시세 1순위 = flat6 mark_price. 그 뒤는 거래소별 시세원 (UPBIT = 공개 API, KRX = 키움 키 있을 때).
+	seed := cfg.PaperSeed
+	if seed <= 0 {
+		seed = books.Total()
+	}
+	log.Info("paper 시드", "cash", seed)
 	pcfg := paper.Config{
-		Cash: cfg.EngineBudget, Lot: 1,
+		Cash: seed, Lot: 1,
+		// 거래소 규칙은 실드라이버의 값을 그대로 쓴다 — paper 만의 규칙을 두지 않는다.
+		Rules: map[string]paper.Rule{
+			// 업비트 KRW 마켓 수수료 0.05% 편도 (거래세 없음). ★ 추정치 — 실요율은 live 원장의 paid_fee 로 확인.
+			upbit.Exchange: {Lot: upbit.Lot, MinOrderValue: upbit.MinOrderKRW, FeeBpBuy: 5, FeeBpSell: 5},
+		},
 		FeeBpBuy:  cfg.PaperFeeBpBuy,
 		FeeBpSell: cfg.PaperFeeBpSell,
 		SlipBp:    cfg.PaperSlipBp,
 	}
+	now := func() time.Time { return time.Now().UTC() }
+	// ★ 업비트 시세는 공개 API 라 키가 없어도 항상 붙인다 — 코인 paper 가 키 없이 제값에 돈다.
+	feeds := map[string]func(protocol.Symbol) (float64, bool){
+		upbit.Exchange: quotes.New(upbit.NewPublic(upbit.Config{}), 3*time.Second, now).Price,
+	}
+	log.Info("paper 브로커에 업비트 공개 시세를 물린다 (키 불필요)")
 	if appKey != "" && secret != "" {
 		kw, err := kiwoom.New(kiwoom.Config{
 			AppKey: appKey, SecretKey: secret, DataDir: cfg.DataDir, Mock: cfg.KiwoomMock,
-			TokenFile: cfg.KiwoomTokenFile,
+			TokenFile: cfg.KiwoomTokenFile, APIURL: cfg.KiwoomAPIURL,
 		})
 		if err == nil {
 			log.Info("paper 브로커에 키움 실시세를 물린다")
-			src := quotes.New(kw, 3*time.Second, func() time.Time { return time.Now().UTC() })
-			pcfg.Price = src.Price
+			feeds["KRX"] = quotes.New(kw, 3*time.Second, now).Price
 		} else {
 			log.Warn("키움 시세원 연결 실패 — 가격 없이 돈다 (진입 계획은 E_SYMBOL 로 거절된다)", "err", err)
 		}
@@ -251,22 +459,39 @@ func buildBroker(cfg config.Config, log *slog.Logger) (broker.Broker, error) {
 		// ★★ 2026-08-17: 그 청산도 이제 나간다 — paper 가 시세를 못 구하면 **보유 평단**을
 		//   기준가로 써서 닫는다(그 건은 `detail` 에 표시되고 실현손익이 근사다). 청산이
 		//   막히는 것보다 근사로라도 닫히는 편이 낫다는 판단이고, 남는 degrade 는 아래 둘이다.
-		log.Warn("시세원이 없다 — 진입은 ref_price 로, 청산은 **보유 평단 근사**로 나간다. " +
-			"다만 **TP·스톱이 평가되지 않고**(시간청산과 판단자 신호만 남는다) 실현손익이 " +
-			"근사다. 키움 자격증명을 주면 paper 도 실시세로 돈다")
+		// ★ 2026-09-26: 이제 1순위 시세는 flat6 의 mark_price 다 (키 없이도 청산이 제값에 나간다).
+		//   flat6 가 mark 를 안 실은 종목만 평단 근사로 떨어진다.
+		log.Warn("키움 시세원 없음 — paper 의 **주식**은 flat6 가 목표에 실은 mark_price 로만 체결가를 정한다. " +
+			"mark 가 없는 종목의 청산은 **보유 평단 근사**라 실현손익이 0 근처로 뭉개진다 — " +
+			"flat6 발행에 mark_price 가 실렸는지 확인할 것")
 	}
-	return paper.New(pcfg), nil
+	pcfg.Price = markFirst(mark, byExchange(feeds))
+	return paper.New(pcfg), byExchange(feeds), nil
+}
+
+// byExchange — 종목의 거래소로 시세원을 고른다. 모르는 거래소는 "모른다".
+func byExchange(feeds map[string]func(protocol.Symbol) (float64, bool)) func(protocol.Symbol) (float64, bool) {
+	return func(s protocol.Symbol) (float64, bool) {
+		if f, ok := feeds[s.Exchange]; ok {
+			return f(s)
+		}
+		return 0, false
+	}
 }
 
 // runLoop — 집행 루프. ★ 목표 수신과 무관하게 주기적으로 돈다.
 // 목표가 안 와도 브로커 실상태는 바뀔 수 있고(TP 체결·수동 매도), 그걸 못 보면 장부가 썩는다.
 func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duration,
-	wake <-chan struct{}, log *slog.Logger) {
+	wake <-chan struct{}, log *slog.Logger, alert func(key, text string), live *liveness) {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	// 진행 중 주문(접수됐지만 미확정)은 0.5초마다 확인한다 — 체결 확정이 틱 주기(5초)에 묶이지 않게.
+	fast := time.NewTicker(500 * time.Millisecond)
+	defer fast.Stop()
+	var lastBlind time.Time
 
 	for {
 		select {
@@ -274,16 +499,54 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 			return
 		case <-wake: // 목표 도착 — 틱을 기다리지 않는다
 		case <-t.C:
+		case <-fast.C:
+			if !exec.HasWorking() {
+				continue
+			}
+			res := exec.PollWorking(ctx, time.Now().UTC())
+			live.mark(exec)
+			for _, e := range res.Errors {
+				k := e
+				if len(k) > 40 {
+					k = k[:40]
+				}
+				alert("err:"+k, "⚠️ 집행 오류: "+e)
+			}
+			if res.Entered+res.Exited+res.PartialExits+res.Reduced > 0 || len(res.Errors) > 0 {
+				log.Info("체결 확정", "entered", res.Entered, "exited", res.Exited,
+					"partial_exits", res.PartialExits, "reduced", res.Reduced, "errors", res.Errors)
+			}
+			continue
 		}
 
 		res := exec.Tick(ctx, time.Now().UTC())
+		live.mark(exec)
+
+		// ★ stop 을 못 지키는 상태(Blind)는 조용히 두지 않되, 5초마다 찍지도 않는다 — 1분에 한 번.
+		if len(res.Blind) > 0 && time.Since(lastBlind) > time.Minute {
+			log.Warn("시세가 없어 로컬 stop 을 판정하지 못했다 — 신호원이 죽으면 이 포지션은 stop 없이 방치된다",
+				"positions", res.Blind)
+			lastBlind = time.Now()
+			alert("blind", fmt.Sprintf("👁 시세가 없어 로컬 stop 을 못 지키는 중: %v", res.Blind))
+		}
+		// ★ 같은 오류는 10분에 한 번만 (key = 오류 앞부분). 매 틱 울리면 무시당하고 진짜 사고가 묻힌다.
+		for _, e := range res.Errors {
+			k := e
+			if len(k) > 40 {
+				k = k[:40]
+			}
+			alert("err:"+k, "⚠️ 집행 오류: "+e)
+		}
+		if len(res.Mismatch) > 0 {
+			alert("mismatch", fmt.Sprintf("❓ 장부·실물 불일치: %v", res.Mismatch))
+		}
 
 		// 아무 일도 없었으면 조용히 넘긴다 — 5초마다 로그를 찍으면 진짜 사건이 묻힌다.
-		if res.Entered+res.Exited+res.StopsArmed+res.TpPlaced+res.ClosedByBroker == 0 &&
+		if res.Entered+res.Exited+res.PartialExits+res.Reduced+res.StopsArmed+res.TpPlaced+res.ClosedByBroker == 0 &&
 			len(res.Errors) == 0 && len(res.Mismatch) == 0 {
 			continue
 		}
-		log.Info("집행", "entered", res.Entered, "exited", res.Exited,
+		log.Info("집행", "entered", res.Entered, "exited", res.Exited, "partial_exits", res.PartialExits, "reduced", res.Reduced,
 			"stops", res.StopsArmed, "tp", res.TpPlaced, "closed_by_broker", res.ClosedByBroker,
 			"mismatch", res.Mismatch, "errors", res.Errors)
 	}
@@ -331,6 +594,20 @@ func logCostModel(ctx context.Context, cfg config.Config, st *store.Store, log *
 	}
 }
 
+// lotsOf — 로트 목록 재료를 모은다 (포지션 · 장부 이름 · 시세 · 분할매도 실현손익).
+func lotsOf(ctx context.Context, eng *engine.Engine, price func(protocol.Symbol) (float64, bool),
+	mode protocol.Mode) ([]lots.Lot, []lots.Group, error) {
+	realized, err := eng.OpenRealized(ctx, mode)
+	if err != nil {
+		return nil, nil, err
+	}
+	ls, gs := lots.Build(lots.Inputs{
+		Now: time.Now().UTC(), Positions: eng.Positions(), BookOf: eng.BookName,
+		Price: price, Realized: realized,
+	})
+	return ls, gs, nil
+}
+
 // accountProvider — 「계좌가 불어나는지 줄어드는지」를 `/v1/state` 에 싣는다.
 //
 // ★ 실패를 0 으로 채우지 않는다. 잔고 조회가 실패했는데 0 을 내면 사용자는 파산한 줄 알고,
@@ -364,5 +641,74 @@ func accountProvider(br broker.Broker, price func(protocol.Symbol) (float64, boo
 		}
 		acc.Equity = acc.Deposit + acc.Holdings
 		return acc
+	}
+}
+
+// exitCutoff — 장 시간을 무시하는 테스트에선 15:15 상한도 끈다 (장 밖 시각에 돌리면 모든 로트가 곧바로 팔린다).
+func exitCutoff(cfg config.Config) string {
+	if cfg.IgnoreMarketHours {
+		return ""
+	}
+	return cfg.KRXExitCutoff
+}
+
+func sessionOrNil(c *session.Calendar, ignore bool) *session.Calendar {
+	if ignore {
+		return nil
+	}
+	return c
+}
+
+func canEnter(c *session.Calendar, ignore bool) func(protocol.Symbol, time.Time) bool {
+	if ignore {
+		return nil
+	}
+	return func(s protocol.Symbol, now time.Time) bool { return c.CanEnter(s.Exchange, now) }
+}
+
+// labelSet — "a,b,c" → 집합.
+func labelSet(csv string) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range strings.Split(csv, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out[s] = true
+		}
+	}
+	return out
+}
+
+// brokerExchange — 실브로커가 다루는 거래소 (점검 시간·장 밖 틱 조절용). paper 는 둘 다라 빈 값.
+func brokerExchange(b string) string {
+	switch b {
+	case "kiwoom":
+		return "KRX"
+	case "upbit":
+		return "UPBIT"
+	}
+	return ""
+}
+
+func refCheck(feed, fallback func(protocol.Symbol) (float64, bool)) func(protocol.Symbol) (float64, bool) {
+	if feed != nil {
+		return feed
+	}
+	return fallback
+}
+
+// markFirst — 신호원(flat6)이 실어 보낸 가격을 먼저 쓰고, 없으면 fallback.
+//
+// ★ 순서가 중요하다. flat6 는 판단한 그 순간의 호가를 보내고, 콕핏의 REST 조회는 몇 초 늦다 —
+// paper 체결가가 도장 원장과 대조되려면 **판단자가 본 가격**이어야 한다.
+func markFirst(mark, fallback func(protocol.Symbol) (float64, bool)) func(protocol.Symbol) (float64, bool) {
+	return func(s protocol.Symbol) (float64, bool) {
+		if mark != nil {
+			if p, ok := mark(s); ok {
+				return p, true
+			}
+		}
+		if fallback != nil {
+			return fallback(s)
+		}
+		return 0, false
 	}
 }

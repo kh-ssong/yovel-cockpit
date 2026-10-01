@@ -9,9 +9,11 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/kh-ssong/yovel-cockpit/internal/book"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/reconcile"
 	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
@@ -42,10 +44,20 @@ type Config struct {
 	// EngineBudget — 이 콕핏에 붙은 엔진의 예산. 사용자가 정한다 (엔진은 비중만 보낸다).
 	// ★ 슬롯당이 아니라 엔진 전체다 (protocol.md §7.1).
 	EngineBudget float64
+	// Books — 활성화된 전략별 장부 (internal/book). nil 이면 모든 소스가 EngineBudget 하나를 쓴다.
+	Books *book.Set
+	// OnInactive — 활성화되지 않은 (kid, scope) 가 진입을 지시했다. 사람에게 알리는 자리.
+	// ★ 조용히 거절만 하면 "flat6 는 보냈다는데 콕핏은 안 샀다" 를 아무도 모른다. 비동기여야 한다.
+	OnInactive func(kid, scope string, n int)
 	// Price — 참조가. 브로커가 붙기 전에는 없다.
 	Price func(protocol.Symbol) (float64, bool)
 	// Market — 종목별 주문 제약.
 	Market func(protocol.Symbol) sizing.Market
+	// RefCheckPrice · RefMaxDev — 신호가(entry.ref_price) 검증 (reconcile.Options 주석).
+	RefCheckPrice func(protocol.Symbol) (float64, bool)
+	RefMaxDev     float64
+	// CanEnter — (종목, 시각) → 새 진입 가능 여부 (internal/session). nil 이면 안 본다.
+	CanEnter func(protocol.Symbol, time.Time) bool
 }
 
 type Engine struct {
@@ -55,21 +67,50 @@ type Engine struct {
 	startedAt time.Time
 	guard     *protocol.Guard
 
-	target     *protocol.IntentTarget
-	appliedSeq uint64
+	// targets — **소스(kid × scope)마다** 마지막 목표 스냅샷 (pitwall architecture.md §4).
+	// ★ 하나로 두면 나중 스냅샷이 다른 소스의 목표를 지워 그쪽 포지션이 유령이 된다.
+	targets map[source]*sourceTarget
 	// envelopeEntryOK — 마지막 목표 봉투가 진입까지 허용했는가 (만료 여부).
-	envelopeEntryOK bool
 
 	positions map[string]protocol.Position
 
 	paused          bool
 	blockEntryUntil *time.Time
 	circuitBreaker  bool
+	// guardReason — 마지막 가드 변경 사유 (일일 손실 한도가 건 것인지 가려 다음 날 풀 때 쓴다).
+	guardReason string
 	// liquidateAll — de-risk liquidate 가 걸린 상태. 새 목표가 와도 유지된다.
 	liquidateAll bool
 
 	// terminal — 이미 끝난 intent_id 캐시 (원장에서 복원).
 	terminal map[string]struct{}
+
+	// closes — 최근 종결 로트 (state.snapshot.recent_closes). 기억만 한다 — 재시작하면 비어도 된다
+	// (진실은 원장이고, 이건 발행자가 "상태 조회 사이에 끝난 것" 을 알게 하는 창일 뿐이다).
+	closes []protocol.ClosedLot
+
+	// marks — 신호원이 목표에 실어 보낸 가격 (종목 → 가장 최근 값).
+	//
+	// ★ 별도 락이다. 계획(planLocked)은 e.mu 를 쥔 채 시세를 부르는데, paper 의 시세가 곧
+	// 이 marks 라서 같은 락을 쓰면 **자기 자신을 기다리는 교착**이 된다.
+	marksMu sync.Mutex
+	marks   map[protocol.Symbol]mark
+}
+
+type source struct{ kid, scope string }
+
+type sourceTarget struct {
+	it  protocol.IntentTarget
+	seq uint64
+	// entryOK — 마지막 봉투가 진입까지 허용했는가 (만료 여부).
+	entryOK bool
+}
+
+func sourceOf(p protocol.Position) source { return source{p.Kid, p.Scope} }
+
+type mark struct {
+	price float64
+	at    time.Time
 }
 
 func New(cfg Config, now time.Time) *Engine {
@@ -82,8 +123,31 @@ func New(cfg Config, now time.Time) *Engine {
 		guard:     protocol.NewGuard(),
 		positions: map[string]protocol.Position{},
 		terminal:  map[string]struct{}{},
+		marks:     map[protocol.Symbol]mark{},
+		targets:   map[source]*sourceTarget{},
 	}
 }
+
+// Mark 는 신호원이 보낸 최근 가격을 준다. maxAge 보다 늙었으면 없는 것으로 친다 —
+// 늙은 가격으로 체결시키면 paper 손익이 조용히 틀린다.
+func (e *Engine) Mark(s protocol.Symbol, now time.Time, maxAge time.Duration) (float64, bool) {
+	e.marksMu.Lock()
+	defer e.marksMu.Unlock()
+	m, ok := e.marks[s]
+	if !ok || m.price <= 0 {
+		return 0, false
+	}
+	if maxAge > 0 && now.Sub(m.at) > maxAge {
+		return 0, false
+	}
+	return m.price, true
+}
+
+// Policy — 봉투 판정 정책 (재시작 흉내 등 테스트가 같은 정책으로 엔진을 다시 만들 때).
+func (e *Engine) Policy() protocol.Policy { return e.cfg.Policy }
+
+// Books 는 장부 설정을 준다 (nil 가능).
+func (e *Engine) Books() *book.Set { return e.cfg.Books }
 
 // Apply 는 다운링크 한 통을 받아 판정하고 상태에 반영한다. 반환값이 곧 업링크 ack 다.
 func (e *Engine) Apply(raw []byte, now time.Time) protocol.Ack {
@@ -112,10 +176,39 @@ func (e *Engine) Apply(raw []byte, now time.Time) protocol.Ack {
 			ack.Codes = append(ack.Codes, protocol.CodeSchema)
 			return ack
 		}
-		e.target = &it
-		e.appliedSeq = ack.RefSeq
-		e.envelopeEntryOK = adm.EntryAllowed
-		ack.PerIntent = e.planLocked(now).Acks
+		src := source{scope: it.Scope}
+		if adm.Env.Sig != nil {
+			src.kid = adm.Env.Sig.Kid
+		}
+		e.targets[src] = &sourceTarget{it: it, seq: ack.RefSeq, entryOK: adm.EntryAllowed}
+		e.marksMu.Lock()
+		for _, t := range it.Targets {
+			if t.MarkPrice <= 0 {
+				continue
+			}
+			// mark_at 이 없으면 봉 시각을 쓴다 — 수신 시각을 쓰면 늙은 값이 새것처럼 보인다.
+			at := it.AsOfBar
+			if t.MarkAt != nil {
+				at = *t.MarkAt
+			}
+			e.marks[t.Symbol] = mark{price: t.MarkPrice, at: at}
+		}
+		e.marksMu.Unlock()
+		// ack 은 **이 소스의** 판정만 싣는다 — 다른 소스의 거절이 섞이면 발행자가 오독한다.
+		ack.PerIntent = e.planSourceLocked(src, now).Acks
+		if e.cfg.OnInactive != nil {
+			n := 0
+			for _, a := range ack.PerIntent {
+				for _, c := range a.Codes {
+					if c == protocol.CodeInactive {
+						n++
+					}
+				}
+			}
+			if n > 0 {
+				e.cfg.OnInactive(src.kid, src.scope, n)
+			}
+		}
 
 	case protocol.TypeCmdDerisk:
 		var c protocol.CmdDerisk
@@ -150,6 +243,23 @@ func (e *Engine) applyDerisk(c protocol.CmdDerisk) {
 }
 
 // persistGuardsLocked — ★ 재시작하면 풀리는 일시정지는 안전장치가 아니다.
+// SetCircuitBreaker — 로컬 서킷브레이커 (신규 진입만 막는다 — 청산은 계속). 일일 손실 한도가 쓴다.
+// ★ 영속된다 — 재시작으로 풀리는 차단은 안전장치가 아니다.
+func (e *Engine) SetCircuitBreaker(on bool, reason string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.circuitBreaker = on
+	e.guardReason = reason
+	e.persistGuardsLocked(reason)
+}
+
+// CircuitBreaker — 지금 걸려 있는가와 그 사유.
+func (e *Engine) CircuitBreaker() (bool, string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.circuitBreaker, e.guardReason
+}
+
 func (e *Engine) persistGuardsLocked(reason string) {
 	if e.cfg.Store == nil {
 		return
@@ -180,6 +290,7 @@ func (e *Engine) Restore(ctx context.Context) error {
 	}
 	e.paused, e.blockEntryUntil = g.Paused, g.BlockEntryUntil
 	e.circuitBreaker, e.liquidateAll = g.CircuitBreaker, g.LiquidateAll
+	e.guardReason = g.Reason
 
 	term, err := e.cfg.Store.TerminalIntents(ctx)
 	if err != nil {
@@ -198,6 +309,29 @@ func (e *Engine) Restore(ctx context.Context) error {
 		e.positions[p.IntentID] = p
 	}
 	return nil
+}
+
+// recentCloseWindow — recent_closes 에 남기는 시간.
+const recentCloseWindow = 30 * time.Minute
+
+// NoteClose — 종결된 로트의 결말을 기억한다 (state.snapshot.recent_closes).
+func (e *Engine) NoteClose(c protocol.ClosedLot) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closes = append(e.closes, c)
+	if len(e.closes) > 500 {
+		e.closes = e.closes[len(e.closes)-500:]
+	}
+}
+
+func (e *Engine) recentClosesLocked(now time.Time) []protocol.ClosedLot {
+	out := []protocol.ClosedLot{}
+	for _, c := range e.closes {
+		if now.Sub(c.At) <= recentCloseWindow {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // MarkClosed 는 목표를 종결 처리한다 (청산 체결 후 호출).
@@ -225,6 +359,17 @@ func (e *Engine) SetPositions(ps []protocol.Position) {
 	for _, p := range ps {
 		e.positions[p.IntentID] = p
 	}
+}
+
+// Positions 는 지금 들고 있다고 아는 포지션들 (복사본).
+func (e *Engine) Positions() []protocol.Position {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]protocol.Position, 0, len(e.positions))
+	for _, p := range e.positions {
+		out = append(out, p)
+	}
+	return out
 }
 
 // UpsertPosition 은 포지션 하나를 갱신한다 (브로커 조회 결과 또는 방금 체결된 진입).
@@ -255,22 +400,105 @@ func (e *Engine) planLocked(now time.Time) reconcile.Plan {
 		}
 		return plan
 	}
-	if e.target == nil {
+
+	// 소스마다 따로 계획하고 합친다. ★ 순서를 고정한다(map 순회는 무작위) — 주문 상한에
+	// 걸려 잘릴 때 어느 소스가 잘리는지가 매번 달라지면 재현이 안 된다.
+	keys := make([]source, 0, len(e.targets))
+	for k := range e.targets {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].kid != keys[j].kid {
+			return keys[i].kid < keys[j].kid
+		}
+		return keys[i].scope < keys[j].scope
+	})
+
+	var plan reconcile.Plan
+	for _, k := range keys {
+		p := e.planSourceLocked(k, now)
+		if p.AsOfBar.After(plan.AsOfBar) {
+			plan.AsOfBar = p.AsOfBar
+		}
+		plan.Enters = append(plan.Enters, p.Enters...)
+		plan.Exits = append(plan.Exits, p.Exits...)
+		plan.StopUpdates = append(plan.StopUpdates, p.StopUpdates...)
+		plan.TpUpdates = append(plan.TpUpdates, p.TpUpdates...)
+		plan.Orphans = append(plan.Orphans, p.Orphans...)
+		plan.Acks = append(plan.Acks, p.Acks...)
+		plan.DroppedEnters += p.DroppedEnters
+		plan.Notes = append(plan.Notes, p.Notes...)
+	}
+	// 상한은 계좌 전체의 폭주 차단이라 합친 뒤 한 번 더 건다.
+	reconcile.ApplyOrderCap(&plan, e.cfg.MaxOrders)
+	return plan
+}
+
+// planSourceLocked — 한 소스의 목표를 **그 소스가 만든 포지션**하고만 맞춘다.
+// 다른 소스의 포지션은 보지도, 유령으로 신고하지도, 예산으로 세지도 않는다.
+func (e *Engine) planSourceLocked(src source, now time.Time) reconcile.Plan {
+	st := e.targets[src]
+	if st == nil {
 		return reconcile.Plan{}
 	}
+	var mine []protocol.Position
+	for _, p := range e.positions {
+		if e.ownsLocked(src, p) {
+			mine = append(mine, p)
+		}
+	}
+	_, budget, active := e.cfg.Books.Of(src.kid, src.scope)
+	if e.cfg.Books == nil {
+		budget, active = e.cfg.EngineBudget, true
+	}
 
-	return reconcile.Build(*e.target, actual, reconcile.Options{
+	plan := reconcile.Build(st.it, mine, reconcile.Options{
 		Now:             now,
-		EntryAllowed:    e.entryAllowedLocked(now),
+		EntryAllowed:    e.entryAllowedLocked(st, now),
 		Paused:          e.paused,
 		CircuitBreaker:  e.circuitBreaker,
 		BlockEntryUntil: e.blockEntryUntil,
 		MaxOrders:       e.cfg.MaxOrders,
-		Budget:          e.cfg.EngineBudget,
+		Budget:          budget,
+		Inactive:        !active,
+		RefCheckPrice:   e.cfg.RefCheckPrice,
+		RefMaxDev:       e.cfg.RefMaxDev,
+		CanEnter:        e.canEnterAt(now),
 		Price:           e.cfg.Price,
 		Market:          e.cfg.Market,
 		Terminal:        e.isTerminalLocked,
 	})
+	for i := range plan.Enters {
+		plan.Enters[i].Kid, plan.Enters[i].Scope = src.kid, src.scope
+	}
+	return plan
+}
+
+// ownsLocked — 이 포지션이 이 소스의 것인가.
+//
+// ★ kid 가 빈 포지션은 v2(소스 1급화) 이전에 생긴 것이다. scope 가 같은 소스가 **하나뿐일 때만**
+// 그 소스에 귀속시킨다 — 둘 이상이면 누구 것인지 모르므로 아무도 건드리지 않는다(로컬 청산 층만 지킨다).
+func (e *Engine) ownsLocked(src source, p protocol.Position) bool {
+	if sourceOf(p) == src {
+		return true
+	}
+	if p.Kid != "" || p.Scope != src.scope {
+		return false
+	}
+	n := 0
+	for k := range e.targets {
+		if k.scope == src.scope {
+			n++
+		}
+	}
+	return n == 1
+}
+
+func (e *Engine) canEnterAt(now time.Time) func(protocol.Symbol) bool {
+	if e.cfg.CanEnter == nil {
+		return nil
+	}
+	return func(s protocol.Symbol) bool { return e.cfg.CanEnter(s, now) }
 }
 
 func (e *Engine) isTerminalLocked(intentID string) bool {
@@ -281,18 +509,55 @@ func (e *Engine) isTerminalLocked(intentID string) bool {
 // entryAllowedLocked — 진입이 살아 있는 조건 두 가지를 모두 본다:
 // 봉투가 만료되지 않았고, 목표 스냅샷이 늙지 않았을 것.
 // ★ 둘 중 어느 쪽이 꺼져도 청산은 막지 않는다.
-func (e *Engine) entryAllowedLocked(now time.Time) bool {
-	if e.target == nil || !e.envelopeEntryOK {
+func (e *Engine) entryAllowedLocked(st *sourceTarget, now time.Time) bool {
+	if st == nil || !st.entryOK {
 		return false
 	}
-	return !protocol.Stale(e.target.AsOfBar, now, e.cfg.TargetMaxAge)
+	return !protocol.Stale(st.it.AsOfBar, now, e.cfg.TargetMaxAge)
 }
 
-func (e *Engine) Snapshot() protocol.StateSnapshot {
+// anyEntryAllowedLocked — 진입 가능한 소스가 하나라도 있는가 (상태 표시용).
+func (e *Engine) anyEntryAllowedLocked(now time.Time) bool {
+	for _, st := range e.targets {
+		if e.entryAllowedLocked(st, now) {
+			return true
+		}
+	}
+	return false
+}
+
+// seqByScopeLocked — scope 별 적용 seq (같은 scope 를 여러 kid 가 내면 그중 최댓값).
+func (e *Engine) seqByScopeLocked() map[string]uint64 {
+	if len(e.targets) == 0 {
+		return nil
+	}
+	out := map[string]uint64{}
+	for k, st := range e.targets {
+		if st.seq > out[k.scope] {
+			out[k.scope] = st.seq
+		}
+	}
+	return out
+}
+
+// maxSeqLocked — 적용된 seq 중 가장 큰 값 (상태 표시용. 소스별 seq 는 Guard 가 따로 센다).
+func (e *Engine) maxSeqLocked() uint64 {
+	var m uint64
+	for _, st := range e.targets {
+		if st.seq > m {
+			m = st.seq
+		}
+	}
+	return m
+}
+
+func (e *Engine) Snapshot() protocol.StateSnapshot { return e.SnapshotAt(time.Now().UTC()) }
+
+// SnapshotAt — now 기준 스냅샷 (테스트·리플레이가 가짜 시계를 쓸 수 있게).
+func (e *Engine) SnapshotAt(now time.Time) protocol.StateSnapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	now := time.Now().UTC()
 	v := version.Get()
 
 	positions := make([]protocol.Position, 0, len(e.positions))
@@ -313,17 +578,19 @@ func (e *Engine) Snapshot() protocol.StateSnapshot {
 		Daemon: protocol.DaemonInfo{
 			Version: v.Version, SHA: v.SHA, StartedAt: &e.startedAt,
 		},
-		Mode:       e.cfg.Mode,
-		AppliedSeq: e.appliedSeq,
+		Mode:              e.cfg.Mode,
+		AppliedSeq:        e.maxSeqLocked(),
+		AppliedSeqByScope: e.seqByScopeLocked(),
 		Guards: protocol.Guards{
 			Paused:          e.paused,
 			BlockEntryUntil: e.blockEntryUntil,
 			CircuitBreaker:  e.circuitBreaker,
 			// ★ 목표를 받은 적이 없으면 "진입 가능"이 아니라 "늙음"이다.
 			// 빈 상태를 정상으로 보이게 두면 아무도 배선이 빠진 걸 눈치채지 못한다.
-			TargetStale: !e.entryAllowedLocked(now),
+			TargetStale: !e.anyEntryAllowedLocked(now),
 		},
-		Positions: positions,
-		Orphans:   orphans,
+		Positions:    positions,
+		Orphans:      orphans,
+		RecentCloses: e.recentClosesLocked(now),
 	}
 }

@@ -54,6 +54,9 @@ const (
 	// ★ 서명이 유효해도 거절한다. 서명은 "누가 만들었나" 를 증명하지 "누구에게 가는 것인가" 는
 	// 증명하지 않는다 — 릴레이는 A 의 진짜 서명된 목표를 B 에게 배달할 수 있다.
 	CodeAcct RejectCode = "E_ACCT"
+	// CodeInactive — 이 콕핏에서 활성화하지 않은 (kid, scope) 의 진입. 사용자가 끈 전략이거나
+	// 장부 설정이 없는 전략이다. ★ 청산은 막지 않는다 — 끈다고 보유가 무방비가 되면 안 된다.
+	CodeInactive RejectCode = "E_INACTIVE"
 )
 
 // Envelope 는 모든 메시지가 공유하는 껍데기.
@@ -107,6 +110,12 @@ func SafeBookState(s BookState) BookState {
 
 // IntentTarget 은 이 프로토콜의 본체 — 이벤트가 아니라 목표상태 전체 스냅샷이다.
 type IntentTarget struct {
+	// Scope — 발행 범위 (`카테고리/playbook`, 예: "intraday/d205"). pitwall architecture.md §12.
+	//
+	// ★ 스냅샷의 의미는 "계정 전체의 목표" 가 아니라 **"이 (kid, scope) 의 전체 목표"** 다.
+	// 한 발행자가 여러 전략을 내면 전략마다 따로 스냅샷을 보내고, 서로를 지우지 않는다.
+	// 비어 있으면 그 kid 의 기본 범위 하나로 읽는다 (scope 이전 발행자와 호환).
+	Scope     string    `json:"scope,omitempty"`
 	AsOfBar   time.Time `json:"as_of_bar"`
 	BookState BookState `json:"book_state"`
 	Targets   []Target  `json:"targets"`
@@ -120,14 +129,27 @@ const (
 )
 
 type Target struct {
-	IntentID string  `json:"intent_id"`
-	Slot     string  `json:"slot"`
-	Symbol   Symbol  `json:"symbol"`
-	Side     string  `json:"side"`
-	Want     Want    `json:"want"`
-	Weight   float64 `json:"weight,omitempty"` // 슬롯 예산 대비 비중. ★ 원화가 아니다 (§7)
-	Entry    *Entry  `json:"entry,omitempty"`
-	Exit     *Exit   `json:"exit,omitempty"`
+	IntentID string `json:"intent_id"`
+	// Group — 같은 포지션으로 묶을 로트들의 이름 (분할매수, 2026-09-30). 선택.
+	// ★ 추가 매수는 새 intent_id(= 새 로트)로 낸다 — 진입가·시점이 달라서 로트가 따로여야 한다.
+	// group 은 UI·성과를 "포지션 단위" 로 묶어 보이기 위한 표지일 뿐 집행에 쓰지 않는다.
+	Group  string  `json:"group,omitempty"`
+	Slot   string  `json:"slot"`
+	Symbol Symbol  `json:"symbol"`
+	Side   string  `json:"side"`
+	Want   Want    `json:"want"`
+	Weight float64 `json:"weight,omitempty"` // 슬롯 예산 대비 비중. ★ 원화가 아니다 (§7)
+	Entry  *Entry  `json:"entry,omitempty"`
+	Exit   *Exit   `json:"exit,omitempty"`
+
+	// MarkPrice / MarkAt — 신호를 낸 쪽이 본 **지금 가격** (선택).
+	//
+	// ★ ref_price 는 진입 때만 온다. 그래서 청산(want=flat)·TP 평가 때 콕핏은 가격을 몰랐고,
+	// paper 는 평단으로 근사 체결했다 — 손익이 0 근처로 뭉개져 전략 검증이 안 됐다.
+	// 시세는 flat6 가 이미 들고 있으므로(키움 WS 독점) 콕핏이 따로 조회하지 않고 이걸 쓴다.
+	// 청산이면 매수1호가(내가 팔 수 있는 값), 보유면 현재가를 싣는다.
+	MarkPrice float64    `json:"mark_price,omitempty"`
+	MarkAt    *time.Time `json:"mark_at,omitempty"`
 }
 
 type Entry struct {
@@ -145,6 +167,12 @@ type Exit struct {
 	TpPrice    float64    `json:"tp_price,omitempty"`
 	TpDelegate bool       `json:"tp_delegate,omitempty"`
 	TimeExitAt *time.Time `json:"time_exit_at,omitempty"`
+	// HoldFrac — 이 로트를 **처음 산 수량의 몇 %만 남길지** (분할매도, 2026-09-30). 0~1, 선택.
+	//
+	// ★ 줄이기만 한다 — 이미 그 이하로 들고 있으면 아무것도 안 한다(되사지 않는다). 그래서 같은
+	// 스냅샷이 다시 와도 두 번 팔지 않는다(목표상태 멱등). 0 은 want=flat 과 같다.
+	// 남길 수량 = round(최초 진입 수량 × hold_frac) 을 주문 단위로.
+	HoldFrac *float64 `json:"hold_frac,omitempty"`
 }
 
 type DeriskAction string
@@ -194,13 +222,36 @@ type StateSnapshot struct {
 	Daemon     DaemonInfo `json:"daemon"`
 	Mode       Mode       `json:"mode"` // ★ 생략 불가 — paper/live 합산은 허위 표시
 	AppliedSeq uint64     `json:"applied_seq"`
-	Guards     Guards     `json:"guards"`
-	Positions  []Position `json:"positions"`
+	// AppliedSeqByScope — 발행 범위(scope)별로 적용된 seq (2026-09-30).
+	// ★ 발행자는 **자기 scope 의 값**과 비교해야 한다. 전역 applied_seq 는 여러 소스 중 최댓값이라,
+	// 전략이 여럿이면 남의 seq 를 자기 것으로 읽고 "콕핏이 앞섰다" 고 오판한다 (flat6 publisher 가 읽는다).
+	AppliedSeqByScope map[string]uint64 `json:"applied_seq_by_scope,omitempty"`
+	Guards            Guards            `json:"guards"`
+	Positions         []Position        `json:"positions"`
 	// ★ omitempty 를 붙이지 않는다: "유령 없음(빈 배열)" 과 "안 봤음(필드 부재)" 은 다른 말이다.
 	Orphans []Symbol `json:"orphans"`
+	// RecentCloses — 최근(30분) 종결된 로트 (2026-09-30).
+	// ★ 발행자는 positions 만 보면 **상태 조회 사이에 열리고 닫힌 로트**(빠른 TP·stop)를 영영 못 본다 —
+	//   flat6 dummy 통합 테스트에서 진입 1.4초 만에 TP 로 닫혀 발행자가 "진입 대기" 에 갇혔다.
+	RecentCloses []ClosedLot `json:"recent_closes"`
 	// Account — 계좌가 불어나는지 줄어드는지. ★ 조회 실패 시 nil 이고, **0 으로 채우지 않는다**
 	// (잔고 0 과 «못 봤음» 을 합치면 사용자가 파산한 줄 안다).
 	Account *Account `json:"account,omitempty"`
+}
+
+// ClosedLot — 종결된 로트 하나의 결말.
+type ClosedLot struct {
+	IntentID string `json:"intent_id"`
+	Kid      string `json:"kid,omitempty"`
+	Scope    string `json:"scope,omitempty"`
+	Group    string `json:"group,omitempty"`
+	Symbol   Symbol `json:"symbol"`
+	// Reason — flat · time · stop · tp · reduce · derisk · manual · unknown(매수 결과 미상)
+	Reason string `json:"reason"`
+	// Price — 마지막 청산 체결가. 0 = 모름 (브로커 사후 감지 등).
+	Price       float64   `json:"price,omitempty"`
+	RealizedPct float64   `json:"realized_pct,omitempty"`
+	At          time.Time `json:"at"`
 }
 
 // Account — 예수금·평가액. paper 면 가상, live 면 진짜다 (`Mode` 로 구분).
@@ -216,10 +267,13 @@ type Account struct {
 }
 
 type Position struct {
-	IntentID      string     `json:"intent_id"`
-	Slot          string     `json:"slot,omitempty"`
-	Symbol        Symbol     `json:"symbol"`
-	Qty           float64    `json:"qty"`
+	IntentID string  `json:"intent_id"`
+	Group    string  `json:"group,omitempty"`
+	Slot     string  `json:"slot,omitempty"`
+	Symbol   Symbol  `json:"symbol"`
+	Qty      float64 `json:"qty"`
+	// EntryQty — 이 로트를 **처음 산 수량**. 분할매도(hold_frac)의 기준이다. 0 = 모름(옛 로트).
+	EntryQty      float64    `json:"entry_qty,omitempty"`
 	AvgEntryPrice float64    `json:"avg_entry_price"`
 	EntryAt       *time.Time `json:"entry_at,omitempty"`
 	StopArmed     float64    `json:"stop_armed,omitempty"`
@@ -228,9 +282,17 @@ type Position struct {
 	// (2026-08-17 실측: 몇 분 만에 paper-tp-38 → 334). 라이브에선 주문 유량 문제이자, 더
 	// 나쁘게는 취소와 재발행 **사이에 TP 가 브로커에 없는 창**이 생긴다 — 하필 그 층의
 	// 존재 이유가 "데몬도 서버도 죽어도 이건 체결된다" 이다.
-	TpArmed       float64    `json:"tp_armed,omitempty"`
-	TpOrderID     string     `json:"tp_order_id,omitempty"`
-	UnrealizedPct float64    `json:"unrealized_pct,omitempty"`
+	TpArmed   float64 `json:"tp_armed,omitempty"`
+	TpOrderID string  `json:"tp_order_id,omitempty"`
+	// TimeExitAt — 이 시각이 되면 콕핏이 **스스로** 판다 (데드맨). 시세가 없어도 동작한다.
+	TimeExitAt *time.Time `json:"time_exit_at,omitempty"`
+	// Kid · Scope — 이 포지션을 만든 소스 (서명키 × 발행 범위). ★ 이 소스의 목표만 이 포지션을
+	// 건드린다 — 다른 소스의 스냅샷이 이걸 유령으로 신고하거나 팔지 않는다 (pitwall §4).
+	Kid           string  `json:"kid,omitempty"`
+	Scope         string  `json:"scope,omitempty"`
+	UnrealizedPct float64 `json:"unrealized_pct,omitempty"`
+	// Pending — 진입 주문이 접수됐지만 아직 체결 확정 전이다 (수량·가격은 추정). 2026-10-01.
+	Pending bool `json:"pending,omitempty"`
 }
 
 type EventOrder struct {

@@ -34,7 +34,12 @@ type Holding struct {
 type Cash struct {
 	Deposit   float64 // L1 — 계좌에 있는 돈
 	Orderable float64 // L2 — 지금 실제로 주문에 쓸 수 있는 돈
-	Currency  string
+	// Seed — L1. 미수 없이 현금으로 살 수 있는 한도 (보유 종목 증거금 **미차감**).
+	// ★ 예산을 이것과 비교한다. Orderable 은 보유 증거금이 영구히 깎아 먹어 시드를 과소평가하고
+	// (reflex 실측 −49%), Deposit 은 해외 원화배정처럼 **빠져나간 돈**을 못 보여준다.
+	// 0 = 드라이버가 모른다.
+	Seed     float64
+	Currency string
 }
 
 type Quote struct {
@@ -106,6 +111,9 @@ var (
 	ErrInsufficient   = errors.New("주문가능금액 부족")
 	ErrUnknownSymbol  = errors.New("모르는 종목")
 	ErrNotEnoughShare = errors.New("매도 가능 수량 부족")
+	// ErrMaybeSent — 주문 요청이 서버에 닿았는지 모른다 (네트워크 오류·5xx·체결 확인 실패).
+	// ★ 호출자는 같은 주문을 **다시 내면 안 된다** — 이미 나갔다면 두 번 산다.
+	ErrMaybeSent = errors.New("주문은 나갔을 수 있다")
 )
 
 // SlippageBp 는 기준가 대비 체결 슬리피지를 bp 로 잰다 (매수는 비싸게 사면 +).
@@ -120,6 +128,73 @@ func SlippageBp(side string, ref, filled float64) float64 {
 		d = -d // 싸게 팔면 손해 = +
 	}
 	return d
+}
+
+// LimitStatus — 걸어 둔 지정가(TP) 하나의 체결 현황. 주문번호로 직접 묻는다.
+//
+// ★ 왜 필요한가: 같은 종목을 로트 여럿이 들고 있으면, 한 로트의 TP 가 체결돼도 계좌엔 그 종목이
+// 남아 있다 → "종목이 계좌에서 사라졌나" 로는 **못 알아챈다.** 그 로트가 장부에 남으면 나중에
+// 그걸 팔 때 **다른 로트의 주식을 판다.**
+type LimitStatus struct {
+	FilledQty float64
+	AvgPrice  float64
+	FeeKRW    float64
+	FilledAt  time.Time // 모르면 zero
+	// Open — 주문이 아직 살아 있다 (남은 수량이 체결될 수 있다). 모르면 true 로 둔다(보수적).
+	Open bool
+	// Known — 거래소가 이 주문을 안다 (조회에 나왔다). false 면 Open 은 추정이다.
+	Known bool
+}
+
+// Submitted — 거래소가 **접수한** 주문 (체결 전).
+type Submitted struct {
+	OrderID string
+	// Qty — 실제로 낸 수량 (사전 축소·855056 재주문 반영). 금액 주문(업비트 시장가 매수)은 추정치.
+	Qty         float64
+	RefPrice    float64
+	SubmittedAt time.Time
+}
+
+// Submitter — 주문을 **내고 바로 돌아오는** 브로커. 체결은 LimitStatus 로 따로 추적한다.
+//
+// ★ 왜 (reflex 분석 2026-10-01): 체결을 기다리는 동안 집행 루프가 멈추면 ① 다른 로트의 청산이 밀리고
+// ② 동시호가·VI 처럼 **체결이 늦게 오는 게 정상**인 구간에서 대기 시간을 넘겨 자기 주문을 취소하고
+// ③ 대기 중에 데몬이 죽으면 주문번호가 원장에 없어 재시작 뒤 같은 목표로 또 산다.
+// 접수 즉시 주문번호를 원장에 남기고, 체결은 루프와 따로 추적한다.
+type Submitter interface {
+	SubmitBuy(ctx context.Context, req OrderRequest) (Submitted, error)
+	SubmitSell(ctx context.Context, req OrderRequest) (Submitted, error)
+	LimitChecker
+}
+
+// LimitChecker — 주문(지정가·시장가) 체결을 주문번호로 확인할 수 있는 브로커 (실브로커).
+type LimitChecker interface {
+	LimitStatus(ctx context.Context, s protocol.Symbol, orderID string) (LimitStatus, error)
+}
+
+// ExecFill — 브로커가 아는 체결 한 건 (주문 단위 합).
+type ExecFill struct {
+	OrderID string
+	Qty     float64
+	Price   float64 // 평균 체결가. 0 = 모름
+	FeeKRW  float64
+	At      time.Time
+}
+
+// FillLister — 오늘의 매도 체결을 주문번호와 함께 알려주는 브로커. 콕핏 밖 매도(HTS·앱)의 체결가를 찾는 데 쓴다.
+type FillLister interface {
+	SellFills(ctx context.Context, s protocol.Symbol) ([]ExecFill, error)
+}
+
+// SymbolStatus — 종목의 매매 상태 (감리구분·투자유의). 진입 차단에 쓴다.
+type SymbolStatus struct {
+	// Labels — 해당하는 상태 이름들 (예: "투자경고", "단기과열", "거래정지"). 정상이면 비어 있다.
+	Labels []string
+}
+
+// StatusChecker — 종목 상태를 알려주는 브로커 (키움 ka10100).
+type StatusChecker interface {
+	SymbolStatus(ctx context.Context, s protocol.Symbol) (SymbolStatus, error)
 }
 
 // LimitFill — **브로커가 스스로 들고 있던 지정가**가 체결된 건.

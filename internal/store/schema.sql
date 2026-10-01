@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS intents (
   intent_id       TEXT PRIMARY KEY,
   slot            TEXT NOT NULL,
+  kid             TEXT NOT NULL DEFAULT '',  -- 소스 (서명키). v2
+  scope           TEXT NOT NULL DEFAULT '',  -- 발행 범위 (카테고리/playbook). v2
+  grp             TEXT NOT NULL DEFAULT '',  -- 분할매수 로트 묶음 (target.group). v3
+  entry_qty       REAL NOT NULL DEFAULT 0,   -- 처음 산 수량 — 분할매도(hold_frac) 기준. v3
   exchange        TEXT NOT NULL,
   code            TEXT NOT NULL,
   side            TEXT NOT NULL,
@@ -40,6 +44,8 @@ CREATE INDEX IF NOT EXISTS intents_open ON intents (closed_at) WHERE closed_at I
 CREATE TABLE IF NOT EXISTS orders (
   id              TEXT PRIMARY KEY,          -- ULID. 멱등키 (같은 id 재기록은 무해)
   intent_id       TEXT NOT NULL,
+  kid             TEXT NOT NULL DEFAULT '',  -- ★ 원장에도 소스를 남긴다 — 범위별 성과·과금 감사 (pitwall §12.9). v2
+  scope           TEXT NOT NULL DEFAULT '',
   phase           TEXT NOT NULL,
   exchange        TEXT NOT NULL,
   code            TEXT NOT NULL,
@@ -92,3 +98,15 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 
 CREATE INDEX IF NOT EXISTS outbox_unsent ON outbox (seq) WHERE sent_at IS NULL;
+
+-- working_orders — 접수됐지만 아직 끝나지 않은 주문 (v4).
+-- ★ 체결을 기다리기 **전에** 여기 적는다. 대기 중에 데몬이 죽어도 재시작 뒤 이 주문을 이어서 추적한다
+--   — 없으면 주문번호를 잃고 같은 목표로 또 산다 (reflex 2026-06-24 주문번호 유실 교착과 같은 종류).
+CREATE TABLE IF NOT EXISTS working_orders (
+  order_id   TEXT PRIMARY KEY,
+  intent_id  TEXT NOT NULL,
+  payload    TEXT NOT NULL,   -- store.WorkingOrder JSON
+  created_at TEXT NOT NULL,
+  done_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS working_orders_open ON working_orders(done_at);

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/broker"
@@ -87,6 +88,8 @@ type Broker struct {
 	now    func() time.Time
 	sleep  func(time.Duration)
 	tokens *tokenStore
+	pace   pacer
+	status statusCache
 }
 
 func New(cfg Config) (*Broker, error) {
@@ -129,6 +132,9 @@ func New(cfg Config) (*Broker, error) {
 	return b, nil
 }
 
+// kst — 키움이 주는 시각은 전부 한국 시각이다.
+var kst = time.FixedZone("KST", 9*3600)
+
 func (b *Broker) Name() string { return "kiwoom" }
 
 func (b *Broker) etp(s protocol.Symbol) bool {
@@ -138,9 +144,12 @@ func (b *Broker) etp(s protocol.Symbol) bool {
 // ── 잔고 ────────────────────────────────────────────────────────────────────
 
 type balanceResp struct {
-	Entr     string            `json:"entr"`      // 예수금 (L1)
-	OrdAlowa string            `json:"ord_alowa"` // 주문가능현금 (L2)
-	Rows     []json.RawMessage `json:"stk_cntr_remn"`
+	Entr     string `json:"entr"`      // 예수금 (L1)
+	OrdAlowa string `json:"ord_alowa"` // 주문가능현금 (L2)
+	// 100ord_alow_amt — 증거금률 100% 주문가능금액 = 현금 한도 (L1).
+	// ★ 해외 원화주문 배정이 있으면 이 값이 **이미 깎여서** 온다 — 그래서 예산 점검은 이걸로 한다.
+	Seed100 string            `json:"100ord_alow_amt"`
+	Rows    []json.RawMessage `json:"stk_cntr_remn"`
 }
 
 func (b *Broker) balance(ctx context.Context) (balanceResp, error) {
@@ -161,6 +170,7 @@ func (b *Broker) Cash(ctx context.Context) (broker.Cash, error) {
 	return broker.Cash{
 		Deposit:   num(r.Entr),
 		Orderable: num(r.OrdAlowa),
+		Seed:      num(r.Seed100),
 		Currency:  "KRW",
 	}, nil
 }
@@ -202,6 +212,8 @@ func (b *Broker) Positions(ctx context.Context) ([]broker.Holding, error) {
 func (b *Broker) Quote(ctx context.Context, s protocol.Symbol) (broker.Quote, error) {
 	var out struct {
 		CurPrc string `json:"cur_prc"`
+		Date   string `json:"date"` // YYYYMMDD
+		Tm     string `json:"tm"`   // HHmmss
 	}
 	if err := b.call(ctx, apiQuote, pathCond, map[string]string{"stk_cd": s.Code}, &out); err != nil {
 		return broker.Quote{}, err
@@ -211,7 +223,13 @@ func (b *Broker) Quote(ctx context.Context, s protocol.Symbol) (broker.Quote, er
 	if p <= 0 {
 		return broker.Quote{}, fmt.Errorf("%w: %s (cur_prc=%q)", broker.ErrUnknownSymbol, s.Code, out.CurPrc)
 	}
-	return broker.Quote{Symbol: s, Price: p, AsOf: b.now().UTC()}, nil
+	// ★ 시세의 시각 = 키움이 준 시각(date·tm). 예전엔 "조회한 지금" 이라 거래정지 종목의 몇 시간 전
+	// 가격도 신선해 보였고, 로컬 stop 이 그 가격으로 판정됐다 (reflex 분석 P1). 못 읽으면 조회 시각.
+	asOf := b.now().UTC()
+	if t, err := time.ParseInLocation("20060102150405", strings.TrimSpace(out.Date)+strings.TrimSpace(out.Tm), kst); err == nil {
+		asOf = t.UTC()
+	}
+	return broker.Quote{Symbol: s, Price: p, AsOf: asOf}, nil
 }
 
 func (b *Broker) LotSize(protocol.Symbol) float64       { return 1 }
@@ -240,16 +258,25 @@ func (b *Broker) buyableQty(ctx context.Context, s protocol.Symbol, price float6
 }
 
 func (b *Broker) Buy(ctx context.Context, req broker.OrderRequest) (broker.Fill, error) {
+	sub, err := b.SubmitBuy(ctx, req)
+	if err != nil {
+		return broker.Fill{BrokerOrderID: sub.OrderID, SubmittedAt: sub.SubmittedAt}, err
+	}
+	return b.waitFill(ctx, req.Symbol, sub.OrderID, sub.Qty, "buy", sub.RefPrice, sub.SubmittedAt)
+}
+
+// SubmitBuy — 매수를 내고 접수되면 바로 돌아온다 (체결은 LimitStatus 로).
+func (b *Broker) SubmitBuy(ctx context.Context, req broker.OrderRequest) (broker.Submitted, error) {
 	qty := math.Floor(req.Qty)
 	if qty <= 0 {
-		return broker.Fill{}, fmt.Errorf("%w: 수량 0", broker.ErrInsufficient)
+		return broker.Submitted{}, fmt.Errorf("%w: 수량 0", broker.ErrInsufficient)
 	}
 
 	ref := req.RefPrice
 	if ref <= 0 {
 		q, err := b.Quote(ctx, req.Symbol)
 		if err != nil {
-			return broker.Fill{}, err
+			return broker.Submitted{}, err
 		}
 		ref = q.Price
 	}
@@ -257,7 +284,7 @@ func (b *Broker) Buy(ctx context.Context, req broker.OrderRequest) (broker.Fill,
 	// ★ 사전 축소. 키움이 인정하는 수량보다 많이 부르면 주문 자체가 거부된다.
 	if allow, ok := b.buyableQty(ctx, req.Symbol, ref); ok && allow < qty {
 		if allow <= 0 {
-			return broker.Fill{}, fmt.Errorf("%w: 키움 매수가능수량 0", broker.ErrInsufficient)
+			return broker.Submitted{}, fmt.Errorf("%w: 키움 매수가능수량 0", broker.ErrInsufficient)
 		}
 		qty = allow
 	}
@@ -279,16 +306,40 @@ func (b *Broker) Buy(ctx context.Context, req broker.OrderRequest) (broker.Fill,
 	var out struct {
 		OrdNo string `json:"ord_no"`
 	}
-	if err := b.call(ctx, apiBuy, pathOrder, body, &out); err != nil {
-		return broker.Fill{}, err
+	err := b.call(ctx, apiBuy, pathOrder, body, &out)
+	// ★ kt00011 로 줄였는데도 855056(매수증거금 부족)이 난다 — 바로 앞 매수가 주문가능금액에
+	// 아직 반영되지 않은 채 조회됐을 때다 (D-205 처럼 09:01 에 여러 종목이 몰리면 흔하다).
+	// 거부 메시지에 실린 "N주 매수가능" 으로 **딱 한 번** 다시 낸다. 거부된 주문은 나가지 않았으니
+	// 이중 주문이 아니다. 다음 틱까지 기다리면 수 초짜리 신호는 이미 늦는다.
+	if allow, ok := marginAllowance(err); ok && allow > 0 && allow < qty {
+		qty = allow
+		body["ord_qty"] = strconv.FormatFloat(qty, 'f', -1, 64)
+		submitted = b.now().UTC()
+		err = b.call(ctx, apiBuy, pathOrder, body, &out)
 	}
-	return b.waitFill(ctx, req.Symbol, out.OrdNo, qty, "buy", ref, submitted)
+	if err != nil {
+		return broker.Submitted{SubmittedAt: submitted}, err
+	}
+	if out.OrdNo == "" {
+		return broker.Submitted{SubmittedAt: submitted},
+			fmt.Errorf("주문번호가 비었다 — 체결을 추적할 수 없다 (%w)", broker.ErrMaybeSent)
+	}
+	return broker.Submitted{OrderID: out.OrdNo, Qty: qty, RefPrice: ref, SubmittedAt: submitted}, nil
 }
 
 func (b *Broker) Sell(ctx context.Context, req broker.OrderRequest) (broker.Fill, error) {
+	sub, err := b.SubmitSell(ctx, req)
+	if err != nil {
+		return broker.Fill{BrokerOrderID: sub.OrderID, SubmittedAt: sub.SubmittedAt}, err
+	}
+	return b.waitFill(ctx, req.Symbol, sub.OrderID, sub.Qty, "sell", sub.RefPrice, sub.SubmittedAt)
+}
+
+// SubmitSell — 매도를 내고 접수되면 바로 돌아온다.
+func (b *Broker) SubmitSell(ctx context.Context, req broker.OrderRequest) (broker.Submitted, error) {
 	qty := math.Floor(req.Qty)
 	if qty <= 0 {
-		return broker.Fill{}, fmt.Errorf("%w: 수량 0", broker.ErrNotEnoughShare)
+		return broker.Submitted{}, fmt.Errorf("%w: 수량 0", broker.ErrNotEnoughShare)
 	}
 
 	body := map[string]string{
@@ -309,9 +360,13 @@ func (b *Broker) Sell(ctx context.Context, req broker.OrderRequest) (broker.Fill
 		OrdNo string `json:"ord_no"`
 	}
 	if err := b.call(ctx, apiSell, pathOrder, body, &out); err != nil {
-		return broker.Fill{}, err
+		return broker.Submitted{SubmittedAt: submitted}, err
 	}
-	return b.waitFill(ctx, req.Symbol, out.OrdNo, qty, "sell", req.RefPrice, submitted)
+	if out.OrdNo == "" {
+		return broker.Submitted{SubmittedAt: submitted},
+			fmt.Errorf("주문번호가 비었다 — 체결을 추적할 수 없다 (%w)", broker.ErrMaybeSent)
+	}
+	return broker.Submitted{OrderID: out.OrdNo, Qty: qty, RefPrice: req.RefPrice, SubmittedAt: submitted}, nil
 }
 
 // PlaceTP — 익절 지정가 매도를 브로커에 위임한다. 체결을 기다리지 않는다.
@@ -352,6 +407,24 @@ func (b *Broker) CancelOrder(ctx context.Context, s protocol.Symbol, orderID str
 	return b.call(ctx, apiCancel, pathOrder, body, nil)
 }
 
+// LimitStatus — 걸어 둔 지정가(TP)의 체결 현황 (ka10076, 주문번호 매칭).
+// ★ ka10076 은 금일 체결만 준다 — TP 는 당일 주문이라 충분하다. 미체결 여부는 알 수 없어 Open=true.
+func (b *Broker) LimitStatus(ctx context.Context, s protocol.Symbol, orderID string) (broker.LimitStatus, error) {
+	agg, err := b.fetchFills(ctx, s, orderID)
+	if err != nil {
+		return broker.LimitStatus{Open: true}, err
+	}
+	// ★ 미체결 수량(oso_qty)·상태(ord_stt)가 실리면 주문이 끝났는지 안다. 행이 없으면 모른다(Open=true).
+	st := broker.LimitStatus{FilledQty: agg.qty, FeeKRW: agg.fee, FilledAt: agg.last, Open: true, Known: agg.seen}
+	if agg.seen && agg.closed {
+		st.Open = false
+	}
+	if agg.qty > 0 {
+		st.AvgPrice = agg.amount / agg.qty
+	}
+	return st, nil
+}
+
 // ── 체결 확인 ───────────────────────────────────────────────────────────────
 
 // waitFill 은 주문번호로 체결을 확인한다.
@@ -365,7 +438,7 @@ func (b *Broker) waitFill(ctx context.Context, s protocol.Symbol, ordNo string, 
 	side string, ref float64, submitted time.Time) (broker.Fill, error) {
 
 	if ordNo == "" {
-		return broker.Fill{}, fmt.Errorf("주문번호가 비었다 — 체결을 추적할 수 없다")
+		return broker.Fill{}, fmt.Errorf("주문번호가 비었다 — 체결을 추적할 수 없다 (%w)", broker.ErrMaybeSent)
 	}
 
 	deadline := b.now().Add(b.cfg.FillTimeout)
@@ -385,13 +458,34 @@ func (b *Broker) waitFill(ctx context.Context, s protocol.Symbol, ordNo string, 
 		b.sleep(b.cfg.FillPoll)
 	}
 
+	// ★ 시간 초과 — **남은 주문을 취소하고** 한 번 더 본다 (2026-09-27).
+	// 예전엔 취소 없이 부분으로 돌려줬다. 그러면 잔량 주문이 브로커에 살아 있다가 나중에 체결되고,
+	// 그 수량은 장부 밖 유령이 된다 (stop 도 시간청산도 모르는 보유). 업비트 드라이버와 같은 규칙이다.
+	cancelErr := b.CancelOrder(ctx, s, ordNo)
+	if agg, err := b.fetchFills(ctx, s, ordNo); err == nil {
+		last = agg
+	}
+	if last.qty >= want-1e-9 {
+		// 취소하는 사이 다 체결됐다 — 부분이 아니다.
+		return b.toFill(ordNo, last, side, ref, submitted, false), nil
+	}
+
 	if last.qty <= 0 {
+		if cancelErr == nil {
+			return broker.Fill{BrokerOrderID: ordNo, SubmittedAt: submitted},
+				fmt.Errorf("미체결로 취소됨 (주문번호 %s)", ordNo)
+		}
 		// ★ 조회로 확인 못 했다고 "미체결" 로 단정하지 않는다. 주문은 나갔을 수 있다.
 		// 상위가 다음 틱의 브로커 조회로 실상태를 다시 본다.
 		return broker.Fill{BrokerOrderID: ordNo, SubmittedAt: submitted},
-			fmt.Errorf("체결 확인 실패 (주문번호 %s) — 주문은 나갔을 수 있다", ordNo)
+			fmt.Errorf("체결 확인 실패 + 잔량 취소 실패 (주문번호 %s): %v — %w", ordNo, cancelErr, broker.ErrMaybeSent)
 	}
-	return b.toFill(ordNo, last, side, ref, submitted, true), nil
+	f := b.toFill(ordNo, last, side, ref, submitted, true)
+	if cancelErr != nil {
+		// 체결분은 버리지 않고 돌려준다(버리면 그게 유령이다). 대신 잔량이 살아 있을 수 있다고 적는다.
+		f.Detail = fmt.Sprintf("잔량 취소 실패 — 주문이 브로커에 남았을 수 있다: %v", cancelErr)
+	}
+	return f, nil
 }
 
 type fillAgg struct {
@@ -399,6 +493,8 @@ type fillAgg struct {
 	amount float64 // Σ(체결가 × 수량)
 	fee    float64
 	last   time.Time
+	// seen — 이 주문번호의 행이 조회에 나왔다. closed — 미체결 0 이고 상태가 끝(체결·취소·거부)이다.
+	seen, closed bool
 }
 
 func (b *Broker) toFill(ordNo string, a fillAgg, side string, ref float64,
@@ -447,12 +543,19 @@ func (b *Broker) fetchFills(ctx context.Context, s protocol.Symbol, ordNo string
 			Cmsn     string `json:"tdy_trde_cmsn"`
 			Tax      string `json:"tdy_trde_tax"`
 			OrdTm    string `json:"ord_tm"`
+			OsoQty   string `json:"oso_qty"` // 미체결수량
+			OrdStt   string `json:"ord_stt"` // 주문상태 (접수·체결·취소·거부 …)
 		}
 		if err := json.Unmarshal(row, &r); err != nil {
 			continue
 		}
 		if r.OrdNo != ordNo {
 			continue
+		}
+		agg.seen = true
+		// 끝난 주문 = 미체결 0 이 **명시**되고 상태가 접수 중이 아니다. 필드가 비면 모른다(살아 있다고 본다).
+		if strings.TrimSpace(r.OsoQty) != "" && num(r.OsoQty) == 0 && !strings.Contains(r.OrdStt, "접수") {
+			agg.closed = true
 		}
 		q := math.Abs(num(r.CntrQty))
 		if q <= 0 {

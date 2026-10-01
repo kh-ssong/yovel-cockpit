@@ -27,7 +27,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 1
+const schemaVersion = 4
 
 type Store struct{ db *sql.DB }
 
@@ -72,6 +72,43 @@ func (s *Store) migrate(ctx context.Context) error {
 		_, err := s.db.ExecContext(ctx, `INSERT INTO schema_version(version) VALUES (?)`, schemaVersion)
 		return err
 	}
+	if v.Int64 < 2 {
+		// v1 → v2: 소스(kid·scope) 컬럼. 옛 행은 빈 값 = "scope 이전의 기본 소스".
+		for _, q := range []string{
+			`ALTER TABLE intents ADD COLUMN kid TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE intents ADD COLUMN scope TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE orders ADD COLUMN kid TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE orders ADD COLUMN scope TEXT NOT NULL DEFAULT ''`,
+			`INSERT INTO schema_version(version) VALUES (2)`,
+		} {
+			if _, err := s.db.ExecContext(ctx, q); err != nil {
+				return fmt.Errorf("v1→v2: %w", err)
+			}
+		}
+		v.Int64 = 2
+	}
+	if v.Int64 < 3 {
+		// v2 → v3: 분할매수 묶음(grp) · 최초 진입 수량(entry_qty).
+		// ★ 옛 로트의 entry_qty 는 0 = 모름. 지금 수량으로 채우지 않는다 — 이미 부분 청산된 로트면
+		//   그 값이 기준이 되어 hold_frac 이 **또** 줄인다.
+		for _, q := range []string{
+			`ALTER TABLE intents ADD COLUMN grp TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE intents ADD COLUMN entry_qty REAL NOT NULL DEFAULT 0`,
+			`INSERT INTO schema_version(version) VALUES (3)`,
+		} {
+			if _, err := s.db.ExecContext(ctx, q); err != nil {
+				return fmt.Errorf("v2→v3: %w", err)
+			}
+		}
+		v.Int64 = 3
+	}
+	if v.Int64 < 4 {
+		// v3 → v4: working_orders (테이블은 schema.sql 이 만든다).
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_version(version) VALUES (4)`); err != nil {
+			return fmt.Errorf("v3→v4: %w", err)
+		}
+		v.Int64 = 4
+	}
 	if v.Int64 > schemaVersion {
 		// 옛 바이너리가 새 DB 를 열면 모르는 컬럼을 조용히 무시하며 돈다. 그게 최악이다.
 		return fmt.Errorf("DB 스키마 v%d 인데 이 바이너리는 v%d 까지만 안다 — 데몬을 업데이트할 것",
@@ -83,8 +120,13 @@ func (s *Store) migrate(ctx context.Context) error {
 // ── intents ─────────────────────────────────────────────────────────────────
 
 type Intent struct {
-	IntentID      string
-	Slot          string
+	IntentID string
+	Slot     string
+	Kid      string
+	Scope    string
+	Group    string
+	// EntryQty — 처음 산 수량. 한 번 기록되면 바뀌지 않는다 (0 으로 부르면 기존 값 유지).
+	EntryQty      float64
 	Symbol        protocol.Symbol
 	Side          string
 	Qty           float64
@@ -101,17 +143,49 @@ type Intent struct {
 func (s *Store) UpsertIntent(ctx context.Context, in Intent) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO intents (intent_id, slot, exchange, code, side, qty, avg_entry_price,
-                     stop_armed, tp_price, tp_order_id, time_exit_at, entry_at, updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     stop_armed, tp_price, tp_order_id, time_exit_at, entry_at, updated_at, kid, scope,
+                     grp, entry_qty)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(intent_id) DO UPDATE SET
   qty=excluded.qty, avg_entry_price=excluded.avg_entry_price,
   stop_armed=excluded.stop_armed, tp_price=excluded.tp_price,
-  tp_order_id=excluded.tp_order_id, time_exit_at=excluded.time_exit_at,
+  tp_order_id=excluded.tp_order_id,
+  -- ★ 전체 갱신이라 호출자가 안 실으면 지워진다. stop 조임·TP 위임은 이 값을 모르고 부르므로
+  --   그대로 두면 **stop 을 한 번 올리는 순간 15:20 시간청산이 원장에서 사라진다.**
+  time_exit_at=COALESCE(excluded.time_exit_at, intents.time_exit_at),
   entry_at=COALESCE(intents.entry_at, excluded.entry_at),
+  -- ★ 소스는 처음 기록된 값을 지킨다. stop 조임·TP 위임은 소스를 모른 채 부른다.
+  kid=CASE WHEN excluded.kid <> '' THEN excluded.kid ELSE intents.kid END,
+  scope=CASE WHEN excluded.scope <> '' THEN excluded.scope ELSE intents.scope END,
+  grp=CASE WHEN excluded.grp <> '' THEN excluded.grp ELSE intents.grp END,
+  -- ★ 최초 진입 수량은 처음 값을 지킨다 — 부분 청산 뒤 갱신이 이걸 덮으면 hold_frac 기준이 무너진다.
+  entry_qty=CASE WHEN intents.entry_qty > 0 THEN intents.entry_qty ELSE excluded.entry_qty END,
   updated_at=excluded.updated_at`,
 		in.IntentID, in.Slot, in.Symbol.Exchange, in.Symbol.Code, in.Side,
 		in.Qty, in.AvgEntryPrice, in.StopArmed, in.TpPrice, nullStr(in.TpOrderID),
-		nullTime(in.TimeExitAt), nullTime(in.EntryAt), nowStr())
+		nullTime(in.TimeExitAt), nullTime(in.EntryAt), nowStr(), in.Kid, in.Scope,
+		in.Group, in.EntryQty)
+	return err
+}
+
+// ReduceIntent — 부분 청산 뒤 남은 수량으로 줄인다. 걸어 둔 TP 는 이미 취소됐으므로 같이 지운다.
+//
+// ★ UpsertIntent 를 쓰지 않는 이유: 전체 갱신이라 stop·시간청산을 다시 실어야 하는데,
+// 청산 경로는 그 값을 다 들고 있지 않다. 필요한 칸만 고친다.
+func (s *Store) ReduceIntent(ctx context.Context, intentID string, qty float64) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE intents SET qty=?, tp_order_id=NULL, tp_price=0, updated_at=? WHERE intent_id=?`,
+		qty, nowStr(), intentID)
+	return err
+}
+
+// ClearTP — 걸어 둔 TP 를 취소했다는 사실만 남긴다.
+//
+// ★ 취소 직후 매도가 실패하면, 이게 없으면 다음 틱이 **이미 죽은 주문**을 또 취소하려 들고
+// 실브로커는 그걸 오류로 돌려준다 → 청산 경로가 매 틱 거기서 멈춘다.
+func (s *Store) ClearTP(ctx context.Context, intentID string) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE intents SET tp_order_id=NULL, tp_price=0, updated_at=? WHERE intent_id=?`, nowStr(), intentID)
 	return err
 }
 
@@ -132,7 +206,8 @@ WHERE intent_id=?`, ts(at), reason, nowStr(), intentID)
 // OpenIntents 는 아직 종결되지 않은 목표를 포지션 형태로 준다 (재시작 복구용).
 func (s *Store) OpenIntents(ctx context.Context) ([]protocol.Position, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT intent_id, slot, exchange, code, qty, avg_entry_price, stop_armed, tp_price, tp_order_id, entry_at
+SELECT intent_id, slot, exchange, code, qty, avg_entry_price, stop_armed, tp_price, tp_order_id, entry_at,
+       time_exit_at, kid, scope, grp, entry_qty
 FROM intents WHERE closed_at IS NULL ORDER BY intent_id`)
 	if err != nil {
 		return nil, err
@@ -143,15 +218,17 @@ FROM intents WHERE closed_at IS NULL ORDER BY intent_id`)
 	for rows.Next() {
 		var p protocol.Position
 		var tpOrder sql.NullString
-		var entryAt sql.NullString
+		var entryAt, timeExit sql.NullString
 		// ★ tp_price 는 이미 저장하고 있었는데 **읽지 않고 있었다** — 그래서 재시작하면
 		//   "이미 건 TP" 를 몰라 매번 새로 걸었다.
 		if err := rows.Scan(&p.IntentID, &p.Slot, &p.Symbol.Exchange, &p.Symbol.Code,
-			&p.Qty, &p.AvgEntryPrice, &p.StopArmed, &p.TpArmed, &tpOrder, &entryAt); err != nil {
+			&p.Qty, &p.AvgEntryPrice, &p.StopArmed, &p.TpArmed, &tpOrder, &entryAt, &timeExit,
+			&p.Kid, &p.Scope, &p.Group, &p.EntryQty); err != nil {
 			return nil, err
 		}
 		p.TpOrderID = tpOrder.String
 		p.EntryAt = parseTime(entryAt)
+		p.TimeExitAt = parseTime(timeExit)
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -191,6 +268,8 @@ func (s *Store) TerminalIntents(ctx context.Context) (map[string]struct{}, error
 type Order struct {
 	ID            string          `json:"id"` // ULID. 멱등키 = 원장 정렬 키
 	IntentID      string          `json:"intent_id"`
+	Kid           string          `json:"kid,omitempty"`
+	Scope         string          `json:"scope,omitempty"`
 	Phase         string          `json:"phase"`
 	Symbol        protocol.Symbol `json:"symbol"`
 	Side          string          `json:"side"`
@@ -239,12 +318,13 @@ func (s *Store) RecordOrder(ctx context.Context, o Order) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT OR IGNORE INTO orders (id, intent_id, phase, exchange, code, side, qty, price,
   broker_order_id, signal_ts, submitted_at, filled_at, slippage_bp, fee_krw,
-  exit_reason, realized_pct, broker_code, detail, mode, source, daemon_sha, created_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  exit_reason, realized_pct, broker_code, detail, mode, source, daemon_sha, created_at, kid, scope)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		o.ID, o.IntentID, o.Phase, o.Symbol.Exchange, o.Symbol.Code, o.Side, o.Qty, o.Price,
 		nullStr(o.BrokerOrderID), nullTime(o.SignalTS), nullTime(o.SubmittedAt), nullTime(o.FilledAt),
 		o.SlippageBp, o.FeeKRW, nullStr(o.ExitReason), o.RealizedPct, nullStr(o.BrokerCode),
-		nullStr(o.Detail), string(o.Mode), string(o.Source), nullStr(o.DaemonSHA), ts(o.CreatedAt))
+		nullStr(o.Detail), string(o.Mode), string(o.Source), nullStr(o.DaemonSHA), ts(o.CreatedAt),
+		o.Kid, o.Scope)
 	return err
 }
 
@@ -271,7 +351,7 @@ func (s *Store) Ledger(ctx context.Context, q LedgerQuery) ([]Order, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, intent_id, phase, exchange, code, side, qty, price, broker_order_id,
        signal_ts, submitted_at, filled_at, slippage_bp, fee_krw, exit_reason,
-       realized_pct, broker_code, detail, mode, source, daemon_sha, created_at
+       realized_pct, broker_code, detail, mode, source, daemon_sha, created_at, kid, scope
 FROM orders WHERE mode = ? AND created_at >= ?
 ORDER BY created_at DESC, id DESC LIMIT ?`, string(q.Mode), since, q.Limit)
 	if err != nil {
@@ -287,7 +367,7 @@ ORDER BY created_at DESC, id DESC LIMIT ?`, string(q.Mode), since, q.Limit)
 		if err := rows.Scan(&o.ID, &o.IntentID, &o.Phase, &o.Symbol.Exchange, &o.Symbol.Code,
 			&o.Side, &o.Qty, &o.Price, &brokerOrder, &signalTS, &submitted, &filled,
 			&o.SlippageBp, &o.FeeKRW, &exitReason, &o.RealizedPct, &brokerCode, &detail,
-			&o.Mode, &o.Source, &sha, &created); err != nil {
+			&o.Mode, &o.Source, &sha, &created, &o.Kid, &o.Scope); err != nil {
 			return nil, err
 		}
 		o.BrokerOrderID, o.ExitReason, o.BrokerCode, o.Detail, o.DaemonSHA =
