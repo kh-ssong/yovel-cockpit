@@ -56,7 +56,10 @@ curl -s -X POST $A/scenario -d '{"fill":"split","chunks":3,"interval_ms":400}' >
   timeout 330 "$PY" -u -m flat6.main --mode signal --strategy dummy > "$OUT/flat6.log" 2>&1) &
 F6=$!
 
-sleep 50;  echo "t+50  TP 유도 005930 → 73000" | tee -a "$OUT/events.log"; curl -s -X POST $A/price -d '{"code":"005930","price":73000}' >/dev/null
+# TP 유도가 = 005930 가격표 +2.8% 를 500원 단위로 올림 (71000 → 73000; 500 은 50만원 미만 모든 호가 단위의 배수)
+P5930=$(echo "$PRICES" | tr ',' '\n' | sed -n 's/^ *005930 *= *\([0-9]*\) *$/\1/p')
+TP_PX=$(( (P5930 * 1028 / 1000 + 499) / 500 * 500 ))
+sleep 50;  echo "t+50  TP 유도 005930 → $TP_PX" | tee -a "$OUT/events.log"; curl -s -X POST $A/price -d "{\"code\":\"005930\",\"price\":$TP_PX}" >/dev/null
 sleep 130; echo "t+180 장애 kt10000 502 (applied)" | tee -a "$OUT/events.log"; curl -s -X POST $A/fault -d '{"api":"kt10000","http":502,"applied":true,"count":1}' >/dev/null
 wait $F6
 
@@ -76,6 +79,8 @@ state, hold, ledger, fake = j("api_state.json"), j("api_holdings.json"), j("api_
 flat6 = open(f"{out}/flat6.log", encoding="utf-8", errors="replace").read()
 rounds = max([int(x) for x in re.findall(r"왕복=(\d+)", flat6)] or [0])
 fails = []
+# 0. flat6 가 가짜 키움과 같은 가격표를 썼다 (안 썼으면 신호가 ±15% 가드에 막혀 아래가 엉뚱하게 깨진다)
+if "[dummy] 가격표 = FLAT6_DUMMY_PRICES" not in flat6: fails.append("flat6 가 FLAT6_DUMMY_PRICES 를 안 읽었다 (flat6 3276172e 이상 필요)")
 # 1. flat6 왕복
 if rounds < 2: fails.append(f"flat6 왕복 {rounds} < 2")
 # 2. 콕핏이 보는 브로커 수량 = 가짜 키움 실보유
