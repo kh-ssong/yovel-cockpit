@@ -811,3 +811,17 @@ func TestQuoteAsOfFromExchange(t *testing.T) {
 		t.Fatalf("%+v %v (기대 %v)", q, err, want)
 	}
 }
+
+// ★ 키움 시각은 KST 다 — 콕핏이 도는 PC 의 시간대와 무관해야 한다 (main CI 가 UTC 리눅스에서 잡은 버그).
+func TestOrdTimeIsKSTRegardlessOfHostZone(t *testing.T) {
+	saved := time.Local
+	time.Local = time.UTC // KST 가 아닌 서버 흉내
+	defer func() { time.Local = saved }()
+
+	now := time.Date(2026, 10, 1, 6, 30, 0, 0, time.UTC) // 15:30 KST
+	got, ok := parseOrdTime("150001", now)
+	want := time.Date(2026, 10, 1, 6, 0, 1, 0, time.UTC) // 15:00:01 KST
+	if !ok || !got.Equal(want) {
+		t.Fatalf("ord_tm 150001 → %v, 기대 %v (KST)", got, want)
+	}
+}
