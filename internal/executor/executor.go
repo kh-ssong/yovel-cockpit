@@ -46,6 +46,8 @@ type Deps struct {
 	// ExitCutoff — KRX 시간청산 상한 "15:15". 시간청산이 이보다 늦게 잡혀 오면 이 시각에 장중 매도한다.
 	// ★ 15:20 부터는 장마감 동시호가라 장중 매도가 안 된다 (user 2026-10-01: D-205 는 15:15 장중 매도).
 	ExitCutoff string
+	// BlockStatus — 이 상태의 종목엔 진입하지 않는다 (감리구분·투자유의 이름, 예: "투자경고"). 비면 안 본다.
+	BlockStatus map[string]bool
 	// BrokerExchange — 실브로커가 다루는 거래소 ("KRX" 면 점검 시간에 API 를 쉬고 장 밖엔 틱을 늦춘다).
 	BrokerExchange string
 }
@@ -420,6 +422,10 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 	}
 	if x.d.Session != nil && !x.d.Session.CanEnter(t.Symbol.Exchange, now) {
 		res.Deferred++
+		return
+	}
+	if label := x.blockedStatus(ctx, t.Symbol); label != "" {
+		x.blockEntry(ctx, now, t, kid, scope, label, res)
 		return
 	}
 	req := broker.OrderRequest{

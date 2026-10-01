@@ -317,6 +317,7 @@ func run() error {
 		EntryFillTimeout: cfg.EntryFillTimeout,
 		ExitCutoff:       exitCutoff(cfg),
 		BrokerExchange:   brokerExchange(cfg.Broker),
+		BlockStatus:      labelSet(cfg.BlockStockStatus),
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -634,6 +635,17 @@ func canEnter(c *session.Calendar, ignore bool) func(protocol.Symbol, time.Time)
 		return nil
 	}
 	return func(s protocol.Symbol, now time.Time) bool { return c.CanEnter(s.Exchange, now) }
+}
+
+// labelSet — "a,b,c" → 집합.
+func labelSet(csv string) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range strings.Split(csv, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out[s] = true
+		}
+	}
+	return out
 }
 
 // brokerExchange — 실브로커가 다루는 거래소 (점검 시간·장 밖 틱 조절용). paper 는 둘 다라 빈 값.

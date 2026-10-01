@@ -89,6 +89,7 @@ type Broker struct {
 	sleep  func(time.Duration)
 	tokens *tokenStore
 	pace   pacer
+	status statusCache
 }
 
 func New(cfg Config) (*Broker, error) {

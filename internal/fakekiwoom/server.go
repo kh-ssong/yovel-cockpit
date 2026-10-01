@@ -85,6 +85,8 @@ type Server struct {
 	scen   Scenario
 	faults []*Fault
 	calls  map[string]int
+	// status — 종목 → [감리구분, 투자유의 코드] (ka10100). 없으면 정상.
+	status map[string][2]string
 }
 
 func New(cfg Config) *Server {
@@ -100,6 +102,7 @@ func New(cfg Config) *Server {
 	s := &Server{
 		cfg: cfg, cash: cfg.Cash, hold: map[string]*holding{}, orders: map[string]*order{},
 		prices: map[string]float64{}, scen: Scenario{Fill: "instant"}, calls: map[string]int{},
+		status: map[string][2]string{},
 	}
 	for k, v := range cfg.Prices {
 		s.prices[k] = v
@@ -223,6 +226,15 @@ func (s *Server) handleLocked(api string, b map[string]any) (map[string]any, map
 		return s.buyableLocked(b)
 	case "ka10076":
 		return s.fillsLocked(b)
+	case "ka10100":
+		st := s.status[str(b, "stk_cd")]
+		if st[0] == "" {
+			st[0] = "정상"
+		}
+		if st[1] == "" {
+			st[1] = "0"
+		}
+		return map[string]any{"code": str(b, "stk_cd"), "auditInfo": st[0], "orderWarning": st[1]}, nil, 0, ""
 	case "ka10007":
 		code := str(b, "stk_cd")
 		p, ok := s.prices[code]
@@ -602,6 +614,13 @@ func (s *Server) SetPrice(code string, p float64) {
 }
 
 func (s *Server) SetScenario(sc Scenario) { s.mu.Lock(); s.scen = sc; s.mu.Unlock() }
+
+// SetStatus — 종목의 감리구분·투자유의 코드 (ka10100). 예: ("투자경고", "5").
+func (s *Server) SetStatus(code, audit, warning string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status[code] = [2]string{audit, warning}
+}
 
 // Match — 열려 있는 시장가 주문의 잔량을 지금 가격에 전부 체결한다 (동시호가 단일가 체결·VI 해제 흉내).
 func (s *Server) Match() {

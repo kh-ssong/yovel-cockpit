@@ -172,6 +172,17 @@ type LimitChecker interface {
 	LimitStatus(ctx context.Context, s protocol.Symbol, orderID string) (LimitStatus, error)
 }
 
+// SymbolStatus — 종목의 매매 상태 (감리구분·투자유의). 진입 차단에 쓴다.
+type SymbolStatus struct {
+	// Labels — 해당하는 상태 이름들 (예: "투자경고", "단기과열", "거래정지"). 정상이면 비어 있다.
+	Labels []string
+}
+
+// StatusChecker — 종목 상태를 알려주는 브로커 (키움 ka10100).
+type StatusChecker interface {
+	SymbolStatus(ctx context.Context, s protocol.Symbol) (SymbolStatus, error)
+}
+
 // LimitFill — **브로커가 스스로 들고 있던 지정가**가 체결된 건.
 //
 // ★ 왜 별도 타입인가 — 우리가 낸 주문의 체결(`Fill`)과 달리, 이건 *우리가 부르지 않았는데*

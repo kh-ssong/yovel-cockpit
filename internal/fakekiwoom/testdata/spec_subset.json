@@ -1003,5 +1003,80 @@
     "itemId": "tot_sel_cnt"
    }
   ]
+ },
+ "ka10100": {
+  "apiId": "ka10100",
+  "apiNm": "종목정보 조회",
+  "url": "/api/dostk/stkinfo",
+  "requestIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "authorization"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "stk_cd"
+   }
+  ],
+  "responseIo": [
+   {
+    "itemId": "api-id"
+   },
+   {
+    "itemId": "cont-yn"
+   },
+   {
+    "itemId": "next-key"
+   },
+   {
+    "itemId": "code"
+   },
+   {
+    "itemId": "name"
+   },
+   {
+    "itemId": "listCount"
+   },
+   {
+    "itemId": "auditInfo"
+   },
+   {
+    "itemId": "regDay"
+   },
+   {
+    "itemId": "lastPrice"
+   },
+   {
+    "itemId": "state"
+   },
+   {
+    "itemId": "marketCode"
+   },
+   {
+    "itemId": "marketName"
+   },
+   {
+    "itemId": "upName"
+   },
+   {
+    "itemId": "upSizeName"
+   },
+   {
+    "itemId": "companyClassName"
+   },
+   {
+    "itemId": "orderWarning"
+   },
+   {
+    "itemId": "nxtEnable"
+   }
+  ]
  }
 }

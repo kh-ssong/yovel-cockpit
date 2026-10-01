@@ -74,6 +74,8 @@ type Config struct {
 	// ★ 예산(사이징 분모)과 계좌 현금은 다른 값이다. 계좌가 예산보다 작을 때 무슨 일이 나는지도
 	// paper 에서 봐야 하므로 따로 둔다.
 	PaperSeed float64
+	// BlockStockStatus — 진입을 막을 종목 상태 (쉼표 구분, 키움 감리구분·투자유의 이름). 빈 값 = 안 막는다.
+	BlockStockStatus string
 	// DailyLossLimit — 오늘(KST) 실현손실이 이 금액(원)에 닿으면 신규 진입을 멈춘다 (청산은 계속, 다음 날 자동 해제). 0 = 끔.
 	DailyLossLimit float64
 	// StopMaxPriceAge — 로컬 stop 은 이보다 늙은 시세(마지막 체결 시각 기준)로 판정하지 않는다 (Blind 경보).
@@ -118,9 +120,11 @@ func Default() Config {
 		Broker:            "paper",
 		NotifyPaper:       true,
 		RefMaxDev:         0.15,
-		KRXExitCutoff:     "15:15",
-		StopMaxPriceAge:   3 * time.Minute,  // 시세 시각이 이제 '마지막 체결' 이라 거래가 뜸한 종목은 몇십 초 늙는 게 정상          // 15:20 부터 장마감 동시호가 — 장중 매도는 그 전에 (user 2026-10-01)
-		EntryFillTimeout:  60 * time.Second, // 틱 신호는 몇 초 사이 ±15% 가 안 움직인다 — 넘으면 가격표가 틀린 것이다 // 지금은 paper 검증 단계 — 체결 알림이 곧 검증 도구다
+		// 단기과열 = 30분 단위 단일가 매매라 초 단위 신호가 성립하지 않는다. 투자주의는 매매 제한이 없어 허용.
+		BlockStockStatus: "거래정지,관리종목,정리매매,투자위험,투자경고,단기과열",
+		KRXExitCutoff:    "15:15",
+		StopMaxPriceAge:  3 * time.Minute,  // 시세 시각이 이제 '마지막 체결' 이라 거래가 뜸한 종목은 몇십 초 늙는 게 정상          // 15:20 부터 장마감 동시호가 — 장중 매도는 그 전에 (user 2026-10-01)
+		EntryFillTimeout: 60 * time.Second, // 틱 신호는 몇 초 사이 ±15% 가 안 움직인다 — 넘으면 가격표가 틀린 것이다 // 지금은 paper 검증 단계 — 체결 알림이 곧 검증 도구다
 		// ★ 국내 주식 기준 **추정치**. 매수 = 위탁수수료만 / 매도 = 위탁수수료 + 증권거래세.
 		//   옛 대칭 15bp 는 매수에 없는 비용(거래세)을 매수에도 물렸다.
 		//
@@ -177,6 +181,8 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 		"paper 시장가 슬리피지 (bp) — ★ 0 으로 두면 손익분기 근처 판정이 뒤집힌다")
 	fs.Float64Var(&c.PaperSeed, "paper-seed", c.PaperSeed,
 		"paper 계좌 시작 현금 (원) — 0 이면 장부 시드 합 + 엔진 예산")
+	fs.StringVar(&c.BlockStockStatus, "block-stock-status", c.BlockStockStatus,
+		"진입을 막을 종목 상태 (쉼표 구분: 거래정지,관리종목,정리매매,투자위험,투자경고,단기과열,투자주의,ETF투자주의) — 빈 값=끔")
 	fs.Float64Var(&c.DailyLossLimit, "daily-loss-limit", c.DailyLossLimit,
 		"일일 손실 한도 (원) — 오늘 실현손실이 닿으면 신규 진입 중지, 청산은 계속, 다음 날 자동 해제 (0=끔)")
 	fs.DurationVar(&c.StopMaxPriceAge, "stop-max-price-age", c.StopMaxPriceAge,

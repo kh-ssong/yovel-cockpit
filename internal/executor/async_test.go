@@ -362,3 +362,36 @@ func TestCutoffNotBeforeEntry(t *testing.T) {
 		t.Fatalf("진입 직후 시간청산: %+v", res)
 	}
 }
+
+// ★ 투자경고·단기과열 등 차단 상태 종목엔 진입하지 않는다 — 목표를 종결해 다시 묻지 않는다.
+func TestBlockedStatusEntryRejected(t *testing.T) {
+	t0 := kst("10:00:00")
+	h := newKiwoomHarness(t, t0)
+	h.x.d.BlockStatus = map[string]bool{"투자경고": true, "단기과열": true}
+	h.fk.SetStatus("005930", "투자경고", "5")
+	h.sign(t, 1, t0, openT(t0, nil))
+	res := h.x.Tick(ctx, t0.Add(time.Second))
+	if len(h.fk.State().Orders) != 0 || len(res.Errors) == 0 || len(h.eng.Positions()) != 0 {
+		t.Fatalf("차단 종목에 주문했다: %+v %+v", res, h.fk.State().Orders)
+	}
+	snap := h.eng.SnapshotAt(t0.Add(time.Second))
+	if len(snap.RecentCloses) != 1 || snap.RecentCloses[0].Reason != "blocked" {
+		t.Fatalf("발행자가 이유를 못 본다 %+v", snap.RecentCloses)
+	}
+	h.x.Tick(ctx, t0.Add(2*time.Second))
+	if n := h.fk.State().Calls["ka10100"]; n != 1 {
+		t.Fatalf("종목 상태를 %d 번 물었다 (하루 캐시 + 목표 종결이어야 1)", n)
+	}
+}
+
+// 정상(또는 투자주의) 종목은 그대로 진입한다.
+func TestNormalStatusEntryAllowed(t *testing.T) {
+	t0 := kst("10:00:00")
+	h := newKiwoomHarness(t, t0)
+	h.x.d.BlockStatus = map[string]bool{"투자경고": true}
+	h.fk.SetStatus("005930", "투자주의", "0")
+	h.sign(t, 1, t0, openT(t0, nil))
+	if res := h.x.Tick(ctx, t0.Add(time.Second)); res.Entered != 1 {
+		t.Fatalf("%+v", res)
+	}
+}
