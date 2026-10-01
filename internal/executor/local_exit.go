@@ -28,6 +28,11 @@ func (x *Executor) effectiveTimeExit(p protocol.Position) *time.Time {
 	if err != nil || !t.After(cut) {
 		return t
 	}
+	// ★ 상한이 진입보다 앞이면 당기지 않는다 — 진입 1초 만에 시간청산이 터진다 (e2e 2026-10-01 실측:
+	//   장 밖 테스트에서 15:15 이후 진입한 로트가 곧바로 팔렸다). 실전은 15:20 이후 진입이 없지만 막아 둔다.
+	if p.EntryAt != nil && cut.Before(*p.EntryAt) {
+		return t
+	}
 	return &cut
 }
 

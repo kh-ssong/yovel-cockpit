@@ -30,6 +30,8 @@ type kHarness struct {
 	*harness
 	fk  *fakekiwoom.Server
 	cal *session.Calendar
+	// clock — 가짜 키움·키움 드라이버가 같이 보는 가상 시계 (체결 시각이 테스트의 시각과 맞게).
+	clock *time.Time
 }
 
 func newKiwoomHarness(t *testing.T, t0 time.Time) *kHarness {
@@ -48,10 +50,13 @@ func newKiwoomHarness(t *testing.T, t0 time.Time) *kHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fk := fakekiwoom.New(fakekiwoom.Config{Spec: spec, Cash: 10_000_000, Prices: map[string]float64{"005930": 1000}})
+	clock := t0
+	now := func() time.Time { return clock }
+	fk := fakekiwoom.New(fakekiwoom.Config{Spec: spec, Cash: 10_000_000, Prices: map[string]float64{"005930": 1000}, Now: now})
 	srv := httptest.NewServer(fk)
 	t.Cleanup(srv.Close)
-	kb, err := kiwoom.New(kiwoom.Config{AppKey: "fake", SecretKey: "fake", DataDir: t.TempDir(), APIURL: srv.URL})
+	kb, err := kiwoom.New(kiwoom.Config{AppKey: "fake", SecretKey: "fake", DataDir: t.TempDir(), APIURL: srv.URL,
+		Now: now, Sleep: func(d time.Duration) { clock = clock.Add(d) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +66,7 @@ func newKiwoomHarness(t *testing.T, t0 time.Time) *kHarness {
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Session: cal, ExitCutoff: "15:15", BrokerExchange: "KRX",
 	})
-	return &kHarness{harness: h, fk: fk, cal: cal}
+	return &kHarness{harness: h, fk: fk, cal: cal, clock: &clock}
 }
 
 // sign — t0 기준 봉투로 목표를 적용한다.
@@ -340,5 +345,20 @@ func TestSellRejectedAndNotHeldCloses(t *testing.T) {
 		if o.Phase == "exit_filled" && (o.Price != 0 || o.ExitReason != "manual") {
 			t.Fatalf("체결가를 지어냈다 %+v", o)
 		}
+	}
+}
+
+// 상한(15:15)이 진입보다 앞이면 당기지 않는다 — 진입하자마자 시간청산이 터지지 않게.
+func TestCutoffNotBeforeEntry(t *testing.T) {
+	t0 := kst("15:00:00")
+	h := newKiwoomHarness(t, t0)
+	h.x.d.Session = nil // 장 시간을 무시하는 테스트처럼 (15:15 이후 진입)
+	late := kst("15:16:00")
+	te := kst("15:40:00")
+	*h.clock = late
+	h.sign(t, 1, late, openT(late, &te))
+	h.x.Tick(ctx, late.Add(time.Second))
+	if res := h.x.Tick(ctx, late.Add(2*time.Second)); res.Exited != 0 {
+		t.Fatalf("진입 직후 시간청산: %+v", res)
 	}
 }

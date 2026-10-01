@@ -315,7 +315,7 @@ func run() error {
 		// 장 시간·동시호가 — 주문 제출과 체결 추적이 분리돼 있어 동시호가 중 청산을 취소하지 않는다.
 		Session:          sessionOrNil(cal, cfg.IgnoreMarketHours),
 		EntryFillTimeout: cfg.EntryFillTimeout,
-		ExitCutoff:       cfg.KRXExitCutoff,
+		ExitCutoff:       exitCutoff(cfg),
 		BrokerExchange:   brokerExchange(cfg.Broker),
 	})
 
@@ -608,6 +608,14 @@ func accountProvider(br broker.Broker, price func(protocol.Symbol) (float64, boo
 		acc.Equity = acc.Deposit + acc.Holdings
 		return acc
 	}
+}
+
+// exitCutoff — 장 시간을 무시하는 테스트에선 15:15 상한도 끈다 (장 밖 시각에 돌리면 모든 로트가 곧바로 팔린다).
+func exitCutoff(cfg config.Config) string {
+	if cfg.IgnoreMarketHours {
+		return ""
+	}
+	return cfg.KRXExitCutoff
 }
 
 func sessionOrNil(c *session.Calendar, ignore bool) *session.Calendar {
