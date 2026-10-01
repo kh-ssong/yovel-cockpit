@@ -74,6 +74,8 @@ type Config struct {
 	// ★ 예산(사이징 분모)과 계좌 현금은 다른 값이다. 계좌가 예산보다 작을 때 무슨 일이 나는지도
 	// paper 에서 봐야 하므로 따로 둔다.
 	PaperSeed float64
+	// StopMaxPriceAge — 로컬 stop 은 이보다 늙은 시세(마지막 체결 시각 기준)로 판정하지 않는다 (Blind 경보).
+	StopMaxPriceAge time.Duration
 	// KRXExitCutoff — KRX 시간청산 상한 (KST "15:04"). 늦게 잡힌 시간청산을 이 시각 장중 매도로 당긴다.
 	KRXExitCutoff string
 	// EntryFillTimeout — 실브로커 진입 주문이 이 안에 다 안 차면 잔량 취소.
@@ -114,7 +116,8 @@ func Default() Config {
 		Broker:            "paper",
 		NotifyPaper:       true,
 		RefMaxDev:         0.15,
-		KRXExitCutoff:     "15:15",          // 15:20 부터 장마감 동시호가 — 장중 매도는 그 전에 (user 2026-10-01)
+		KRXExitCutoff:     "15:15",
+		StopMaxPriceAge:   3 * time.Minute,  // 시세 시각이 이제 '마지막 체결' 이라 거래가 뜸한 종목은 몇십 초 늙는 게 정상          // 15:20 부터 장마감 동시호가 — 장중 매도는 그 전에 (user 2026-10-01)
 		EntryFillTimeout:  60 * time.Second, // 틱 신호는 몇 초 사이 ±15% 가 안 움직인다 — 넘으면 가격표가 틀린 것이다 // 지금은 paper 검증 단계 — 체결 알림이 곧 검증 도구다
 		// ★ 국내 주식 기준 **추정치**. 매수 = 위탁수수료만 / 매도 = 위탁수수료 + 증권거래세.
 		//   옛 대칭 15bp 는 매수에 없는 비용(거래세)을 매수에도 물렸다.
@@ -172,6 +175,8 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 		"paper 시장가 슬리피지 (bp) — ★ 0 으로 두면 손익분기 근처 판정이 뒤집힌다")
 	fs.Float64Var(&c.PaperSeed, "paper-seed", c.PaperSeed,
 		"paper 계좌 시작 현금 (원) — 0 이면 장부 시드 합 + 엔진 예산")
+	fs.DurationVar(&c.StopMaxPriceAge, "stop-max-price-age", c.StopMaxPriceAge,
+		"로컬 stop 판정에 쓸 시세의 최대 나이 (마지막 체결 시각 기준) — 넘으면 판정하지 않고 Blind 경보")
 	fs.StringVar(&c.KRXExitCutoff, "krx-exit-cutoff", c.KRXExitCutoff,
 		"KRX 시간청산 상한 (KST HH:MM) — 더 늦게 잡힌 시간청산은 이 시각 장중 매도로 당긴다 (빈 값=끔)")
 	fs.DurationVar(&c.EntryFillTimeout, "entry-fill-timeout", c.EntryFillTimeout,

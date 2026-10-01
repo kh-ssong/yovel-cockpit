@@ -309,9 +309,9 @@ func run() error {
 		Broker: br, Store: st, Engine: eng, Mode: cfg.Mode, DaemonSHA: v.SHA, Log: log,
 		Notify: notifyFill,
 		// 로컬 stop 은 사이징과 **같은 시세원**을 본다 (quotes 패키지 주석 — 두 곳이 각자 조회하면
-		// 같은 틱에서도 다른 값을 본다). 1분보다 늙은 시세로는 stop 을 판정하지 않는다.
+		// 같은 틱에서도 다른 값을 본다). 시세가 너무 늙었으면(마지막 체결 기준) stop 을 판정하지 않는다.
 		Quote:       qs.Get,
-		MaxPriceAge: time.Minute,
+		MaxPriceAge: cfg.StopMaxPriceAge,
 		// 장 시간·동시호가 — 주문 제출과 체결 추적이 분리돼 있어 동시호가 중 청산을 취소하지 않는다.
 		Session:          sessionOrNil(cal, cfg.IgnoreMarketHours),
 		EntryFillTimeout: cfg.EntryFillTimeout,

@@ -18,7 +18,8 @@ import (
 
 type entry struct {
 	price float64
-	asOf  time.Time
+	asOf  time.Time // 시세 자체의 시각 (마지막 체결)
+	got   time.Time // 우리가 조회한 시각 — 캐시 신선도는 이걸로 본다
 }
 
 type Source struct {
@@ -46,7 +47,9 @@ func key(s protocol.Symbol) string { return s.Exchange + ":" + s.Code }
 func (s *Source) Get(ctx context.Context, sym protocol.Symbol) (float64, time.Time, bool) {
 	s.mu.Lock()
 	e, ok := s.cache[key(sym)]
-	fresh := ok && s.now().Sub(e.asOf) < s.ttl
+	// ★ 캐시는 "언제 물어봤나" 로 판단한다. 시세 시각(asOf)으로 판단하면 거래가 뜸한 종목은
+	// 캐시가 영영 안 맞아 매번 다시 조회한다. 시세가 늙었는지는 asOf 를 받은 호출자(guard)가 판단한다.
+	fresh := ok && s.now().Sub(e.got) < s.ttl
 	s.mu.Unlock()
 
 	if fresh {
@@ -59,7 +62,7 @@ func (s *Source) Get(ctx context.Context, sym protocol.Symbol) (float64, time.Ti
 	}
 
 	s.mu.Lock()
-	s.cache[key(sym)] = entry{price: q.Price, asOf: q.AsOf}
+	s.cache[key(sym)] = entry{price: q.Price, asOf: q.AsOf, got: s.now()}
 	s.mu.Unlock()
 	return q.Price, q.AsOf, true
 }

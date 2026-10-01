@@ -229,7 +229,9 @@ func (s *Server) handleLocked(api string, b map[string]any) (map[string]any, map
 		if !ok {
 			return nil, nil, 1, fmt.Sprintf("[fake] 모르는 종목 %s", code)
 		}
-		return map[string]any{"stk_cd": code, "cur_prc": signed(p)}, nil, 0, ""
+		now := s.cfg.Now().In(kst)
+		return map[string]any{"stk_cd": code, "cur_prc": signed(p),
+			"date": now.Format("20060102"), "tm": now.Format("150405")}, nil, 0, ""
 	}
 	return nil, nil, 1, "[fake] 흉내 내지 않는 API: " + api
 }

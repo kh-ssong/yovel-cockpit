@@ -131,6 +131,9 @@ func New(cfg Config) (*Broker, error) {
 	return b, nil
 }
 
+// kst — 키움이 주는 시각은 전부 한국 시각이다.
+var kst = time.FixedZone("KST", 9*3600)
+
 func (b *Broker) Name() string { return "kiwoom" }
 
 func (b *Broker) etp(s protocol.Symbol) bool {
@@ -208,6 +211,8 @@ func (b *Broker) Positions(ctx context.Context) ([]broker.Holding, error) {
 func (b *Broker) Quote(ctx context.Context, s protocol.Symbol) (broker.Quote, error) {
 	var out struct {
 		CurPrc string `json:"cur_prc"`
+		Date   string `json:"date"` // YYYYMMDD
+		Tm     string `json:"tm"`   // HHmmss
 	}
 	if err := b.call(ctx, apiQuote, pathCond, map[string]string{"stk_cd": s.Code}, &out); err != nil {
 		return broker.Quote{}, err
@@ -217,7 +222,13 @@ func (b *Broker) Quote(ctx context.Context, s protocol.Symbol) (broker.Quote, er
 	if p <= 0 {
 		return broker.Quote{}, fmt.Errorf("%w: %s (cur_prc=%q)", broker.ErrUnknownSymbol, s.Code, out.CurPrc)
 	}
-	return broker.Quote{Symbol: s, Price: p, AsOf: b.now().UTC()}, nil
+	// ★ 시세의 시각 = 키움이 준 시각(date·tm). 예전엔 "조회한 지금" 이라 거래정지 종목의 몇 시간 전
+	// 가격도 신선해 보였고, 로컬 stop 이 그 가격으로 판정됐다 (reflex 분석 P1). 못 읽으면 조회 시각.
+	asOf := b.now().UTC()
+	if t, err := time.ParseInLocation("20060102150405", strings.TrimSpace(out.Date)+strings.TrimSpace(out.Tm), kst); err == nil {
+		asOf = t.UTC()
+	}
+	return broker.Quote{Symbol: s, Price: p, AsOf: asOf}, nil
 }
 
 func (b *Broker) LotSize(protocol.Symbol) float64       { return 1 }

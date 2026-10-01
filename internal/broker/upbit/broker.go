@@ -199,7 +199,8 @@ func (b *Broker) Quote(ctx context.Context, s protocol.Symbol) (broker.Quote, er
 		return broker.Quote{}, err
 	}
 	var out []struct {
-		TradePrice fnum `json:"trade_price"`
+		TradePrice fnum  `json:"trade_price"`
+		TradeTS    int64 `json:"trade_timestamp"` // ms
 	}
 	if err := b.public(ctx, "/ticker", url.Values{"markets": {m}}, &out); err != nil {
 		return broker.Quote{}, err
@@ -207,7 +208,12 @@ func (b *Broker) Quote(ctx context.Context, s protocol.Symbol) (broker.Quote, er
 	if len(out) == 0 || out[0].TradePrice <= 0 {
 		return broker.Quote{}, fmt.Errorf("%w: %s", broker.ErrUnknownSymbol, m)
 	}
-	return broker.Quote{Symbol: s, Price: float64(out[0].TradePrice), AsOf: b.now().UTC()}, nil
+	// 시세의 시각 = 마지막 체결 시각 (거래가 멈춘 코인의 가격이 신선해 보이지 않게).
+	asOf := b.now().UTC()
+	if out[0].TradeTS > 0 {
+		asOf = time.UnixMilli(out[0].TradeTS).UTC()
+	}
+	return broker.Quote{Symbol: s, Price: float64(out[0].TradePrice), AsOf: asOf}, nil
 }
 
 // ── 주문 ────────────────────────────────────────────────────────────────────

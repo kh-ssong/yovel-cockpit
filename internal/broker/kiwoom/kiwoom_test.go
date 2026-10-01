@@ -797,3 +797,17 @@ func TestPacerSpacesSameAPI(t *testing.T) {
 		t.Fatalf("세 번 부르는 데 %v — 간격을 안 뒀다", d)
 	}
 }
+
+// ★ 시세 시각은 키움이 준 시각이다 — 거래정지 종목의 낡은 가격이 "지금" 으로 보이면 stop 이 그 가격으로 판정된다.
+func TestQuoteAsOfFromExchange(t *testing.T) {
+	f := newFake()
+	f.on(apiQuote, func(map[string]any) any {
+		return map[string]any{"return_code": 0, "cur_prc": "+72100", "date": "20260815", "tm": "100005"}
+	})
+	b, _ := newBroker(t, f)
+	q, err := b.Quote(ctx, sym)
+	want := time.Date(2026, 8, 15, 1, 0, 5, 0, time.UTC) // 10:00:05 KST
+	if err != nil || q.Price != 72100 || !q.AsOf.Equal(want) {
+		t.Fatalf("%+v %v (기대 %v)", q, err, want)
+	}
+}

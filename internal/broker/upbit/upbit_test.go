@@ -436,3 +436,13 @@ func TestPublicQuotesButCannotTrade(t *testing.T) {
 		t.Fatal("키 없는 주문이 서버에 닿았다")
 	}
 }
+
+func TestQuoteAsOfIsTradeTime(t *testing.T) {
+	b, _ := newTest(t, map[string]func(call) (int, any){
+		"GET /ticker": ok([]map[string]any{{"market": "KRW-BTC", "trade_price": 101_500_000.0, "trade_timestamp": 1790000000000}}),
+	})
+	q, err := b.Quote(ctx, btc)
+	if err != nil || !q.AsOf.Equal(time.UnixMilli(1790000000000).UTC()) {
+		t.Fatalf("%+v %v", q, err)
+	}
+}
