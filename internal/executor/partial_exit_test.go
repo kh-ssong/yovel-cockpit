@@ -124,7 +124,11 @@ func TestExitAfterFailedSellDoesNotRecancelDeadTP(t *testing.T) {
 	if res := h.x.Tick(ctx, now); res.Exited != 0 || len(res.Errors) == 0 {
 		t.Fatalf("첫 매도는 실패해야 한다: %+v", res)
 	}
-	res := h.x.Tick(ctx, now)
+	// 매도 실패 뒤엔 잠시 쉰다(매 틱 거부 반복 방지) — 그 뒤 다시 낼 때 죽은 TP 에 막히면 안 된다.
+	if res := h.x.Tick(ctx, now.Add(5*time.Second)); res.Exited != 0 {
+		t.Fatalf("쉬는 중에 다시 팔았다: %+v", res)
+	}
+	res := h.x.Tick(ctx, now.Add(20*time.Second))
 	if res.Exited != 1 {
 		t.Fatalf("★ 죽은 TP 취소에 막혀 청산을 못 했다: %+v", res)
 	}
