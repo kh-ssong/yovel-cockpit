@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/broker"
@@ -88,6 +89,7 @@ func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any
 	tokenRetried := false
 
 	for attempt := 0; attempt < 3; attempt++ {
+		b.pace.wait(apiID, b.now, b.sleep)
 		tok, err := b.tokens.get(ctx, false)
 		if err != nil {
 			return fmt.Errorf("토큰: %w", err)
@@ -135,6 +137,13 @@ func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any
 			}
 			continue
 		}
+		if isRateLimited(probe.ReturnCode, probe.ReturnMsg) && attempt < 2 {
+			// ★ "허용된 요청 개수를 초과[1700]" — 키움이 **처리하지 않았다**고 말해 준 거절이라
+			// 주문이어도 다시 내도 이중 주문이 아니다. 잠깐 쉬고 다시 (reflex 는 이걸 토큰 오류로 오판한 적이 있다).
+			lastErr = rejectError{APIID: apiID, Code: probe.ReturnCode, Msg: probe.ReturnMsg}
+			b.sleep(time.Duration(attempt+1) * time.Second)
+			continue
+		}
 		if probe.ReturnCode != 0 {
 			return rejectError{APIID: apiID, Code: probe.ReturnCode, Msg: probe.ReturnMsg}
 		}
@@ -163,6 +172,18 @@ func (e rejectError) Error() string {
 	return fmt.Sprintf("%s 거부 (%d): %s", e.APIID, e.Code, e.Msg)
 }
 
+// Unwrap — 거부 문구를 브로커 공통 오류로 옮긴다 (집행기가 드라이버를 몰라도 가리게).
+// 800033 = 매도가능수량 부족(잠김 또는 미보유), 855056 = 매수증거금 부족.
+func (e rejectError) Unwrap() error {
+	switch {
+	case strings.Contains(e.Msg, "800033") || strings.Contains(e.Msg, "매도가능"):
+		return broker.ErrNotEnoughShare
+	case strings.Contains(e.Msg, "855056") || strings.Contains(e.Msg, "증거금"):
+		return broker.ErrInsufficient
+	}
+	return nil
+}
+
 // marginAllowRe — 855056(매수증거금 부족) 거부에 실려 오는 "N주 매수가능".
 var marginAllowRe = regexp.MustCompile(`([0-9][0-9,]*)\s*주\s*매수\s*가능`)
 
@@ -183,6 +204,35 @@ func marginAllowance(err error) (float64, bool) {
 var ErrMaybeSent = broker.ErrMaybeSent
 
 func isOrderAPI(apiID string) bool { return apiID == apiBuy || apiID == apiSell }
+
+// isRateLimited — 키움 요청 한도 초과 (rc=5, "[1700]").
+func isRateLimited(rc int, msg string) bool {
+	return strings.Contains(msg, "1700") || (rc == 5 && strings.Contains(msg, "초과"))
+}
+
+// pacer — API 별 최소 간격. 키움 REST 는 API ID 마다 초당 ~5회라, 여유를 둬 4회(250ms)로 맞춘다.
+// ★ 09:01 처럼 여러 종목이 몰리면 주문가능수량·주문·체결조회가 한꺼번에 나간다 — 한도를 넘으면
+// 키움이 거절하고, 그 거절을 다른 오류로 읽으면 진입을 잃는다.
+type pacer struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+const pacerGap = 250 * time.Millisecond
+
+func (p *pacer) wait(apiID string, now func() time.Time, sleep func(time.Duration)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.last == nil {
+		p.last = map[string]time.Time{}
+	}
+	if l, ok := p.last[apiID]; ok {
+		if d := pacerGap - now().Sub(l); d > 0 {
+			sleep(d)
+		}
+	}
+	p.last[apiID] = now()
+}
 
 func backoff(attempt int) time.Duration { return time.Duration(1<<attempt) * time.Second }
 

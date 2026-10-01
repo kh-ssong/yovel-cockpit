@@ -88,6 +88,7 @@ type Broker struct {
 	now    func() time.Time
 	sleep  func(time.Duration)
 	tokens *tokenStore
+	pace   pacer
 }
 
 func New(cfg Config) (*Broker, error) {

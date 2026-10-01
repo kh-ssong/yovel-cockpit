@@ -757,3 +757,43 @@ func TestReadsFlat6TokenFormat(t *testing.T) {
 		t.Fatalf("★ flat6 가 발급해 둔 토큰을 못 읽고 %d회 재발급했다", f.tokens)
 	}
 }
+
+// ★ 요청 한도 초과([1700])는 키움이 처리하지 않은 거절이다 — 쉬었다 다시 낸다(주문이어도 이중 주문 아님).
+func TestRateLimitRejectRetried(t *testing.T) {
+	f := newFake()
+	n := 0
+	f.on(apiBuy, func(map[string]any) any {
+		n++
+		if n == 1 {
+			return map[string]any{"return_code": 5, "return_msg": "허용된 요청 개수를 초과하였습니다[1700]"}
+		}
+		return map[string]any{"return_code": 0, "ord_no": "0000301"}
+	})
+	f.on(apiFills, func(map[string]any) any {
+		return fillsResp("0000301", map[string]any{"cntr_qty": "3", "cntr_pric": "1000",
+			"tdy_trde_cmsn": "0", "tdy_trde_tax": "0", "ord_tm": "090512"})
+	})
+	b, _ := newBroker(t, f)
+	fill, err := b.Buy(ctx, broker.OrderRequest{Symbol: sym, Qty: 3, RefPrice: 1000})
+	if err != nil || fill.Qty != 3 || len(f.bodies(apiBuy)) != 2 {
+		t.Fatalf("%+v %v 주문 %d", fill, err, len(f.bodies(apiBuy)))
+	}
+}
+
+// 같은 API 를 연달아 부르면 250ms 간격을 둔다 (키움 한도 ~5/s).
+func TestPacerSpacesSameAPI(t *testing.T) {
+	f := newFake()
+	f.on(apiBalance, func(map[string]any) any {
+		return map[string]any{"return_code": 0, "entr": "0", "ord_alowa": "0", "stk_cntr_remn": []any{}}
+	})
+	b, cl := newBroker(t, f)
+	t0 := cl.now()
+	for i := 0; i < 3; i++ {
+		if _, err := b.Cash(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d := cl.now().Sub(t0); d < 500*time.Millisecond {
+		t.Fatalf("세 번 부르는 데 %v — 간격을 안 뒀다", d)
+	}
+}

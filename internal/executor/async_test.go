@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kh-ssong/yovel-cockpit/internal/broker"
 	"github.com/kh-ssong/yovel-cockpit/internal/broker/kiwoom"
 	"github.com/kh-ssong/yovel-cockpit/internal/engine"
 	"github.com/kh-ssong/yovel-cockpit/internal/fakekiwoom"
@@ -98,6 +99,10 @@ func openT(t0 time.Time, timeExit *time.Time) map[string]any {
 		"entry":  map[string]any{"mode": "market", "not_after": t0.Add(time.Minute), "ref_price": 1000},
 		"exit":   ex,
 	}
+}
+
+func brokerReq(p protocol.Position) broker.OrderRequest {
+	return broker.OrderRequest{IntentID: "manual", Symbol: p.Symbol, Qty: p.Qty}
 }
 
 func flatT() map[string]any {
@@ -281,5 +286,59 @@ func TestTimeExitPulledToCutoff(t *testing.T) {
 	}
 	if res := h.x.Tick(ctx, kst("15:15:00")); res.Exited != 1 {
 		t.Fatalf("15:15 장중 매도가 안 됐다: %+v", res)
+	}
+}
+
+// ★ 남의 지정가가 수량을 잠갔다 — 콕핏은 그 주문을 취소하지 않고, 알리고, 1분 쉰다 (매 틱 거부 반복 금지).
+func TestSellBlockedByForeignOrderBacksOff(t *testing.T) {
+	t0 := kst("10:00:00")
+	h := newKiwoomHarness(t, t0)
+	h.sign(t, 1, t0, openT(t0, nil))
+	h.x.Tick(ctx, t0.Add(time.Second))
+	lot := h.lot(t)
+
+	// 사람이 HTS 에서 같은 수량에 지정가 매도를 걸어 뒀다 (콕핏은 모르는 주문).
+	if _, err := h.x.d.Broker.PlaceTP(ctx, lot.Symbol, lot.Qty, 2000); err != nil {
+		t.Fatal(err)
+	}
+	h.sign(t, 2, t0.Add(10*time.Second), flatT())
+	res := h.x.Tick(ctx, t0.Add(11*time.Second))
+	if res.Exited != 0 || len(res.Errors) == 0 {
+		t.Fatalf("%+v", res)
+	}
+	orders := len(h.fk.State().Orders)
+	h.x.Tick(ctx, t0.Add(20*time.Second)) // 1분 안 — 다시 안 낸다
+	if n := len(h.fk.State().Orders); n != orders {
+		t.Fatalf("잠긴 수량에 매 틱 다시 팔았다 (%d → %d)", orders, n)
+	}
+	for _, o := range h.fk.State().Orders {
+		if o.Status == "cancelled" {
+			t.Fatalf("★ 남의 주문을 취소했다 %+v", o)
+		}
+	}
+	if len(h.eng.Positions()) != 1 {
+		t.Fatal("잠긴 로트를 종결했다")
+	}
+}
+
+// 콕핏 밖에서 이미 팔렸다 — 매도 거부 뒤 실보유 0 을 확인하고 종결한다(체결가는 지어내지 않는다).
+func TestSellRejectedAndNotHeldCloses(t *testing.T) {
+	t0 := kst("10:00:00")
+	h := newKiwoomHarness(t, t0)
+	h.sign(t, 1, t0, openT(t0, nil))
+	h.x.Tick(ctx, t0.Add(time.Second))
+	lot := h.lot(t)
+	if _, err := h.x.d.Broker.Sell(ctx, brokerReq(lot)); err != nil { // 사람이 앱으로 팔았다
+		t.Fatal(err)
+	}
+	var res Result
+	h.x.doSell(ctx, t0.Add(5*time.Second), lot, lot.Qty, "flat", &res)
+	if res.ClosedByBroker != 1 || len(h.eng.Positions()) != 0 {
+		t.Fatalf("%+v", res)
+	}
+	for _, o := range h.ledger(t) {
+		if o.Phase == "exit_filled" && (o.Price != 0 || o.ExitReason != "manual") {
+			t.Fatalf("체결가를 지어냈다 %+v", o)
+		}
 	}
 }

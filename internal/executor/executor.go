@@ -57,6 +57,8 @@ type Executor struct {
 	loaded bool
 	// lastIdle — 장 밖 한산한 시간의 마지막 전체 틱 (그땐 1분에 한 번만 돈다).
 	lastIdle time.Time
+	// sellAfter — 매도가 거부된 로트를 이 시각 전엔 다시 팔지 않는다 (매 틱 거부 반복 방지).
+	sellAfter map[string]time.Time
 	// tpChecked — 로트별 마지막 TP 체결 조회 시각. 5초 틱마다 전부 물으면 조회 한도를 먹는다.
 	tpChecked map[string]time.Time
 }
@@ -65,7 +67,8 @@ func New(d Deps) *Executor {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
-	return &Executor{d: d, tpChecked: map[string]time.Time{}, work: map[string]*store.WorkingOrder{}}
+	return &Executor{d: d, tpChecked: map[string]time.Time{}, work: map[string]*store.WorkingOrder{},
+		sellAfter: map[string]time.Time{}}
 }
 
 // Result — 이번 틱에 실제로 일어난 일.
@@ -299,6 +302,9 @@ func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Posit
 		res.Deferred++ // 장 밖 — 로트는 그대로 두고 장이 열리면(08:59~) 다시 판다
 		return
 	}
+	if until, ok := x.sellAfter[pos.IntentID]; ok && now.Before(until) {
+		return // 방금 거부됐다 — 쉬는 중
+	}
 	// ★ 걸어둔 TP 지정가를 먼저 취소하지 않으면 그 수량이 잠겨 시장가 매도가 거부된다.
 	if pos.TpOrderID != "" {
 		if err := x.d.Broker.CancelOrder(ctx, pos.Symbol, pos.TpOrderID); err != nil {
@@ -317,7 +323,7 @@ func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Posit
 	if sub, ok := x.d.Broker.(broker.Submitter); ok {
 		s, err := sub.SubmitSell(ctx, req)
 		if err != nil {
-			res.fail("매도 %s(%s): %v", pos.IntentID, pos.Symbol.Code, err)
+			x.sellFailed(ctx, now, pos, reason, err, res)
 			return
 		}
 		w := store.WorkingOrder{
@@ -332,7 +338,7 @@ func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Posit
 
 	fill, err := x.d.Broker.Sell(ctx, req)
 	if err != nil {
-		res.fail("매도 %s(%s): %v", pos.IntentID, pos.Symbol.Code, err)
+		x.sellFailed(ctx, now, pos, reason, err, res)
 		return
 	}
 	x.finishSell(ctx, now, pos, qty, reason, fill, res)
