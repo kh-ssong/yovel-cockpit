@@ -164,6 +164,10 @@ Content-Type: application/json
     `Reject` enum 에 `E_INACTIVE` 추가 필요 (conformance 테스트가 이미 잡았다).
 11. `ref_price` 는 **실제 호가**여야 한다 — 콕핏은 독립 시세와 ±15% 넘게 어긋나면 진입을 거절한다.
     dummy 의 `DEFAULT_PRICES`(삼성 71,000)는 지금 시세(28만대)와 4배 차이라 이 가드에 걸린다.
+12. ★ **D-205 시간청산은 15:15 (장중)** — `time_exit_at` 을 15:15 로 보낼 것 (user 2026-10-01). 15:20 은 장마감
+    동시호가 시작이라 장중 매도가 안 된다. 콕핏도 KRX 시간청산을 15:15 로 당기지만(`--krx-exit-cutoff`), 판단자 신호
+    (`want=flat`)도 15:15 전에 내야 연속매매로 나간다. 장 밖 진입은 `E_MARKET_CLOSED`, 접수됐지만 미확정 진입은
+    `positions[].pending: true` 로 보인다 (`protocol.md §8.1`).
 
 응답은 `ack` 다. 거절도 HTTP 200 으로 오고 `codes` 에 이유가 담긴다
 (MQTT 에는 상태코드가 없어서, 두 경로가 다른 모양이면 그게 곧 배선 버그가 된다).
