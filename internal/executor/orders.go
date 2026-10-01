@@ -52,6 +52,9 @@ func (x *Executor) isWorking(intentID string) bool {
 	return false
 }
 
+// WorkingCount — 진행 중 주문 수 (하트비트용 — 집행 루프 고루틴에서만 부를 것).
+func (x *Executor) WorkingCount() int { return len(x.work) }
+
 // HasWorking — 진행 중 주문이 있는가 (있으면 데몬이 빠른 주기로 PollWorking 을 부른다).
 func (x *Executor) HasWorking() bool { return len(x.work) > 0 }
 

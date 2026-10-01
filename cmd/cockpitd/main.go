@@ -34,6 +34,7 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/httpapi"
 	"github.com/kh-ssong/yovel-cockpit/internal/lots"
 	"github.com/kh-ssong/yovel-cockpit/internal/notify"
+	"github.com/kh-ssong/yovel-cockpit/internal/proc"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/quotes"
 	"github.com/kh-ssong/yovel-cockpit/internal/session"
@@ -87,6 +88,30 @@ func run() error {
 	}
 
 	started := time.Now()
+
+	// ── 단일 실행 잠금 (원장을 열기 전) ── data-dir 하나에 하나, 같은 브로커 키(=계좌)에 하나.
+	beatPath := filepath.Join(cfg.DataDir, "heartbeat.json")
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		return err
+	}
+	lockInfo := proc.LockInfo{PID: os.Getpid(), Started: started, DataDir: cfg.DataDir, Heartbeat: beatPath}
+	releaseDir, err := proc.Acquire(filepath.Join(cfg.DataDir, "cockpitd.lock"), lockInfo, time.Now())
+	if err != nil {
+		return fmt.Errorf("data-dir 잠금: %w", err)
+	}
+	defer releaseDir()
+	// ★ 하트비트는 잠금을 잡은 **뒤에** 쓴다 — 먼저 쓰면 잠금에 막힐 두 번째 인스턴스가 살아 있는 주인의
+	//   하트비트를 덮어쓴다 (스모크 테스트 2026-10-01 실측).
+	_ = proc.WriteBeat(beatPath, proc.Beat{TS: time.Now().UTC(), PID: os.Getpid(), Version: v.Version, SHA: v.SHA})
+	if key := accountLockKey(cfg); key != "" {
+		dir, _ := os.UserConfigDir()
+		releaseAcct, err := proc.Acquire(filepath.Join(dir, "yovel-cockpit", "locks", key+".lock"), lockInfo, time.Now())
+		if err != nil {
+			// ★ data-dir 이 달라도 같은 계좌에 주문을 낼 수 있는 프로세스가 둘이면 같은 신호로 두 번 산다.
+			return fmt.Errorf("계좌 잠금(%s): %w", key, err)
+		}
+		defer releaseAcct()
+	}
 
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
@@ -332,7 +357,9 @@ func run() error {
 	notifier.Send(fmt.Sprintf("▶️ 콕핏 기동 · %s · broker=%s · 보유 %d · %s",
 		strings.ToUpper(string(cfg.Mode)), br.Name(), len(snap.Positions), v.Version))
 
-	go runLoop(ctx, exec, cfg.ReconcileInterval, wake, log, alert)
+	live := &liveness{}
+	go runLoop(ctx, exec, cfg.ReconcileInterval, wake, log, alert, live)
+	go beatLoop(ctx, beatPath, live, eng, v, cfg, br.Name(), log)
 	if cfg.DailyLossLimit > 0 {
 		log.Info("일일 손실 한도", "krw", cfg.DailyLossLimit)
 	}
@@ -455,7 +482,7 @@ func byExchange(feeds map[string]func(protocol.Symbol) (float64, bool)) func(pro
 // runLoop — 집행 루프. ★ 목표 수신과 무관하게 주기적으로 돈다.
 // 목표가 안 와도 브로커 실상태는 바뀔 수 있고(TP 체결·수동 매도), 그걸 못 보면 장부가 썩는다.
 func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duration,
-	wake <-chan struct{}, log *slog.Logger, alert func(key, text string)) {
+	wake <-chan struct{}, log *slog.Logger, alert func(key, text string), live *liveness) {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
@@ -477,6 +504,7 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 				continue
 			}
 			res := exec.PollWorking(ctx, time.Now().UTC())
+			live.mark(exec)
 			for _, e := range res.Errors {
 				k := e
 				if len(k) > 40 {
@@ -492,6 +520,7 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 		}
 
 		res := exec.Tick(ctx, time.Now().UTC())
+		live.mark(exec)
 
 		// ★ stop 을 못 지키는 상태(Blind)는 조용히 두지 않되, 5초마다 찍지도 않는다 — 1분에 한 번.
 		if len(res.Blind) > 0 && time.Since(lastBlind) > time.Minute {
