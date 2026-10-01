@@ -52,7 +52,7 @@ const kiwoomExpiryLayout = "20060102150405"
 // parsedExpiry 는 두 표기를 모두 받아준다 (한쪽만 지원하면 상대 기록을 못 읽는다).
 func (f tokenFile) parsedExpiry() (time.Time, bool) {
 	if f.ExpiresDt != "" {
-		if v, err := time.ParseInLocation(kiwoomExpiryLayout, strings.TrimSpace(f.ExpiresDt), time.Local); err == nil {
+		if v, err := time.ParseInLocation(kiwoomExpiryLayout, strings.TrimSpace(f.ExpiresDt), kst); err == nil {
 			return v, true
 		}
 	}
@@ -126,7 +126,7 @@ func (t *tokenStore) issue(ctx context.Context) (string, error) {
 
 	exp := t.now().Add(12 * time.Hour) // expires_dt 가 없을 때의 보수적 기본값
 	raw := strings.TrimSpace(resp.ExpiresDt)
-	if v, err := time.ParseInLocation(kiwoomExpiryLayout, raw, time.Local); err == nil {
+	if v, err := time.ParseInLocation(kiwoomExpiryLayout, raw, kst); err == nil {
 		exp = v
 	} else {
 		raw = exp.Format(kiwoomExpiryLayout)

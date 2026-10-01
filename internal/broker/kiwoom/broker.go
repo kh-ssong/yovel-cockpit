@@ -605,6 +605,8 @@ func parseOrdTime(s string, now time.Time) (time.Time, bool) {
 	if err1 != nil || err2 != nil || err3 != nil {
 		return time.Time{}, false
 	}
-	n := now.Local()
-	return time.Date(n.Year(), n.Month(), n.Day(), h, m, sec, 0, time.Local).UTC(), true
+	// ★ 키움 시각은 한국 시각이다 — PC 의 시간대(time.Local)로 읽으면 KST 가 아닌 서버에서 9시간 어긋난다
+	// (main CI 가 UTC 리눅스에서 잡았다: 15:00 KST 체결이 15:00 UTC 로 읽혀 시간청산 판정이 틀렸다).
+	n := now.In(kst)
+	return time.Date(n.Year(), n.Month(), n.Day(), h, m, sec, 0, kst).UTC(), true
 }
