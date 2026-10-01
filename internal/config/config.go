@@ -74,6 +74,8 @@ type Config struct {
 	// ★ 예산(사이징 분모)과 계좌 현금은 다른 값이다. 계좌가 예산보다 작을 때 무슨 일이 나는지도
 	// paper 에서 봐야 하므로 따로 둔다.
 	PaperSeed float64
+	// DailyLossLimit — 오늘(KST) 실현손실이 이 금액(원)에 닿으면 신규 진입을 멈춘다 (청산은 계속, 다음 날 자동 해제). 0 = 끔.
+	DailyLossLimit float64
 	// StopMaxPriceAge — 로컬 stop 은 이보다 늙은 시세(마지막 체결 시각 기준)로 판정하지 않는다 (Blind 경보).
 	StopMaxPriceAge time.Duration
 	// KRXExitCutoff — KRX 시간청산 상한 (KST "15:04"). 늦게 잡힌 시간청산을 이 시각 장중 매도로 당긴다.
@@ -175,6 +177,8 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 		"paper 시장가 슬리피지 (bp) — ★ 0 으로 두면 손익분기 근처 판정이 뒤집힌다")
 	fs.Float64Var(&c.PaperSeed, "paper-seed", c.PaperSeed,
 		"paper 계좌 시작 현금 (원) — 0 이면 장부 시드 합 + 엔진 예산")
+	fs.Float64Var(&c.DailyLossLimit, "daily-loss-limit", c.DailyLossLimit,
+		"일일 손실 한도 (원) — 오늘 실현손실이 닿으면 신규 진입 중지, 청산은 계속, 다음 날 자동 해제 (0=끔)")
 	fs.DurationVar(&c.StopMaxPriceAge, "stop-max-price-age", c.StopMaxPriceAge,
 		"로컬 stop 판정에 쓸 시세의 최대 나이 (마지막 체결 시각 기준) — 넘으면 판정하지 않고 Blind 경보")
 	fs.StringVar(&c.KRXExitCutoff, "krx-exit-cutoff", c.KRXExitCutoff,

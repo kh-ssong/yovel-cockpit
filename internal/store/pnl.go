@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 )
@@ -85,4 +86,35 @@ ORDER BY i.intent_id`, string(mode))
 		}
 	}
 	return out, rows.Err()
+}
+
+// DayRealized — since 이후 확정된 청산의 실현손익 (원) 과 손실 건수. 일일 손실 한도가 쓴다.
+//
+// 손익 = Σ 판 수량 × (체결가 − 로트 진입가) − 매도 수수료·세금. 매수 수수료는 넣지 않는다(근사 — 작다).
+// ★ 체결가를 모르는 청산(사후 감지·수동)은 뺀다 — 모르는 걸 0원 손익으로 세면 한도가 틀린다.
+func (s *Store) DayRealized(ctx context.Context, mode protocol.Mode, since time.Time) (krw float64, losses int, err error) {
+	if mode != protocol.ModePaper && mode != protocol.ModeLive {
+		return 0, 0, ErrModeRequired
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT o.qty, o.price, COALESCE(o.fee_krw, 0), i.avg_entry_price
+FROM orders o JOIN intents i ON i.intent_id = o.intent_id
+WHERE o.mode = ? AND o.phase = 'exit_filled' AND o.price > 0 AND o.created_at >= ?`,
+		string(mode), ts(since))
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var q, px, fee, avg float64
+		if err := rows.Scan(&q, &px, &fee, &avg); err != nil {
+			return 0, 0, err
+		}
+		pnl := q*(px-avg) - fee
+		krw += pnl
+		if pnl < 0 {
+			losses++
+		}
+	}
+	return krw, losses, rows.Err()
 }

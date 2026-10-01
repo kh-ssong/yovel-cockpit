@@ -77,6 +77,8 @@ type Engine struct {
 	paused          bool
 	blockEntryUntil *time.Time
 	circuitBreaker  bool
+	// guardReason — 마지막 가드 변경 사유 (일일 손실 한도가 건 것인지 가려 다음 날 풀 때 쓴다).
+	guardReason string
 	// liquidateAll — de-risk liquidate 가 걸린 상태. 새 목표가 와도 유지된다.
 	liquidateAll bool
 
@@ -241,6 +243,23 @@ func (e *Engine) applyDerisk(c protocol.CmdDerisk) {
 }
 
 // persistGuardsLocked — ★ 재시작하면 풀리는 일시정지는 안전장치가 아니다.
+// SetCircuitBreaker — 로컬 서킷브레이커 (신규 진입만 막는다 — 청산은 계속). 일일 손실 한도가 쓴다.
+// ★ 영속된다 — 재시작으로 풀리는 차단은 안전장치가 아니다.
+func (e *Engine) SetCircuitBreaker(on bool, reason string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.circuitBreaker = on
+	e.guardReason = reason
+	e.persistGuardsLocked(reason)
+}
+
+// CircuitBreaker — 지금 걸려 있는가와 그 사유.
+func (e *Engine) CircuitBreaker() (bool, string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.circuitBreaker, e.guardReason
+}
+
 func (e *Engine) persistGuardsLocked(reason string) {
 	if e.cfg.Store == nil {
 		return
@@ -271,6 +290,7 @@ func (e *Engine) Restore(ctx context.Context) error {
 	}
 	e.paused, e.blockEntryUntil = g.Paused, g.BlockEntryUntil
 	e.circuitBreaker, e.liquidateAll = g.CircuitBreaker, g.LiquidateAll
+	e.guardReason = g.Reason
 
 	term, err := e.cfg.Store.TerminalIntents(ctx)
 	if err != nil {

@@ -414,3 +414,25 @@ func TestPnLByIntentFromLedger(t *testing.T) {
 		}
 	}
 }
+
+func TestDayRealized(t *testing.T) {
+	s := open(t)
+	for _, id := range []string{"a", "b", "c"} {
+		s.UpsertIntent(ctx, Intent{IntentID: id, Slot: "x", Symbol: sym("005930"), Side: "long", Qty: 10, AvgEntryPrice: 1000})
+	}
+	day := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	rec := func(id, intent string, qty, px, fee float64, at time.Time) {
+		if err := s.RecordOrder(ctx, Order{ID: id, IntentID: intent, Phase: "exit_filled", Symbol: sym("005930"),
+			Side: "sell", Qty: qty, Price: px, FeeKRW: fee, Mode: protocol.ModeLive, CreatedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec("1", "a", 10, 900, 10, day.Add(time.Hour))    // −1,010
+	rec("2", "b", 10, 1100, 10, day.Add(2*time.Hour)) // +990
+	rec("3", "c", 10, 0, 0, day.Add(3*time.Hour))     // 체결가 미상 — 빼야 한다
+	rec("4", "a", 10, 500, 0, day.Add(-2*time.Hour))  // 어제 — 빼야 한다
+	krw, losses, err := s.DayRealized(ctx, protocol.ModeLive, day)
+	if err != nil || krw != -20 || losses != 1 {
+		t.Fatalf("%v %v %v", krw, losses, err)
+	}
+}

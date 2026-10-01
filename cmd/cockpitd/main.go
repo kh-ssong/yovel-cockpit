@@ -332,6 +332,10 @@ func run() error {
 		strings.ToUpper(string(cfg.Mode)), br.Name(), len(snap.Positions), v.Version))
 
 	go runLoop(ctx, exec, cfg.ReconcileInterval, wake, log, alert)
+	if cfg.DailyLossLimit > 0 {
+		log.Info("일일 손실 한도", "krw", cfg.DailyLossLimit)
+	}
+	go watchLoss(ctx, st, eng, cfg.Mode, cfg.DailyLossLimit, log, alert)
 	go watchBudget(ctx, br, books.Total(), // 장부 시드 합 + 엔진 예산
 		func() []protocol.Position { return eng.Snapshot().Positions }, log, alert)
 
