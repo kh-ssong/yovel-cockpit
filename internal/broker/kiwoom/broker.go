@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/broker"
@@ -244,16 +245,25 @@ func (b *Broker) buyableQty(ctx context.Context, s protocol.Symbol, price float6
 }
 
 func (b *Broker) Buy(ctx context.Context, req broker.OrderRequest) (broker.Fill, error) {
+	sub, err := b.SubmitBuy(ctx, req)
+	if err != nil {
+		return broker.Fill{BrokerOrderID: sub.OrderID, SubmittedAt: sub.SubmittedAt}, err
+	}
+	return b.waitFill(ctx, req.Symbol, sub.OrderID, sub.Qty, "buy", sub.RefPrice, sub.SubmittedAt)
+}
+
+// SubmitBuy — 매수를 내고 접수되면 바로 돌아온다 (체결은 LimitStatus 로).
+func (b *Broker) SubmitBuy(ctx context.Context, req broker.OrderRequest) (broker.Submitted, error) {
 	qty := math.Floor(req.Qty)
 	if qty <= 0 {
-		return broker.Fill{}, fmt.Errorf("%w: 수량 0", broker.ErrInsufficient)
+		return broker.Submitted{}, fmt.Errorf("%w: 수량 0", broker.ErrInsufficient)
 	}
 
 	ref := req.RefPrice
 	if ref <= 0 {
 		q, err := b.Quote(ctx, req.Symbol)
 		if err != nil {
-			return broker.Fill{}, err
+			return broker.Submitted{}, err
 		}
 		ref = q.Price
 	}
@@ -261,7 +271,7 @@ func (b *Broker) Buy(ctx context.Context, req broker.OrderRequest) (broker.Fill,
 	// ★ 사전 축소. 키움이 인정하는 수량보다 많이 부르면 주문 자체가 거부된다.
 	if allow, ok := b.buyableQty(ctx, req.Symbol, ref); ok && allow < qty {
 		if allow <= 0 {
-			return broker.Fill{}, fmt.Errorf("%w: 키움 매수가능수량 0", broker.ErrInsufficient)
+			return broker.Submitted{}, fmt.Errorf("%w: 키움 매수가능수량 0", broker.ErrInsufficient)
 		}
 		qty = allow
 	}
@@ -295,15 +305,28 @@ func (b *Broker) Buy(ctx context.Context, req broker.OrderRequest) (broker.Fill,
 		err = b.call(ctx, apiBuy, pathOrder, body, &out)
 	}
 	if err != nil {
-		return broker.Fill{}, err
+		return broker.Submitted{SubmittedAt: submitted}, err
 	}
-	return b.waitFill(ctx, req.Symbol, out.OrdNo, qty, "buy", ref, submitted)
+	if out.OrdNo == "" {
+		return broker.Submitted{SubmittedAt: submitted},
+			fmt.Errorf("주문번호가 비었다 — 체결을 추적할 수 없다 (%w)", broker.ErrMaybeSent)
+	}
+	return broker.Submitted{OrderID: out.OrdNo, Qty: qty, RefPrice: ref, SubmittedAt: submitted}, nil
 }
 
 func (b *Broker) Sell(ctx context.Context, req broker.OrderRequest) (broker.Fill, error) {
+	sub, err := b.SubmitSell(ctx, req)
+	if err != nil {
+		return broker.Fill{BrokerOrderID: sub.OrderID, SubmittedAt: sub.SubmittedAt}, err
+	}
+	return b.waitFill(ctx, req.Symbol, sub.OrderID, sub.Qty, "sell", sub.RefPrice, sub.SubmittedAt)
+}
+
+// SubmitSell — 매도를 내고 접수되면 바로 돌아온다.
+func (b *Broker) SubmitSell(ctx context.Context, req broker.OrderRequest) (broker.Submitted, error) {
 	qty := math.Floor(req.Qty)
 	if qty <= 0 {
-		return broker.Fill{}, fmt.Errorf("%w: 수량 0", broker.ErrNotEnoughShare)
+		return broker.Submitted{}, fmt.Errorf("%w: 수량 0", broker.ErrNotEnoughShare)
 	}
 
 	body := map[string]string{
@@ -324,9 +347,13 @@ func (b *Broker) Sell(ctx context.Context, req broker.OrderRequest) (broker.Fill
 		OrdNo string `json:"ord_no"`
 	}
 	if err := b.call(ctx, apiSell, pathOrder, body, &out); err != nil {
-		return broker.Fill{}, err
+		return broker.Submitted{SubmittedAt: submitted}, err
 	}
-	return b.waitFill(ctx, req.Symbol, out.OrdNo, qty, "sell", req.RefPrice, submitted)
+	if out.OrdNo == "" {
+		return broker.Submitted{SubmittedAt: submitted},
+			fmt.Errorf("주문번호가 비었다 — 체결을 추적할 수 없다 (%w)", broker.ErrMaybeSent)
+	}
+	return broker.Submitted{OrderID: out.OrdNo, Qty: qty, RefPrice: req.RefPrice, SubmittedAt: submitted}, nil
 }
 
 // PlaceTP — 익절 지정가 매도를 브로커에 위임한다. 체결을 기다리지 않는다.
@@ -374,7 +401,11 @@ func (b *Broker) LimitStatus(ctx context.Context, s protocol.Symbol, orderID str
 	if err != nil {
 		return broker.LimitStatus{Open: true}, err
 	}
-	st := broker.LimitStatus{FilledQty: agg.qty, FeeKRW: agg.fee, FilledAt: agg.last, Open: true}
+	// ★ 미체결 수량(oso_qty)·상태(ord_stt)가 실리면 주문이 끝났는지 안다. 행이 없으면 모른다(Open=true).
+	st := broker.LimitStatus{FilledQty: agg.qty, FeeKRW: agg.fee, FilledAt: agg.last, Open: true, Known: agg.seen}
+	if agg.seen && agg.closed {
+		st.Open = false
+	}
 	if agg.qty > 0 {
 		st.AvgPrice = agg.amount / agg.qty
 	}
@@ -449,6 +480,8 @@ type fillAgg struct {
 	amount float64 // Σ(체결가 × 수량)
 	fee    float64
 	last   time.Time
+	// seen — 이 주문번호의 행이 조회에 나왔다. closed — 미체결 0 이고 상태가 끝(체결·취소·거부)이다.
+	seen, closed bool
 }
 
 func (b *Broker) toFill(ordNo string, a fillAgg, side string, ref float64,
@@ -497,12 +530,19 @@ func (b *Broker) fetchFills(ctx context.Context, s protocol.Symbol, ordNo string
 			Cmsn     string `json:"tdy_trde_cmsn"`
 			Tax      string `json:"tdy_trde_tax"`
 			OrdTm    string `json:"ord_tm"`
+			OsoQty   string `json:"oso_qty"` // 미체결수량
+			OrdStt   string `json:"ord_stt"` // 주문상태 (접수·체결·취소·거부 …)
 		}
 		if err := json.Unmarshal(row, &r); err != nil {
 			continue
 		}
 		if r.OrdNo != ordNo {
 			continue
+		}
+		agg.seen = true
+		// 끝난 주문 = 미체결 0 이 **명시**되고 상태가 접수 중이 아니다. 필드가 비면 모른다(살아 있다고 본다).
+		if strings.TrimSpace(r.OsoQty) != "" && num(r.OsoQty) == 0 && !strings.Contains(r.OrdStt, "접수") {
+			agg.closed = true
 		}
 		q := math.Abs(num(r.CntrQty))
 		if q <= 0 {

@@ -24,7 +24,7 @@ func (x *Executor) checkDelegatedTPs(ctx context.Context, now time.Time, res *Re
 		return
 	}
 	for _, p := range x.d.Engine.Positions() {
-		if p.TpOrderID == "" {
+		if p.TpOrderID == "" || x.isWorking(p.IntentID) {
 			continue
 		}
 		if last, seen := x.tpChecked[p.IntentID]; seen && now.Sub(last) < tpCheckEvery {

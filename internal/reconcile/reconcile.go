@@ -106,6 +106,9 @@ type Options struct {
 	// ★ paper 에서는 신호원 mark 가 아니라 거래소 시세여야 한다 — mark 는 같은 신호원이 보낸 값이다.
 	RefCheckPrice func(protocol.Symbol) (float64, bool)
 	RefMaxDev     float64
+	// CanEnter — 지금 이 종목에 새 진입을 낼 수 있는가 (장 시간·동시호가·휴장일). nil 이면 안 본다.
+	// ★ 장 밖 진입은 E_MARKET_CLOSED 로 **계획 단계에서** 거절한다 — 발행자가 ack 로 알 수 있게.
+	CanEnter func(protocol.Symbol) bool
 	// Price — 사이징 참조가. 없으면 그 종목은 진입하지 않는다.
 	Price func(protocol.Symbol) (float64, bool)
 	// Market — 종목별 주문 제약. nil 이면 주식 기본값.
@@ -229,6 +232,9 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 
 		case localBlock != "":
 			plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{localBlock}))
+
+		case opt.CanEnter != nil && !opt.CanEnter(t.Symbol):
+			plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{protocol.CodeMarketClosed}))
 
 		default:
 			if note := refPriceGuard(t, opt); note != "" {

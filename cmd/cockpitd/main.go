@@ -36,6 +36,7 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/notify"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/quotes"
+	"github.com/kh-ssong/yovel-cockpit/internal/session"
 	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
 	"github.com/kh-ssong/yovel-cockpit/internal/store"
 	"github.com/kh-ssong/yovel-cockpit/internal/version"
@@ -110,6 +111,24 @@ func run() error {
 		log.Info("장부 설정 없음 — 모든 소스가 엔진 예산 하나로 돈다", "engine_budget", cfg.EngineBudget)
 	}
 
+	// 장 달력 — 동시호가·장 밖·휴장일·점검 (internal/session).
+	holPath := cfg.HolidaysFile
+	if holPath == "" {
+		holPath = filepath.Join(cfg.DataDir, "holidays_krx.json")
+	}
+	cal, err := session.LoadCalendar(holPath)
+	if err != nil {
+		return fmt.Errorf("휴장일: %w", err)
+	}
+	log.Info("KRX 휴장일 달력", "file", holPath, "until", cal.Last().Format("2006-01-02"))
+	calStale := !cal.CoversUntil(time.Now().AddDate(0, 0, 30))
+	if cfg.IgnoreMarketHours {
+		log.Warn("★ --ignore-market-hours — 장 시간·동시호가·휴장일을 무시한다 (테스트 전용)")
+		if cfg.Mode == protocol.ModeLive && cfg.KiwoomAPIURL == "" {
+			return fmt.Errorf("--ignore-market-hours 는 실계좌(live + 실제 키움 주소)에 쓸 수 없다")
+		}
+	}
+
 	// marks — flat6 가 목표에 실어 보낸 가격. 엔진이 생기기 전에 paper 가 참조를 잡아야 해서
 	// 간접 참조로 둔다 (엔진 → 시세 → paper → marks → 엔진 순환을 끊는다).
 	var eng *engine.Engine
@@ -141,6 +160,7 @@ func run() error {
 		// 신호가 검증 — 실브로커면 브로커 시세, paper 면 신호원 mark 를 뺀 거래소 시세.
 		RefCheckPrice: refCheck(refFeed, qs.Price),
 		RefMaxDev:     cfg.RefMaxDev,
+		CanEnter:      canEnter(cal, cfg.IgnoreMarketHours),
 		OnInactive: func(kid, scope string, n int) {
 			// alert 는 아래에서 만든다 — 기동 순서상 엔진이 먼저라 간접으로 부른다.
 			if onInactive != nil {
@@ -292,11 +312,22 @@ func run() error {
 		// 같은 틱에서도 다른 값을 본다). 1분보다 늙은 시세로는 stop 을 판정하지 않는다.
 		Quote:       qs.Get,
 		MaxPriceAge: time.Minute,
+		// 장 시간·동시호가 — 주문 제출과 체결 추적이 분리돼 있어 동시호가 중 청산을 취소하지 않는다.
+		Session:          sessionOrNil(cal, cfg.IgnoreMarketHours),
+		EntryFillTimeout: cfg.EntryFillTimeout,
+		ExitCutoff:       cfg.KRXExitCutoff,
+		BrokerExchange:   brokerExchange(cfg.Broker),
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if calStale {
+		msg := fmt.Sprintf("📅 KRX 휴장일 목록이 %s 에서 끝난다 — %s 를 갱신할 것 (모르는 휴장일엔 주문이 전부 거부된다)",
+			cal.Last().Format("2006-01-02"), holPath)
+		log.Warn(msg)
+		notifier.Send(msg)
+	}
 	notifier.Send(fmt.Sprintf("▶️ 콕핏 기동 · %s · broker=%s · 보유 %d · %s",
 		strings.ToUpper(string(cfg.Mode)), br.Name(), len(snap.Positions), v.Version))
 
@@ -425,6 +456,9 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	// 진행 중 주문(접수됐지만 미확정)은 0.5초마다 확인한다 — 체결 확정이 틱 주기(5초)에 묶이지 않게.
+	fast := time.NewTicker(500 * time.Millisecond)
+	defer fast.Stop()
 	var lastBlind time.Time
 
 	for {
@@ -433,6 +467,23 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 			return
 		case <-wake: // 목표 도착 — 틱을 기다리지 않는다
 		case <-t.C:
+		case <-fast.C:
+			if !exec.HasWorking() {
+				continue
+			}
+			res := exec.PollWorking(ctx, time.Now().UTC())
+			for _, e := range res.Errors {
+				k := e
+				if len(k) > 40 {
+					k = k[:40]
+				}
+				alert("err:"+k, "⚠️ 집행 오류: "+e)
+			}
+			if res.Entered+res.Exited+res.PartialExits+res.Reduced > 0 || len(res.Errors) > 0 {
+				log.Info("체결 확정", "entered", res.Entered, "exited", res.Exited,
+					"partial_exits", res.PartialExits, "reduced", res.Reduced, "errors", res.Errors)
+			}
+			continue
 		}
 
 		res := exec.Tick(ctx, time.Now().UTC())
@@ -557,6 +608,31 @@ func accountProvider(br broker.Broker, price func(protocol.Symbol) (float64, boo
 		acc.Equity = acc.Deposit + acc.Holdings
 		return acc
 	}
+}
+
+func sessionOrNil(c *session.Calendar, ignore bool) *session.Calendar {
+	if ignore {
+		return nil
+	}
+	return c
+}
+
+func canEnter(c *session.Calendar, ignore bool) func(protocol.Symbol, time.Time) bool {
+	if ignore {
+		return nil
+	}
+	return func(s protocol.Symbol, now time.Time) bool { return c.CanEnter(s.Exchange, now) }
+}
+
+// brokerExchange — 실브로커가 다루는 거래소 (점검 시간·장 밖 틱 조절용). paper 는 둘 다라 빈 값.
+func brokerExchange(b string) string {
+	switch b {
+	case "kiwoom":
+		return "KRX"
+	case "upbit":
+		return "UPBIT"
+	}
+	return ""
 }
 
 func refCheck(feed, fallback func(protocol.Symbol) (float64, bool)) func(protocol.Symbol) (float64, bool) {

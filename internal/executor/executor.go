@@ -19,6 +19,7 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/engine"
 	"github.com/kh-ssong/yovel-cockpit/internal/ids"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
+	"github.com/kh-ssong/yovel-cockpit/internal/session"
 	"github.com/kh-ssong/yovel-cockpit/internal/store"
 )
 
@@ -37,10 +38,25 @@ type Deps struct {
 
 	// Notify — 체결을 사람에게 알린다 (텔레그램). nil 이면 안 알린다. ★ 비동기여야 한다.
 	Notify func(o store.Order, slot string)
+
+	// Session — 장 시간·동시호가·휴장일 (internal/session). nil 이면 시간을 모른다(예전 동작).
+	Session *session.Calendar
+	// EntryFillTimeout — 진입 주문이 이 안에 다 안 차면 잔량 취소. 0 이면 60초.
+	EntryFillTimeout time.Duration
+	// ExitCutoff — KRX 시간청산 상한 "15:15". 시간청산이 이보다 늦게 잡혀 오면 이 시각에 장중 매도한다.
+	// ★ 15:20 부터는 장마감 동시호가라 장중 매도가 안 된다 (user 2026-10-01: D-205 는 15:15 장중 매도).
+	ExitCutoff string
+	// BrokerExchange — 실브로커가 다루는 거래소 ("KRX" 면 점검 시간에 API 를 쉬고 장 밖엔 틱을 늦춘다).
+	BrokerExchange string
 }
 
 type Executor struct {
 	d Deps
+	// work — 진행 중 주문 (주문번호 → 주문). 원장 working_orders 와 같은 내용 (orders.go).
+	work   map[string]*store.WorkingOrder
+	loaded bool
+	// lastIdle — 장 밖 한산한 시간의 마지막 전체 틱 (그땐 1분에 한 번만 돈다).
+	lastIdle time.Time
 	// tpChecked — 로트별 마지막 TP 체결 조회 시각. 5초 틱마다 전부 물으면 조회 한도를 먹는다.
 	tpChecked map[string]time.Time
 }
@@ -49,7 +65,7 @@ func New(d Deps) *Executor {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
-	return &Executor{d: d, tpChecked: map[string]time.Time{}}
+	return &Executor{d: d, tpChecked: map[string]time.Time{}, work: map[string]*store.WorkingOrder{}}
 }
 
 // Result — 이번 틱에 실제로 일어난 일.
@@ -62,6 +78,8 @@ type Result struct {
 	PartialExits int `json:"partial_exits,omitempty"`
 	// Reduced — 분할매도(hold_frac)로 일부러 줄인 로트 수.
 	Reduced int `json:"reduced,omitempty"`
+	// Deferred — 장 밖이라 미룬 주문 수 (로트는 그대로, 장이 열리면 다시).
+	Deferred int `json:"deferred,omitempty"`
 	// ClosedByBroker — 우리가 안 팔았는데 브로커에서 사라진 포지션 (TP 체결 또는 수동 매도).
 	ClosedByBroker int `json:"closed_by_broker"`
 	// Blind — stop 이 걸려 있는데 시세가 없거나 늙어 평가하지 못한 포지션.
@@ -89,6 +107,27 @@ type limitSettler interface {
 // 09:00 에 한 종목의 거부가 전체 집행을 막으면 그날 매매가 통째로 증발한다.
 func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 	var res Result
+
+	// 장 밖 처리 — 점검 시간엔 브로커를 아예 부르지 않고(토큰 발급이 엉뚱한 페이지로 간다),
+	// 한산한 장 밖 시간엔 1분에 한 번만 돈다 (진행 중 주문 추적은 PollWorking 이 따로 한다).
+	if x.d.Session != nil && x.d.BrokerExchange == "KRX" {
+		switch x.d.Session.KRX(now) {
+		case session.Maintenance:
+			return res
+		case session.Closed:
+			if now.Sub(x.lastIdle) < time.Minute {
+				return res
+			}
+			x.lastIdle = now
+		}
+	}
+
+	// 진행 중 주문부터 — 체결된 걸 먼저 확정해야 아래 판단이 최신 로트를 본다.
+	x.ensureLoaded(ctx, &res)
+	if len(x.work) > 0 {
+		r := x.PollWorking(ctx, now)
+		mergeResult(&res, r)
+	}
 
 	// ★ 순서 주의 — 정산을 syncPositions **앞에** 둔다. 뒤에 두면 이번 틱의 포지션 목록이
 	//   이미 팔린 종목을 담고 있어 한 틱 늦게 종결되고, paper 만 라이브보다 굼떠 보인다.
@@ -123,7 +162,7 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 	// ★ 이번 틱에 팔았거나 줄인 로트는 건너뛴다 — 계획의 포지션은 **매도 전 수량**이라, 그걸로
 	//   원장을 갱신하면 방금 줄인 수량이 되돌아가고 TP 는 가진 것보다 많이 걸린다. 다음 틱이 다시 계획한다.
 	for _, u := range plan.StopUpdates {
-		if sold[u.Position.IntentID] {
+		if sold[u.Position.IntentID] || x.isWorking(u.Position.IntentID) {
 			continue
 		}
 		if err := x.armStop(ctx, u.Position, u.To); err != nil {
@@ -135,7 +174,7 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 
 	// ③ TP 위임 — exit 3층 중 제일 튼튼한 층. 데몬도 서버도 죽어도 이건 체결된다.
 	for _, u := range plan.TpUpdates {
-		if sold[u.Position.IntentID] {
+		if sold[u.Position.IntentID] || x.isWorking(u.Position.IntentID) {
 			continue
 		}
 		if err := x.placeTP(ctx, u.Position, u.To); err != nil {
@@ -187,6 +226,11 @@ func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result
 	}
 
 	for _, p := range open {
+		if x.isWorking(p.IntentID) {
+			// 청산 주문이 진행 중인 로트는 진행 중 주문 추적이 확정한다 — 여기서 "사라짐" 으로 먼저 닫으면
+			// 체결가 미상으로 한 번, 확정으로 또 한 번 기록된다.
+			continue
+		}
 		h, ok := byCode[p.Symbol.Code]
 		if !ok || h.Qty <= 0 {
 			// ★ 걸어 둔 TP 가 있으면 먼저 **주문번호로** 체결가를 확인한다 (2026-09-30 e2e 발견).
@@ -240,12 +284,21 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 }
 
 // doSell — 로트에서 qty 만큼 판다. qty 가 로트 전량이면 청산, 아니면 분할매도(hold_frac).
+//
+// ★ 실브로커(Submitter)는 **내고 바로 돌아온다** — 체결은 진행 중 주문으로 추적한다(orders.go).
+// 동시호가·VI 중엔 체결이 늦게 오는 게 정상이라, 기다리느라 루프를 막거나 시간으로 취소하지 않는다.
 func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Position, qty float64,
 	reason string, res *Result) {
 	if qty <= 0 || qty > pos.Qty {
 		qty = pos.Qty
 	}
-	lot := x.d.Broker.LotSize(pos.Symbol)
+	if x.isWorking(pos.IntentID) || pos.Pending {
+		return // 이미 낸 주문이 진행 중이다 — 또 내면 두 번 판다
+	}
+	if !x.canExit(pos.Symbol, now) {
+		res.Deferred++ // 장 밖 — 로트는 그대로 두고 장이 열리면(08:59~) 다시 판다
+		return
+	}
 	// ★ 걸어둔 TP 지정가를 먼저 취소하지 않으면 그 수량이 잠겨 시장가 매도가 거부된다.
 	if pos.TpOrderID != "" {
 		if err := x.d.Broker.CancelOrder(ctx, pos.Symbol, pos.TpOrderID); err != nil {
@@ -260,14 +313,40 @@ func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Posit
 		x.d.Engine.UpsertPosition(pos)
 	}
 
-	fill, err := x.d.Broker.Sell(ctx, broker.OrderRequest{
-		IntentID: pos.IntentID, Symbol: pos.Symbol, Qty: qty,
-	})
+	req := broker.OrderRequest{IntentID: pos.IntentID, Symbol: pos.Symbol, Qty: qty}
+	if sub, ok := x.d.Broker.(broker.Submitter); ok {
+		s, err := sub.SubmitSell(ctx, req)
+		if err != nil {
+			res.fail("매도 %s(%s): %v", pos.IntentID, pos.Symbol.Code, err)
+			return
+		}
+		w := store.WorkingOrder{
+			OrderID: s.OrderID, IntentID: pos.IntentID, Purpose: "exit", Reason: reason, Side: "sell",
+			Symbol: pos.Symbol, Qty: s.Qty, RefPrice: s.RefPrice, Kid: pos.Kid, Scope: pos.Scope,
+			SubmittedAt: s.SubmittedAt, PlacedAt: now,
+		}
+		x.track(ctx, w, res)
+		x.pollOne(ctx, now, x.work[w.OrderID], res) // 대개 바로 체결된다 — 같은 틱에 확정
+		return
+	}
+
+	fill, err := x.d.Broker.Sell(ctx, req)
 	if err != nil {
 		res.fail("매도 %s(%s): %v", pos.IntentID, pos.Symbol.Code, err)
 		return
 	}
+	x.finishSell(ctx, now, pos, qty, reason, fill, res)
+}
 
+// finishSell — 체결된 매도를 원장에 확정한다 (전량이면 종결, 아니면 남은 수량으로 줄인다).
+func (x *Executor) finishSell(ctx context.Context, now time.Time, pos protocol.Position, qty float64,
+	reason string, fill broker.Fill, res *Result) {
+	lot := x.d.Broker.LotSize(pos.Symbol)
+	if fill.Qty <= lot/2 {
+		// 체결 없이 끝난 청산(장 마감으로 소멸 등) — 로트는 그대로, 다음 장에 다시 판다.
+		res.fail("청산 %s(%s) 이 체결 없이 끝났다 — 로트 유지, 다음 기회에 다시 판다", pos.IntentID, pos.Symbol.Code)
+		return
+	}
 	// ★ 부분체결 — 판 만큼만 적고 **종결하지 않는다**. 예전엔 여기서 무조건 종결해서 남은 수량이
 	// 원장 밖 유령이 됐다 (stop·시간청산·판단자 신호 어느 것도 다시는 그걸 팔지 않는다).
 	// 남은 수량으로 줄여 두면, 청산 사유(flat·derisk)가 그대로 살아 있으므로 다음 틱이 나머지를 판다.
@@ -330,6 +409,13 @@ func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Posit
 
 func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protocol.Target,
 	qty, ref float64, kid, scope string, res *Result) {
+	if x.isWorking(t.IntentID) {
+		return // 이미 낸 진입이 진행 중
+	}
+	if x.d.Session != nil && !x.d.Session.CanEnter(t.Symbol.Exchange, now) {
+		res.Deferred++
+		return
+	}
 	req := broker.OrderRequest{
 		IntentID: t.IntentID, Symbol: t.Symbol, Qty: qty, RefPrice: ref,
 	}
@@ -340,14 +426,42 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 		}
 	}
 
+	if sub, ok := x.d.Broker.(broker.Submitter); ok {
+		s, err := sub.SubmitBuy(ctx, req)
+		if err != nil {
+			x.buyFailed(ctx, now, t, qty, kid, scope, s.OrderID, err, res)
+			return
+		}
+		tt := t
+		w := store.WorkingOrder{
+			OrderID: s.OrderID, IntentID: t.IntentID, Purpose: "entry", Side: "buy", Symbol: t.Symbol,
+			Qty: s.Qty, RefPrice: s.RefPrice, Kid: kid, Scope: scope, Target: &tt, AsOfBar: asOfBar,
+			SubmittedAt: s.SubmittedAt, PlacedAt: now, Deadline: now.Add(x.entryTimeout()),
+		}
+		x.track(ctx, w, res)
+		x.pendingLot(w)
+		x.pollOne(ctx, now, x.work[w.OrderID], res) // 대개 바로 체결된다 — 같은 틱에 확정
+		return
+	}
+
 	fill, err := x.d.Broker.Buy(ctx, req)
+	if err != nil {
+		x.buyFailed(ctx, now, t, qty, kid, scope, fill.BrokerOrderID, err, res)
+		return
+	}
+	x.finishEnter(ctx, now, asOfBar, t, kid, scope, fill, res)
+}
+
+// buyFailed — 매수가 안 됐다. ★ 결과를 모르면(ErrMaybeSent) 목표를 종결해 재매수를 막는다.
+func (x *Executor) buyFailed(ctx context.Context, now time.Time, t protocol.Target, qty float64,
+	kid, scope, orderID string, err error, res *Result) {
 	if errors.Is(err, broker.ErrMaybeSent) {
 		// ★ 매수가 나갔는지 모른다. 그냥 실패로 두면 목표가 그대로라 **다음 틱에 또 산다** —
 		// 드라이버가 재시도를 막아도 여기서 두 번 산다. 이 목표는 종결시켜 재진입을 막고 사람에게 알린다.
 		// 실제로 체결됐다면 그 보유는 장부 밖에 남는다 — 두 번 사는 것보다 낫고, 알림으로 드러난다.
 		x.recordFill(ctx, t.Slot, kid, scope, store.Order{
 			ID: ids.NewAt(now), IntentID: t.IntentID, Phase: "rejected",
-			Symbol: t.Symbol, Side: "buy", Qty: qty, BrokerOrderID: fill.BrokerOrderID,
+			Symbol: t.Symbol, Side: "buy", Qty: qty, BrokerOrderID: orderID,
 			Detail: "★ 매수 결과 미상 — 목표 종결(재진입 차단). 브로커 잔고를 사람이 확인할 것: " + err.Error(),
 		}, res)
 		if cerr := x.d.Store.UpsertIntent(ctx, store.Intent{
@@ -360,11 +474,12 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 		res.fail("★ 매수 결과 미상 %s(%s) — 재진입 차단, 잔고 확인 필요: %v", t.IntentID, t.Symbol.Code, err)
 		return
 	}
-	if err != nil {
-		res.fail("매수 %s(%s): %v", t.IntentID, t.Symbol.Code, err)
-		return
-	}
+	res.fail("매수 %s(%s): %v", t.IntentID, t.Symbol.Code, err)
+}
 
+// finishEnter — 체결된 진입을 원장에 확정하고 로트를 만든다.
+func (x *Executor) finishEnter(ctx context.Context, now, asOfBar time.Time, t protocol.Target,
+	kid, scope string, fill broker.Fill, res *Result) {
 	// signal_ts = 신호가 나온 봉의 시각. 원장에서 재는 것이 "신호 → 체결" 지연이라 여기가 기준점이다.
 	//
 	// ★ 예전엔 entry.not_after 를 대신 썼는데 그건 **진입 마감시각(미래)** 이라
@@ -509,6 +624,15 @@ func (x *Executor) noteClose(p protocol.Position, reason string, price float64, 
 		c.RealizedPct = realizedPct(p.AvgEntryPrice, price)
 	}
 	x.d.Engine.NoteClose(c)
+}
+
+// mergeResult — 진행 중 주문 확인 결과를 틱 결과에 합친다.
+func mergeResult(dst *Result, r Result) {
+	dst.Entered += r.Entered
+	dst.Exited += r.Exited
+	dst.PartialExits += r.PartialExits
+	dst.Reduced += r.Reduced
+	dst.Errors = append(dst.Errors, r.Errors...)
 }
 
 func realizedPct(entry, exit float64) float64 {

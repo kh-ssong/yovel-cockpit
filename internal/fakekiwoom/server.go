@@ -537,6 +537,8 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		}
 		remarshal(in, &v)
 		s.cash = v.Cash
+	case "/_admin/match":
+		s.matchLocked() // 동시호가 단일가 체결 — 열린 시장가를 전부 지금 가격에
 	case "/_admin/token/rotate":
 		s.token = "" // 다음 요청은 8005 → 드라이버가 재발급해야 한다
 	case "/_admin/state":
@@ -598,6 +600,24 @@ func (s *Server) SetPrice(code string, p float64) {
 }
 
 func (s *Server) SetScenario(sc Scenario) { s.mu.Lock(); s.scen = sc; s.mu.Unlock() }
+
+// Match — 열려 있는 시장가 주문의 잔량을 지금 가격에 전부 체결한다 (동시호가 단일가 체결·VI 해제 흉내).
+func (s *Server) Match() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.matchLocked()
+}
+
+func (s *Server) matchLocked() {
+	now := s.cfg.Now()
+	for _, o := range s.orders {
+		if o.status == "open" && o.market {
+			s.fillLocked(o, o.qty-o.filled, s.prices[o.code], now)
+			o.pending = nil
+			o.status, o.reserved = "done", 0
+		}
+	}
+}
 func (s *Server) AddFault(f Fault) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

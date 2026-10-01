@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/guard"
+	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
+	"github.com/kh-ssong/yovel-cockpit/internal/session"
 )
 
 // enforceLocalExits — 시간청산과 로컬 stop 을 판정하고, 걸린 포지션을 시장가로 판다.
@@ -16,10 +18,26 @@ import (
 //
 // ★ 시간청산은 시세 없이 성립한다(시계만 필요). stop 은 신선한 시세가 있을 때만 판정하고,
 // 없으면 팔지 않고 Blind 로 올린다 — 피드 글리치 한 번에 전 포지션을 시장가로 털지 않는다.
+// effectiveTimeExit — KRX 시간청산을 ExitCutoff(예: 15:15) 로 당긴다. 15:20 부터는 동시호가라 장중 매도가 안 된다.
+func (x *Executor) effectiveTimeExit(p protocol.Position) *time.Time {
+	t := p.TimeExitAt
+	if t == nil || x.d.ExitCutoff == "" || p.Symbol.Exchange == "UPBIT" {
+		return t
+	}
+	cut, err := session.ExitCutoffOn(*t, x.d.ExitCutoff)
+	if err != nil || !t.After(cut) {
+		return t
+	}
+	return &cut
+}
+
 func (x *Executor) enforceLocalExits(ctx context.Context, now time.Time, res *Result) map[string]bool {
 	sold := map[string]bool{}
 	for _, pos := range x.d.Engine.Positions() {
-		rules := guard.Rules{StopPrice: pos.StopArmed, TimeExitAt: pos.TimeExitAt}
+		if pos.Pending || x.isWorking(pos.IntentID) {
+			continue // 아직 체결 확정 전이거나 청산 주문이 진행 중이다
+		}
+		rules := guard.Rules{StopPrice: pos.StopArmed, TimeExitAt: x.effectiveTimeExit(pos)}
 		in := guard.Inputs{Now: now, MaxPriceAge: x.d.MaxPriceAge}
 
 		timeDue := rules.TimeExitAt != nil && !now.Before(*rules.TimeExitAt)

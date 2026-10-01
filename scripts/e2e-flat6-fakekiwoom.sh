@@ -39,7 +39,7 @@ curl -s -m1 $A/state >/dev/null || { echo "★ fakekiwoom 이 안 떴다"; cat "
 COCKPIT_KIWOOM_APPKEY=fake COCKPIT_KIWOOM_SECRET=fake COCKPIT_KIWOOM_TOKEN_FILE="$OUT/cockpit/kiwoom_token.json" \
 COCKPIT_TELEGRAM_BOT_TOKEN= \
 "$OUT/cockpitd$EXE" --data-dir "$OUT/cockpit" --port $CP --ui=false --acct acc_flat6dummy --engine-budget 6000000 \
-  --broker kiwoom --kiwoom-api-url http://127.0.0.1:$FK --mode live > "$OUT/cockpit.log" 2>&1 &
+  --broker kiwoom --kiwoom-api-url http://127.0.0.1:$FK --mode live --ignore-market-hours > "$OUT/cockpit.log" 2>&1 &
 CPID=$!
 for i in $(seq 1 30); do curl -s -m1 http://127.0.0.1:$CP/v1/health >/dev/null && break; sleep 0.5; done
 curl -s -X POST $A/scenario -d '{"fill":"split","chunks":3,"interval_ms":400}' >/dev/null

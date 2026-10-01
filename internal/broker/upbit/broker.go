@@ -235,28 +235,38 @@ func (b *Broker) chance(ctx context.Context, m string) (allow float64, ok bool) 
 // ★ 업비트 시장가 매수는 수량을 받지 않는다. 사이징이 준 qty 를 기준가로 금액화하고,
 // 실제 체결 수량은 시세에 따라 조금 달라진다 — 원장엔 **체결 수량**이 실린다.
 func (b *Broker) Buy(ctx context.Context, req broker.OrderRequest) (broker.Fill, error) {
+	sub, err := b.SubmitBuy(ctx, req)
+	if err != nil {
+		return broker.Fill{BrokerOrderID: sub.OrderID, SubmittedAt: sub.SubmittedAt}, err
+	}
+	return b.waitFill(ctx, sub.OrderID, "buy", sub.RefPrice, sub.SubmittedAt)
+}
+
+// SubmitBuy — 매수를 내고 접수되면 바로 돌아온다. 시장가는 **금액**(qty × 기준가)으로 낸다 —
+// 업비트 시장가 매수는 수량을 받지 않는다. Submitted.Qty 는 추정치이고 실제 수량은 체결로 정해진다.
+func (b *Broker) SubmitBuy(ctx context.Context, req broker.OrderRequest) (broker.Submitted, error) {
 	m, err := market(req.Symbol)
 	if err != nil {
-		return broker.Fill{}, err
+		return broker.Submitted{}, err
 	}
 	if req.Qty <= 0 {
-		return broker.Fill{}, fmt.Errorf("%w: 수량 0", broker.ErrInsufficient)
+		return broker.Submitted{}, fmt.Errorf("%w: 수량 0", broker.ErrInsufficient)
 	}
 	ref := req.RefPrice
 	if ref <= 0 {
 		q, err := b.Quote(ctx, req.Symbol)
 		if err != nil {
-			return broker.Fill{}, err
+			return broker.Submitted{}, err
 		}
 		ref = q.Price
 	}
 
+	qty := floor8(req.Qty)
 	p := url.Values{"market": {m}, "side": {"bid"}}
 	if req.LimitPrice > 0 {
 		price := FloorToTick(req.LimitPrice)
-		qty := floor8(req.Qty)
 		if qty*price < MinOrderKRW {
-			return broker.Fill{}, fmt.Errorf("%w: %.0f원 < 최소주문금액", broker.ErrInsufficient, qty*price)
+			return broker.Submitted{}, fmt.Errorf("%w: %.0f원 < 최소주문금액", broker.ErrInsufficient, qty*price)
 		}
 		p.Set("ord_type", "limit")
 		p.Set("price", priceStr(price))
@@ -268,22 +278,34 @@ func (b *Broker) Buy(ctx context.Context, req broker.OrderRequest) (broker.Fill,
 			amount = allow
 		}
 		if amount < MinOrderKRW {
-			return broker.Fill{}, fmt.Errorf("%w: %.0f원 < 최소주문금액", broker.ErrInsufficient, amount)
+			return broker.Submitted{}, fmt.Errorf("%w: %.0f원 < 최소주문금액", broker.ErrInsufficient, amount)
 		}
 		p.Set("ord_type", "price")
 		p.Set("price", priceStr(amount))
+		qty = floor8(amount / ref)
 	}
-	return b.place(ctx, p, "buy", ref)
+	sub, err := b.submit(ctx, p)
+	sub.Qty, sub.RefPrice = qty, ref
+	return sub, err
 }
 
 func (b *Broker) Sell(ctx context.Context, req broker.OrderRequest) (broker.Fill, error) {
+	sub, err := b.SubmitSell(ctx, req)
+	if err != nil {
+		return broker.Fill{BrokerOrderID: sub.OrderID, SubmittedAt: sub.SubmittedAt}, err
+	}
+	return b.waitFill(ctx, sub.OrderID, "sell", sub.RefPrice, sub.SubmittedAt)
+}
+
+// SubmitSell — 매도를 내고 접수되면 바로 돌아온다.
+func (b *Broker) SubmitSell(ctx context.Context, req broker.OrderRequest) (broker.Submitted, error) {
 	m, err := market(req.Symbol)
 	if err != nil {
-		return broker.Fill{}, err
+		return broker.Submitted{}, err
 	}
 	qty := floor8(req.Qty)
 	if qty <= 0 {
-		return broker.Fill{}, fmt.Errorf("%w: 수량 0", broker.ErrNotEnoughShare)
+		return broker.Submitted{}, fmt.Errorf("%w: 수량 0", broker.ErrNotEnoughShare)
 	}
 	p := url.Values{"market": {m}, "side": {"ask"}, "volume": {volStr(qty)}}
 	if req.LimitPrice > 0 {
@@ -292,7 +314,23 @@ func (b *Broker) Sell(ctx context.Context, req broker.OrderRequest) (broker.Fill
 	} else {
 		p.Set("ord_type", "market")
 	}
-	return b.place(ctx, p, "sell", req.RefPrice)
+	sub, err := b.submit(ctx, p)
+	sub.Qty, sub.RefPrice = qty, req.RefPrice
+	return sub, err
+}
+
+// submit — 주문을 내고 uuid 를 받는다 (체결을 기다리지 않는다).
+func (b *Broker) submit(ctx context.Context, p url.Values) (broker.Submitted, error) {
+	submitted := b.now().UTC()
+	var o order
+	if err := b.do(ctx, http.MethodPost, "/orders", p, &o); err != nil {
+		return broker.Submitted{SubmittedAt: submitted}, err
+	}
+	if o.UUID == "" {
+		return broker.Submitted{SubmittedAt: submitted},
+			fmt.Errorf("주문 uuid 가 비었다 — 체결을 추적할 수 없다 (%w)", errMaybeSent)
+	}
+	return broker.Submitted{OrderID: o.UUID, SubmittedAt: submitted}, nil
 }
 
 // PlaceTP — 익절 지정가 매도를 거래소에 위임한다. 체결을 기다리지 않는다.
@@ -328,7 +366,7 @@ func (b *Broker) LimitStatus(ctx context.Context, _ protocol.Symbol, orderID str
 	if err := b.do(ctx, http.MethodGet, "/order", url.Values{"uuid": {orderID}}, &o); err != nil {
 		return broker.LimitStatus{Open: true}, err
 	}
-	st := broker.LimitStatus{Open: !o.final(), FeeKRW: float64(o.PaidFee)}
+	st := broker.LimitStatus{Open: !o.final(), FeeKRW: float64(o.PaidFee), Known: true}
 	var funds float64
 	for _, t := range o.Trades {
 		st.FilledQty += float64(t.Volume)
@@ -373,20 +411,6 @@ type order struct {
 }
 
 func (o order) final() bool { return o.State == "done" || o.State == "cancel" }
-
-// place 는 주문을 내고 끝날 때까지 기다린다.
-func (b *Broker) place(ctx context.Context, p url.Values, side string, ref float64) (broker.Fill, error) {
-	submitted := b.now().UTC()
-	var o order
-	if err := b.do(ctx, http.MethodPost, "/orders", p, &o); err != nil {
-		return broker.Fill{SubmittedAt: submitted}, err
-	}
-	if o.UUID == "" {
-		return broker.Fill{SubmittedAt: submitted},
-			fmt.Errorf("주문 uuid 가 비었다 — 체결을 추적할 수 없다 (%w)", errMaybeSent)
-	}
-	return b.waitFill(ctx, o.UUID, side, ref, submitted)
-}
 
 // waitFill — 주문이 끝날(done/cancel) 때까지 조회한다.
 //

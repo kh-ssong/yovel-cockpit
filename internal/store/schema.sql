@@ -98,3 +98,15 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 
 CREATE INDEX IF NOT EXISTS outbox_unsent ON outbox (seq) WHERE sent_at IS NULL;
+
+-- working_orders — 접수됐지만 아직 끝나지 않은 주문 (v4).
+-- ★ 체결을 기다리기 **전에** 여기 적는다. 대기 중에 데몬이 죽어도 재시작 뒤 이 주문을 이어서 추적한다
+--   — 없으면 주문번호를 잃고 같은 목표로 또 산다 (reflex 2026-06-24 주문번호 유실 교착과 같은 종류).
+CREATE TABLE IF NOT EXISTS working_orders (
+  order_id   TEXT PRIMARY KEY,
+  intent_id  TEXT NOT NULL,
+  payload    TEXT NOT NULL,   -- store.WorkingOrder JSON
+  created_at TEXT NOT NULL,
+  done_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS working_orders_open ON working_orders(done_at);

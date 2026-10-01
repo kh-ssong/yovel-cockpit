@@ -142,9 +142,32 @@ type LimitStatus struct {
 	FilledAt  time.Time // 모르면 zero
 	// Open — 주문이 아직 살아 있다 (남은 수량이 체결될 수 있다). 모르면 true 로 둔다(보수적).
 	Open bool
+	// Known — 거래소가 이 주문을 안다 (조회에 나왔다). false 면 Open 은 추정이다.
+	Known bool
 }
 
-// LimitChecker — 지정가 체결을 주문번호로 확인할 수 있는 브로커 (실브로커).
+// Submitted — 거래소가 **접수한** 주문 (체결 전).
+type Submitted struct {
+	OrderID string
+	// Qty — 실제로 낸 수량 (사전 축소·855056 재주문 반영). 금액 주문(업비트 시장가 매수)은 추정치.
+	Qty         float64
+	RefPrice    float64
+	SubmittedAt time.Time
+}
+
+// Submitter — 주문을 **내고 바로 돌아오는** 브로커. 체결은 LimitStatus 로 따로 추적한다.
+//
+// ★ 왜 (reflex 분석 2026-10-01): 체결을 기다리는 동안 집행 루프가 멈추면 ① 다른 로트의 청산이 밀리고
+// ② 동시호가·VI 처럼 **체결이 늦게 오는 게 정상**인 구간에서 대기 시간을 넘겨 자기 주문을 취소하고
+// ③ 대기 중에 데몬이 죽으면 주문번호가 원장에 없어 재시작 뒤 같은 목표로 또 산다.
+// 접수 즉시 주문번호를 원장에 남기고, 체결은 루프와 따로 추적한다.
+type Submitter interface {
+	SubmitBuy(ctx context.Context, req OrderRequest) (Submitted, error)
+	SubmitSell(ctx context.Context, req OrderRequest) (Submitted, error)
+	LimitChecker
+}
+
+// LimitChecker — 주문(지정가·시장가) 체결을 주문번호로 확인할 수 있는 브로커 (실브로커).
 type LimitChecker interface {
 	LimitStatus(ctx context.Context, s protocol.Symbol, orderID string) (LimitStatus, error)
 }

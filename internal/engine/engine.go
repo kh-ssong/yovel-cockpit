@@ -56,6 +56,8 @@ type Config struct {
 	// RefCheckPrice · RefMaxDev — 신호가(entry.ref_price) 검증 (reconcile.Options 주석).
 	RefCheckPrice func(protocol.Symbol) (float64, bool)
 	RefMaxDev     float64
+	// CanEnter — (종목, 시각) → 새 진입 가능 여부 (internal/session). nil 이면 안 본다.
+	CanEnter func(protocol.Symbol, time.Time) bool
 }
 
 type Engine struct {
@@ -138,6 +140,9 @@ func (e *Engine) Mark(s protocol.Symbol, now time.Time, maxAge time.Duration) (f
 	}
 	return m.price, true
 }
+
+// Policy — 봉투 판정 정책 (재시작 흉내 등 테스트가 같은 정책으로 엔진을 다시 만들 때).
+func (e *Engine) Policy() protocol.Policy { return e.cfg.Policy }
 
 // Books 는 장부 설정을 준다 (nil 가능).
 func (e *Engine) Books() *book.Set { return e.cfg.Books }
@@ -438,6 +443,7 @@ func (e *Engine) planSourceLocked(src source, now time.Time) reconcile.Plan {
 		Inactive:        !active,
 		RefCheckPrice:   e.cfg.RefCheckPrice,
 		RefMaxDev:       e.cfg.RefMaxDev,
+		CanEnter:        e.canEnterAt(now),
 		Price:           e.cfg.Price,
 		Market:          e.cfg.Market,
 		Terminal:        e.isTerminalLocked,
@@ -466,6 +472,13 @@ func (e *Engine) ownsLocked(src source, p protocol.Position) bool {
 		}
 	}
 	return n == 1
+}
+
+func (e *Engine) canEnterAt(now time.Time) func(protocol.Symbol) bool {
+	if e.cfg.CanEnter == nil {
+		return nil
+	}
+	return func(s protocol.Symbol) bool { return e.cfg.CanEnter(s, now) }
 }
 
 func (e *Engine) isTerminalLocked(intentID string) bool {

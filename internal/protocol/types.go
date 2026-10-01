@@ -291,6 +291,8 @@ type Position struct {
 	Kid           string  `json:"kid,omitempty"`
 	Scope         string  `json:"scope,omitempty"`
 	UnrealizedPct float64 `json:"unrealized_pct,omitempty"`
+	// Pending — 진입 주문이 접수됐지만 아직 체결 확정 전이다 (수량·가격은 추정). 2026-10-01.
+	Pending bool `json:"pending,omitempty"`
 }
 
 type EventOrder struct {

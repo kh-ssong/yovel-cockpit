@@ -27,7 +27,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 type Store struct{ db *sql.DB }
 
@@ -101,6 +101,13 @@ func (s *Store) migrate(ctx context.Context) error {
 			}
 		}
 		v.Int64 = 3
+	}
+	if v.Int64 < 4 {
+		// v3 → v4: working_orders (테이블은 schema.sql 이 만든다).
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_version(version) VALUES (4)`); err != nil {
+			return fmt.Errorf("v3→v4: %w", err)
+		}
+		v.Int64 = 4
 	}
 	if v.Int64 > schemaVersion {
 		// 옛 바이너리가 새 DB 를 열면 모르는 컬럼을 조용히 무시하며 돈다. 그게 최악이다.
