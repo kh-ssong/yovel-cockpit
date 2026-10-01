@@ -19,6 +19,10 @@ FLAT6_KEY="${FLAT6_KEY:-$FLAT6_DIR/data/signing_key.json}"
 KIWOOM_SPEC="${KIWOOM_SPEC:-$HOME/Downloads/kiwoom-rest-api-spec.json}"
 PY="${PY:-python}"
 OUT="${OUT:-$(mktemp -d)}"
+# ★ 가격표는 여기 한 곳 — 가짜 키움(-price)과 flat6 dummy(FLAT6_DUMMY_PRICES)에 **같은 값**을 넘긴다.
+#   둘이 어긋나면 flat6 신호가 콕핏 가드(±15%)에 막힌다. flat6 가 FLAT6_DUMMY_PRICES 를 모르면 무시되고
+#   dummy 기본값(지금은 아래와 같다)을 쓴다. 형식 = "코드=가격,코드=가격".
+PRICES="${PRICES:-005930=71000,000660=195000,035720=41000}"
 CP=7795; FK=7801
 EXE=""; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=".exe";; esac
 A="http://127.0.0.1:$FK/_admin"
@@ -30,8 +34,8 @@ echo "출력: $OUT"
   "$FLAT6_KEY" "$OUT/cockpit/trusted_keys.json" || exit 1
 
 cd "$OUT"   # ★ 저장소 밖 — .env 를 읽지 않는다
-"$OUT/fakekiwoom$EXE" -addr 127.0.0.1:$FK -spec "$KIWOOM_SPEC" -cash 10000000 \
-  -price 005930=71000 -price 000660=195000 -price 035720=41000 > "$OUT/fake.log" 2>&1 &
+PRICE_FLAGS=(); IFS=',' read -ra _P <<< "$PRICES"; for kv in "${_P[@]}"; do PRICE_FLAGS+=(-price "$kv"); done
+"$OUT/fakekiwoom$EXE" -addr 127.0.0.1:$FK -spec "$KIWOOM_SPEC" -cash 10000000 "${PRICE_FLAGS[@]}" > "$OUT/fake.log" 2>&1 &
 FPID=$!
 for i in $(seq 1 20); do curl -s -m1 $A/state >/dev/null && break; sleep 0.5; done
 curl -s -m1 $A/state >/dev/null || { echo "★ fakekiwoom 이 안 떴다"; cat "$OUT/fake.log"; exit 1; }
@@ -48,7 +52,7 @@ curl -s -X POST $A/scenario -d '{"fill":"split","chunks":3,"interval_ms":400}' >
   FLAT6_MODE=signal FLAT6_STRATEGY=dummy FLAT6_MOCKPIT=false FLAT6_GATEWAY_PORT=0 \
   FLAT6_DATA_DIR="$OUT/flat6" FLAT6_SIGNING_KEY_PATH="$FLAT6_KEY" \
   FLAT6_COCKPIT_URL=http://127.0.0.1:$CP FLAT6_COCKPIT_TOKEN_FILE="$OUT/cockpit/api-token" FLAT6_COCKPIT_ACCT=acc_flat6dummy \
-  FLAT6_TELEGRAM_BOT_TOKEN= FLAT6_TELEGRAM_CHAT_ID= FLAT6_SLACK_WEBHOOK= \
+  FLAT6_TELEGRAM_BOT_TOKEN= FLAT6_TELEGRAM_CHAT_ID= FLAT6_SLACK_WEBHOOK= FLAT6_DUMMY_PRICES="$PRICES" \
   timeout 330 "$PY" -u -m flat6.main --mode signal --strategy dummy > "$OUT/flat6.log" 2>&1) &
 F6=$!
 
