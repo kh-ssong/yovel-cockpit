@@ -18,6 +18,7 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/session"
 	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
+	"github.com/kh-ssong/yovel-cockpit/internal/store"
 )
 
 // 2026-10-01(목) KST
@@ -113,6 +114,16 @@ func brokerReq(p protocol.Position) broker.OrderRequest {
 func flatT() map[string]any {
 	return map[string]any{"intent_id": aid, "slot": "main", "side": "long", "want": "flat",
 		"symbol": map[string]any{"exchange": "KRX", "code": "005930"}}
+}
+
+// ledger — 키움 하네스는 live 모드다 (harness.ledger 는 paper 만 본다 — 그대로 쓰면 빈 원장을 보고 통과한다).
+func (h *kHarness) ledger(t *testing.T) []store.Order {
+	t.Helper()
+	rows, err := h.st.Ledger(ctx, store.LedgerQuery{Mode: protocol.ModeLive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
 }
 
 func (h *kHarness) lot(t *testing.T) protocol.Position {
@@ -341,11 +352,68 @@ func TestSellRejectedAndNotHeldCloses(t *testing.T) {
 	if res.ClosedByBroker != 1 || len(h.eng.Positions()) != 0 {
 		t.Fatalf("%+v", res)
 	}
+	exits := 0
 	for _, o := range h.ledger(t) {
-		if o.Phase == "exit_filled" && (o.Price != 0 || o.ExitReason != "manual") {
-			t.Fatalf("체결가를 지어냈다 %+v", o)
+		if o.Phase == "exit_filled" {
+			exits++
+			if o.Price != 1000 || o.ExitReason != "manual" {
+				t.Fatalf("콕핏 밖 매도 체결가(1000)로 닫히지 않았다 %+v", o)
+			}
 		}
 	}
+	if exits != 1 {
+		t.Fatalf("청산 기록 %d", exits)
+	}
+}
+
+// ★ 사람이 앱에서 전량 팔았다 — 콕핏은 그 매도 체결가로 로트를 닫는다 (예전엔 '체결가 미상').
+func TestManualFullSellAttributedPrice(t *testing.T) {
+	t0 := kst("10:00:00")
+	h := newKiwoomHarness(t, t0)
+	h.sign(t, 1, t0, openT(t0, nil))
+	h.x.Tick(ctx, t0.Add(time.Second))
+	lot := h.lot(t)
+	h.fk.SetPrice("005930", 1100)
+	if _, err := h.x.d.Broker.Sell(ctx, brokerReq(lot)); err != nil { // 콕핏 밖 매도
+		t.Fatal(err)
+	}
+	res := h.x.Tick(ctx, t0.Add(10*time.Second))
+	if res.ClosedByBroker != 1 || len(h.eng.Positions()) != 0 {
+		t.Fatalf("%+v", res)
+	}
+	var exit *storeOrderView
+	for _, o := range h.ledger(t) {
+		if o.Phase == "exit_filled" {
+			exit = &storeOrderView{o.Price, o.ExitReason, o.RealizedPct}
+		}
+	}
+	if exit == nil || exit.price != 1100 || exit.reason != "manual" || exit.pct < 0.099 {
+		t.Fatalf("수동 매도 체결가로 안 닫혔다 %+v", exit)
+	}
+}
+
+// 로트 하나에서 일부만 팔았다 — 그 로트를 줄인다.
+func TestManualPartialSellReducesSingleLot(t *testing.T) {
+	t0 := kst("10:00:00")
+	h := newKiwoomHarness(t, t0)
+	h.sign(t, 1, t0, openT(t0, nil))
+	h.x.Tick(ctx, t0.Add(time.Second))
+	lot := h.lot(t)
+	req := brokerReq(lot)
+	req.Qty = 40
+	if _, err := h.x.d.Broker.Sell(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	res := h.x.Tick(ctx, t0.Add(10*time.Second))
+	if len(res.Mismatch) != 0 || h.lot(t).Qty != 60 {
+		t.Fatalf("일부 수동 매도 반영 안 됨 %+v lot=%+v", res, h.lot(t))
+	}
+}
+
+type storeOrderView struct {
+	price  float64
+	reason string
+	pct    float64
 }
 
 // 상한(15:15)이 진입보다 앞이면 당기지 않는다 — 진입하자마자 시간청산이 터지지 않게.

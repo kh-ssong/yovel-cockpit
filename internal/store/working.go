@@ -76,3 +76,28 @@ func (s *Store) OpenWorking(ctx context.Context) ([]WorkingOrder, error) {
 	}
 	return out, rows.Err()
 }
+
+// KnownOrderIDs — 콕핏이 낸 적 있는 주문번호 전부 (체결·진행 중·위임 TP). 콕핏 밖 매도를 가려낼 때 뺀다.
+func (s *Store) KnownOrderIDs(ctx context.Context) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, q := range []string{
+		`SELECT broker_order_id FROM orders WHERE broker_order_id IS NOT NULL AND broker_order_id <> ''`,
+		`SELECT order_id FROM working_orders`,
+		`SELECT tp_order_id FROM intents WHERE tp_order_id IS NOT NULL AND tp_order_id <> ''`,
+	} {
+		rows, err := s.db.QueryContext(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[id] = true
+		}
+		rows.Close()
+	}
+	return out, nil
+}

@@ -226,9 +226,12 @@ func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result
 	// 한 종목을 여러 intent 가 나눠 가질 수 있다. 그 경우 브로커 수량을 어떻게 배분할지
 	// 알 방법이 없으므로 ★ 추측하지 않고 mismatch 로 보고만 한다.
 	expected := map[string]float64{}
+	lotCount := map[string]int{}
 	for _, p := range open {
 		expected[p.Symbol.Code] += p.Qty
+		lotCount[p.Symbol.Code]++
 	}
+	vanishedDone := map[string]bool{}
 
 	for _, p := range open {
 		if x.isWorking(p.IntentID) {
@@ -238,39 +241,39 @@ func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result
 		}
 		h, ok := byCode[p.Symbol.Code]
 		if !ok || h.Qty <= 0 {
-			// ★ 걸어 둔 TP 가 있으면 먼저 **주문번호로** 체결가를 확인한다 (2026-09-30 e2e 발견).
-			//   TP 가 체결돼 종목이 사라진 것을 여기서 먼저 보면, 예전엔 "체결가 미상" 으로 닫아
-			//   그 로트의 TP 수익이 성과에서 통째로 빠졌다 (주문번호 확인은 10초 간격이라 경합에서 졌다).
-			if lc, isLC := x.d.Broker.(broker.LimitChecker); isLC && p.TpOrderID != "" {
-				if x.closeIfTPFilled(ctx, now, p, lc, res) {
-					continue
-				}
-			}
-			reason, src := "manual", store.SourceManual
-			if p.TpOrderID != "" {
-				reason, src = "tp", store.SourceBot
-			}
-			x.recordFill(ctx, p.Slot, p.Kid, p.Scope, store.Order{
-				ID: ids.NewAt(now), IntentID: p.IntentID, Phase: "exit_filled",
-				Symbol: p.Symbol, Side: "sell", Qty: p.Qty, ExitReason: reason, Source: src,
-				Detail: "브로커 조회로 사후 감지 — 체결가·시각 미상",
-			}, res)
-
-			if err := x.d.Store.CloseIntent(ctx, p.IntentID, reason, now); err != nil {
-				res.fail("종결 %s: %v", p.IntentID, err)
+			// 사라졌다. 같은 종목 로트들은 한 번에 처리한다:
+			//   ① 걸어 둔 TP 가 있으면 **주문번호로** 체결가를 먼저 확인한다 (2026-09-30 e2e — TP 수익 누락 방지)
+			//   ② 남은 로트는 콕핏 밖 매도(HTS·앱·다른 봇) 체결가로 닫는다 (모르면 가격 미상)
+			if vanishedDone[p.Symbol.Code] {
 				continue
 			}
-			x.d.Engine.MarkClosed(p.IntentID)
-			x.noteClose(p, reason, 0, now)
-			res.ClosedByBroker++
-			x.d.Log.Warn("브로커에서 사라진 포지션을 종결 처리했다",
-				"intent_id", p.IntentID, "code", p.Symbol.Code, "reason", reason)
+			vanishedDone[p.Symbol.Code] = true
+			var rest []protocol.Position
+			for _, q := range open {
+				if q.Symbol.Code != p.Symbol.Code || x.isWorking(q.IntentID) {
+					continue
+				}
+				if lc, isLC := x.d.Broker.(broker.LimitChecker); isLC && q.TpOrderID != "" {
+					if x.closeIfTPFilled(ctx, now, q, lc, res) {
+						continue
+					}
+				}
+				rest = append(rest, q)
+			}
+			if len(rest) > 0 {
+				x.attributeVanished(ctx, now, rest, res)
+			}
 			continue
 		}
 
 		if expected[p.Symbol.Code] > h.Qty+1e-9 {
-			res.Mismatch = append(res.Mismatch, fmt.Sprintf(
-				"%s: 장부 %.0f주 vs 실물 %.0f주", p.Symbol.Code, expected[p.Symbol.Code], h.Qty))
+			// 로트가 하나뿐이고 콕핏 밖 매도가 차이를 설명하면 그 로트를 줄인다. 아니면 보고만 (무추측).
+			if !(lotCount[p.Symbol.Code] == 1 && x.attributeShrink(ctx, now, p, h.Qty, res)) {
+				res.Mismatch = append(res.Mismatch, fmt.Sprintf(
+					"%s: 장부 %.0f주 vs 실물 %.0f주", p.Symbol.Code, expected[p.Symbol.Code], h.Qty))
+			} else {
+				continue
+			}
 		}
 
 		// ★ 로트의 진입가는 **원장의 체결가**가 진실이다. 브로커 평단은 그 종목의 모든 로트

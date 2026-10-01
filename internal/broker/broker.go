@@ -172,6 +172,20 @@ type LimitChecker interface {
 	LimitStatus(ctx context.Context, s protocol.Symbol, orderID string) (LimitStatus, error)
 }
 
+// ExecFill — 브로커가 아는 체결 한 건 (주문 단위 합).
+type ExecFill struct {
+	OrderID string
+	Qty     float64
+	Price   float64 // 평균 체결가. 0 = 모름
+	FeeKRW  float64
+	At      time.Time
+}
+
+// FillLister — 오늘의 매도 체결을 주문번호와 함께 알려주는 브로커. 콕핏 밖 매도(HTS·앱)의 체결가를 찾는 데 쓴다.
+type FillLister interface {
+	SellFills(ctx context.Context, s protocol.Symbol) ([]ExecFill, error)
+}
+
 // SymbolStatus — 종목의 매매 상태 (감리구분·투자유의). 진입 차단에 쓴다.
 type SymbolStatus struct {
 	// Labels — 해당하는 상태 이름들 (예: "투자경고", "단기과열", "거래정지"). 정상이면 비어 있다.

@@ -6,9 +6,7 @@ import (
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/broker"
-	"github.com/kh-ssong/yovel-cockpit/internal/ids"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
-	"github.com/kh-ssong/yovel-cockpit/internal/store"
 )
 
 const (
@@ -50,20 +48,9 @@ func (x *Executor) sellFailed(ctx context.Context, now time.Time, pos protocol.P
 	lot := x.d.Broker.LotSize(pos.Symbol)
 
 	if held <= lot/2 {
-		// 이미 없다 — 콕핏 밖에서 팔렸다. 체결가는 모른다(지어내지 않는다).
-		x.recordFill(ctx, pos.Slot, pos.Kid, pos.Scope, store.Order{
-			ID: ids.NewAt(now), IntentID: pos.IntentID, Phase: "exit_filled", Symbol: pos.Symbol,
-			Side: "sell", Qty: pos.Qty, ExitReason: "manual", Source: store.SourceManual,
-			Detail: "매도 거부(매도가능 0) + 실보유 0 — 콕핏 밖에서 팔렸다, 체결가 미상",
-		}, res)
-		if cerr := x.d.Store.CloseIntent(ctx, pos.IntentID, "manual", now); cerr != nil {
-			res.fail("종결 %s: %v", pos.IntentID, cerr)
-			return
-		}
-		x.d.Engine.MarkClosed(pos.IntentID)
-		x.noteClose(pos, "manual", 0, now)
+		// 이미 없다 — 콕핏 밖에서 팔렸다. 콕핏 밖 매도 체결가로 닫는다 (모르면 미상 — 지어내지 않는다).
+		x.attributeVanished(ctx, now, []protocol.Position{pos}, res)
 		delete(x.sellAfter, pos.IntentID)
-		res.ClosedByBroker++
 		return
 	}
 
