@@ -35,7 +35,11 @@ CREATE TABLE IF NOT EXISTS intents (
   --   stop 에 털린 자리에 같은 목표로 곧바로 재진입한다.
   closed_at       TEXT,
   close_reason    TEXT,
-  updated_at      TEXT NOT NULL
+  updated_at      TEXT NOT NULL,
+  -- ★ paper | live (v5). 같은 data-dir 을 다른 모드로 켜면 열린 로트를 남의 모드로 집행한다 —
+  --   paper 로트가 live 계좌의 진짜 주식을 판다 (2026-10-15 실측). 엔진 복구가 모드를 대조해 기동을 거부한다.
+  --   빈 값 = 모름 (v5 이전 행 중 원장에 주문이 없던 것).
+  mode            TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS intents_open ON intents (closed_at) WHERE closed_at IS NULL;
@@ -110,3 +114,18 @@ CREATE TABLE IF NOT EXISTS working_orders (
   done_at    TEXT
 );
 CREATE INDEX IF NOT EXISTS working_orders_open ON working_orders(done_at);
+
+-- source_seq — 소스(typ|kid|scope)마다 마지막으로 받아들인 seq (v5).
+-- ★ 메모리에만 두면 재시작 직후 옛 서명 메시지(시계 오차 허용 창 안)가 다시 먹힌다 — 옛 stop·TP 가 잠깐 돌아온다.
+CREATE TABLE IF NOT EXISTS source_seq (
+  skey       TEXT PRIMARY KEY,
+  seq        INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- derisk_nonces — 받아들인 cmd.derisk 의 nonce (v5). 만료 전 재생을 재시작 뒤에도 막는다
+-- (resume 뒤 재시작했는데 옛 liquidate 가 다시 먹히면 안 된다).
+CREATE TABLE IF NOT EXISTS derisk_nonces (
+  nonce TEXT PRIMARY KEY,
+  exp   TEXT NOT NULL
+);

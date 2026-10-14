@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -58,9 +59,40 @@ func (x *Executor) WorkingCount() int { return len(x.work) }
 // HasWorking — 진행 중 주문이 있는가 (있으면 데몬이 빠른 주기로 PollWorking 을 부른다).
 func (x *Executor) HasWorking() bool { return len(x.work) > 0 }
 
-// track — 접수된 주문을 원장에 먼저 남기고 추적을 시작한다.
-func (x *Executor) track(ctx context.Context, w store.WorkingOrder, res *Result) {
+// journal — ★ 보내기 **전에** 남긴다 (주문번호가 아직 없어 임시 번호로).
+//
+// 접수 응답을 받기 전에 데몬이 죽으면(전원·강제 종료·감시자의 재기동) 주문이 나갔는지 아무도 모른다.
+// 이 기록이 없으면 재시작한 콕핏은 목표가 그대로라 **같은 목표로 또 산다** (2026-10-15 점검). 있으면
+// 재시작 뒤 resolveUnconfirmed 가 "결과 미상" 으로 처리한다. ok=false 면 기록 실패 (진입은 내지 말 것).
+func (x *Executor) journal(ctx context.Context, w store.WorkingOrder, res *Result) (string, bool) {
+	w.OrderID = fmt.Sprintf("pre-%s-%s-%d", w.Purpose, w.IntentID, w.PlacedAt.UnixNano())
+	w.Unconfirmed = true
 	if err := x.d.Store.PutWorking(ctx, w); err != nil {
+		res.fail("★ 주문 전 기록 실패 %s(%s) %s: %v — 진입이면 내지 않는다", w.IntentID, w.Symbol.Code, w.Purpose, err)
+		return "", false
+	}
+	return w.OrderID, true
+}
+
+// unjournal — 보냈는데 접수되지 않았다 (거부, 또는 결과 미상 처리를 마쳤다). 임시 기록을 닫는다.
+func (x *Executor) unjournal(ctx context.Context, temp string, now time.Time, res *Result) {
+	if temp == "" {
+		return
+	}
+	if err := x.d.Store.FinishWorking(ctx, temp, now); err != nil {
+		res.fail("주문 전 기록 정리 %s: %v", temp, err)
+	}
+}
+
+// track — 접수된 주문으로 임시 기록을 바꾸고 추적을 시작한다 (temp 가 비면 새로 남긴다).
+func (x *Executor) track(ctx context.Context, temp string, w store.WorkingOrder, res *Result) {
+	var err error
+	if temp != "" {
+		err = x.d.Store.ConfirmWorking(ctx, temp, w)
+	} else {
+		err = x.d.Store.PutWorking(ctx, w)
+	}
+	if err != nil {
 		res.fail("★ 접수된 주문 기록 실패 %s(%s) 주문 %s: %v — 재시작하면 이 주문을 잃는다",
 			w.IntentID, w.Symbol.Code, w.OrderID, err)
 	}
@@ -84,7 +116,7 @@ func (x *Executor) pendingLot(w store.WorkingOrder) {
 }
 
 // ensureLoaded — 재시작 뒤 첫 틱에 진행 중 주문을 원장에서 되살린다.
-func (x *Executor) ensureLoaded(ctx context.Context, res *Result) {
+func (x *Executor) ensureLoaded(ctx context.Context, now time.Time, res *Result) {
 	if x.loaded {
 		return
 	}
@@ -95,21 +127,49 @@ func (x *Executor) ensureLoaded(ctx context.Context, res *Result) {
 	}
 	x.loaded = true
 	for _, w := range ws {
+		if w.Unconfirmed {
+			x.resolveUnconfirmed(ctx, now, w, res)
+			continue
+		}
 		ww := w
 		x.work[w.OrderID] = &ww
 		if w.Purpose == "entry" {
 			x.pendingLot(w)
 		}
 	}
-	if len(ws) > 0 {
-		x.d.Log.Warn("재시작 — 진행 중 주문을 이어서 추적한다", "orders", len(ws))
+	if len(x.work) > 0 {
+		x.d.Log.Warn("재시작 — 진행 중 주문을 이어서 추적한다", "orders", len(x.work))
 	}
+}
+
+// resolveUnconfirmed — 보내기 전 기록만 있고 접수 기록이 없다 = 보내는 도중 죽었다. 나갔는지 모른다.
+//
+//   - 진입: 결과 미상 매수와 똑같이 처리한다 — 목표를 종결해 **다시 사지 않고**, 사람에게 알린다.
+//     실제로 샀다면 그 주식은 장부 밖(external)으로 보인다. 두 번 사는 것보다 낫다.
+//   - 청산: 로트는 그대로 두고 잠시 쉰 뒤 다시 판다. 그 사이 체결됐으면 보유가 줄어 콕핏 밖 매도로
+//     귀속되고, 접수만 됐으면 수량이 잠겨 "매도가능 부족" 으로 드러난다 (sellFailed).
+func (x *Executor) resolveUnconfirmed(ctx context.Context, now time.Time, w store.WorkingOrder, res *Result) {
+	cause := fmt.Errorf("%w: 재시작 — %s 에 보내던 중 접수 응답 전에 멈췄다", broker.ErrMaybeSent,
+		w.PlacedAt.Format(time.RFC3339))
+	switch w.Purpose {
+	case "entry":
+		if w.Target == nil {
+			res.fail("★ 보내던 진입 %s(%s) 에 목표가 없다 — 잔고를 사람이 확인할 것", w.IntentID, w.Symbol.Code)
+			break
+		}
+		x.buyFailed(ctx, now, *w.Target, w.Qty, w.Kid, w.Scope, "", cause, res)
+	case "exit":
+		if pos, ok := x.position(w.IntentID); ok {
+			x.sellFailed(ctx, now, pos, w.Reason, cause, res)
+		}
+	}
+	x.unjournal(ctx, w.OrderID, now, res)
 }
 
 // PollWorking — 진행 중 주문을 전부 한 번씩 확인한다. 데몬이 짧은 주기로 부른다.
 func (x *Executor) PollWorking(ctx context.Context, now time.Time) Result {
 	var res Result
-	x.ensureLoaded(ctx, &res)
+	x.ensureLoaded(ctx, now, &res)
 	ids := make([]string, 0, len(x.work))
 	for id := range x.work {
 		ids = append(ids, id)
@@ -230,7 +290,7 @@ func (x *Executor) finishWorkingEntry(ctx context.Context, now time.Time, w stor
 		Qty: w.Qty, BrokerOrderID: w.OrderID, SubmittedAt: &w.SubmittedAt,
 		Detail: "진입 주문이 체결 없이 끝났다 — 진입 포기(목표 종결)",
 	}, res)
-	if err := x.d.Store.UpsertIntent(ctx, store.Intent{
+	if err := x.upsertIntent(ctx, store.Intent{
 		IntentID: t.IntentID, Slot: t.Slot, Kid: w.Kid, Scope: w.Scope, Group: t.Group,
 		Symbol: t.Symbol, Side: string(t.Side),
 	}); err == nil {

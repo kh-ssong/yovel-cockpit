@@ -203,6 +203,16 @@ func run() error {
 	if err := eng.Restore(context.Background()); err != nil {
 		return fmt.Errorf("상태 복구 실패: %w", err)
 	}
+	// ★ paper 계좌는 메모리라 원장에서 다시 세운다 — 안 하면 재시작마다 열린 로트가 '사라짐' 으로 닫히고
+	//   예수금이 시드로 돌아간다. 모드 대조(엔진 복구)를 통과한 **뒤에** 한다.
+	if pb, ok := br.(*paper.Broker); ok {
+		ps, err := executor.PaperState(context.Background(), st, paperSeed(cfg, books))
+		if err != nil {
+			return fmt.Errorf("paper 계좌 복원 실패: %w", err)
+		}
+		pb.Restore(ps)
+		log.Info("paper 계좌를 원장에서 복원", "cash", ps.Cash, "holdings", len(ps.Holdings), "tp_orders", len(ps.TPs))
+	}
 
 	// wake — 목표가 도착하면 다음 틱을 기다리지 않고 즉시 집행한다.
 	// 버퍼 1 + 논블로킹 송신이라 연달아 와도 쌓이지 않는다 (한 번 돌면 최신 목표가 반영된다).
@@ -419,10 +429,7 @@ func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) 
 	// ★★ 값은 이제 설정이다(옛 하드코딩 대칭 15bp 는 매수에 없는 비용을 물렸다).
 	//    그리고 기본값도 추정치라, 진짜 요율은 `--paper-fee-bp-*` 로 **자기 원장에서 재서** 넣는다.
 	// 시세 1순위 = flat6 mark_price. 그 뒤는 거래소별 시세원 (UPBIT = 공개 API, KRX = 키움 키 있을 때).
-	seed := cfg.PaperSeed
-	if seed <= 0 {
-		seed = books.Total()
-	}
+	seed := paperSeed(cfg, books)
 	log.Info("paper 시드", "cash", seed)
 	pcfg := paper.Config{
 		Cash: seed, Lot: 1,
@@ -711,4 +718,12 @@ func markFirst(mark, fallback func(protocol.Symbol) (float64, bool)) func(protoc
 		}
 		return 0, false
 	}
+}
+
+// paperSeed — paper 계좌의 시드. 지정이 없으면 켜진 장부 시드 합 (장부가 없으면 엔진 예산).
+func paperSeed(cfg config.Config, books *book.Set) float64 {
+	if cfg.PaperSeed > 0 {
+		return cfg.PaperSeed
+	}
+	return books.Total()
 }

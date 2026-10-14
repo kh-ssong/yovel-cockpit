@@ -27,7 +27,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 4
+const schemaVersion = 5
 
 type Store struct{ db *sql.DB }
 
@@ -109,6 +109,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		v.Int64 = 4
 	}
+	if v.Int64 < 5 {
+		// v4 → v5: 로트의 모드(paper|live). 옛 행은 그 로트의 원장 주문에서 모드를 가져온다
+		// (orders.mode 는 처음부터 NOT NULL 이었다). 주문이 없는 행은 빈 값 = 모름.
+		// source_seq · derisk_nonces 테이블은 schema.sql 이 만든다.
+		for _, q := range []string{
+			`ALTER TABLE intents ADD COLUMN mode TEXT NOT NULL DEFAULT ''`,
+			`UPDATE intents SET mode = COALESCE((SELECT o.mode FROM orders o WHERE o.intent_id = intents.intent_id
+			   ORDER BY o.created_at LIMIT 1), '')`,
+			`INSERT INTO schema_version(version) VALUES (5)`,
+		} {
+			if _, err := s.db.ExecContext(ctx, q); err != nil {
+				return fmt.Errorf("v4→v5: %w", err)
+			}
+		}
+		v.Int64 = 5
+	}
 	if v.Int64 > schemaVersion {
 		// 옛 바이너리가 새 DB 를 열면 모르는 컬럼을 조용히 무시하며 돈다. 그게 최악이다.
 		return fmt.Errorf("DB 스키마 v%d 인데 이 바이너리는 v%d 까지만 안다 — 데몬을 업데이트할 것",
@@ -138,14 +154,16 @@ type Intent struct {
 	EntryAt       *time.Time
 	ClosedAt      *time.Time
 	CloseReason   string
+	// Mode — paper | live. 처음 기록된 값을 지킨다 (비워 부르면 기존 값 유지).
+	Mode protocol.Mode
 }
 
 func (s *Store) UpsertIntent(ctx context.Context, in Intent) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO intents (intent_id, slot, exchange, code, side, qty, avg_entry_price,
                      stop_armed, tp_price, tp_order_id, time_exit_at, entry_at, updated_at, kid, scope,
-                     grp, entry_qty)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     grp, entry_qty, mode)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(intent_id) DO UPDATE SET
   qty=excluded.qty, avg_entry_price=excluded.avg_entry_price,
   stop_armed=excluded.stop_armed, tp_price=excluded.tp_price,
@@ -160,12 +178,32 @@ ON CONFLICT(intent_id) DO UPDATE SET
   grp=CASE WHEN excluded.grp <> '' THEN excluded.grp ELSE intents.grp END,
   -- ★ 최초 진입 수량은 처음 값을 지킨다 — 부분 청산 뒤 갱신이 이걸 덮으면 hold_frac 기준이 무너진다.
   entry_qty=CASE WHEN intents.entry_qty > 0 THEN intents.entry_qty ELSE excluded.entry_qty END,
+  mode=CASE WHEN intents.mode <> '' THEN intents.mode ELSE excluded.mode END,
   updated_at=excluded.updated_at`,
 		in.IntentID, in.Slot, in.Symbol.Exchange, in.Symbol.Code, in.Side,
 		in.Qty, in.AvgEntryPrice, in.StopArmed, in.TpPrice, nullStr(in.TpOrderID),
 		nullTime(in.TimeExitAt), nullTime(in.EntryAt), nowStr(), in.Kid, in.Scope,
-		in.Group, in.EntryQty)
+		in.Group, in.EntryQty, string(in.Mode))
 	return err
+}
+
+// OpenIntentModes — 열린 로트 수를 모드별로 (빈 키 = 모름). 기동 시 모드 대조용.
+func (s *Store) OpenIntentModes(ctx context.Context) (map[protocol.Mode]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT mode, COUNT(*) FROM intents WHERE closed_at IS NULL GROUP BY mode`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[protocol.Mode]int{}
+	for rows.Next() {
+		var m string
+		var n int
+		if err := rows.Scan(&m, &n); err != nil {
+			return nil, err
+		}
+		out[protocol.Mode(m)] = n
+	}
+	return out, rows.Err()
 }
 
 // ReduceIntent — 부분 청산 뒤 남은 수량으로 줄인다. 걸어 둔 TP 는 이미 취소됐으므로 같이 지운다.
