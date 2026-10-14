@@ -26,6 +26,14 @@ const (
 // 그래서 실보유를 물어 셋으로 나눈다: 조회 실패 / 0 / N. 어느 경우든 매 틱 다시 내지 않는다.
 func (x *Executor) sellFailed(ctx context.Context, now time.Time, pos protocol.Position, reason string,
 	err error, res *Result) {
+	if errors.Is(err, broker.ErrMaybeSent) {
+		// ★ 매도가 나갔는지 모른다. 곧바로 다시 내면 두 번 판다 — 같은 종목에 다른 로트가 있으면 그 주식을.
+		// 잠시 쉰다: 그 사이 체결됐으면 보유가 줄어 콕핏 밖 매도로 귀속되고, 접수만 됐으면 수량이 잠긴다.
+		x.sellAfter[pos.IntentID] = now.Add(sellRetryAfterLock)
+		res.fail("★ 매도 결과 미상 %s(%s) — 1분 뒤 다시 본다. HTS/앱에서 미체결·체결을 확인할 것: %v",
+			pos.IntentID, pos.Symbol.Code, err)
+		return
+	}
 	if !errors.Is(err, broker.ErrNotEnoughShare) {
 		x.sellAfter[pos.IntentID] = now.Add(sellRetryAfterUnknown)
 		res.fail("매도 %s(%s): %v", pos.IntentID, pos.Symbol.Code, err)

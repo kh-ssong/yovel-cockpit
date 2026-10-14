@@ -9,6 +9,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -31,6 +32,14 @@ type Store interface {
 	TerminalIntents(context.Context) (map[string]struct{}, error)
 	OpenIntents(context.Context) ([]protocol.Position, error)
 	Ledger(context.Context, store.LedgerQuery) ([]store.Order, error)
+	// 재시작 복구 (v5) — 모드 대조 · 재생 방어 · 최근 종결.
+	OpenIntentModes(context.Context) (map[protocol.Mode]int, error)
+	OpenWorking(context.Context) ([]store.WorkingOrder, error)
+	SaveSeq(ctx context.Context, skey string, seq uint64) error
+	LoadSeqs(context.Context) (map[string]uint64, error)
+	SaveNonce(ctx context.Context, nonce string, exp time.Time) error
+	LoadNonces(ctx context.Context, now time.Time) (map[string]time.Time, error)
+	RecentCloses(ctx context.Context, since time.Time) ([]protocol.ClosedLot, error)
 }
 
 type Config struct {
@@ -85,8 +94,9 @@ type Engine struct {
 	// terminal — 이미 끝난 intent_id 캐시 (원장에서 복원).
 	terminal map[string]struct{}
 
-	// closes — 최근 종결 로트 (state.snapshot.recent_closes). 기억만 한다 — 재시작하면 비어도 된다
-	// (진실은 원장이고, 이건 발행자가 "상태 조회 사이에 끝난 것" 을 알게 하는 창일 뿐이다).
+	// closes — 최근 종결 로트 (state.snapshot.recent_closes). 진실은 원장이고 이건 발행자가 "상태 조회 사이에
+	// 끝난 것" 을 알게 하는 창이다. 재시작하면 원장에서 다시 채운다 (Restore) — 재시작 직전에 끝난 로트를
+	// 발행자가 놓치면 '진입 대기' 에 갇힌다.
 	closes []protocol.ClosedLot
 
 	// marks — 신호원이 목표에 실어 보낸 가격 (종목 → 가장 최근 값).
@@ -181,6 +191,11 @@ func (e *Engine) Apply(raw []byte, now time.Time) protocol.Ack {
 			src.kid = adm.Env.Sig.Kid
 		}
 		e.targets[src] = &sourceTarget{it: it, seq: ack.RefSeq, entryOK: adm.EntryAllowed}
+		if e.cfg.Store != nil {
+			// ★ 재시작 뒤에도 이 seq 아래는 받지 않는다 (protocol.Guard.Restore).
+			_ = e.cfg.Store.SaveSeq(context.Background(),
+				protocol.SeqKey(protocol.TypeIntentTarget, src.kid, src.scope), ack.RefSeq)
+		}
 		e.marksMu.Lock()
 		for _, t := range it.Targets {
 			if t.MarkPrice <= 0 {
@@ -216,6 +231,9 @@ func (e *Engine) Apply(raw []byte, now time.Time) protocol.Ack {
 			ack.Status = "rejected"
 			ack.Codes = append(ack.Codes, protocol.CodeSchema)
 			return ack
+		}
+		if e.cfg.Store != nil && adm.Env.Exp != nil {
+			_ = e.cfg.Store.SaveNonce(context.Background(), adm.Env.Nonce, *adm.Env.Exp)
 		}
 		e.applyDerisk(c)
 	}
@@ -284,6 +302,10 @@ func (e *Engine) Restore(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if err := e.checkModeLocked(ctx); err != nil {
+		return err
+	}
+
 	g, err := e.cfg.Store.LoadGuards(ctx)
 	if err != nil {
 		return err
@@ -307,6 +329,58 @@ func (e *Engine) Restore(ctx context.Context) error {
 	e.positions = make(map[string]protocol.Position, len(open))
 	for _, p := range open {
 		e.positions[p.IntentID] = p
+	}
+
+	// 재생 방어 — 소스별 seq·de-risk nonce. 메모리에만 두면 재시작 직후 옛 서명 메시지가 다시 먹힌다.
+	seqs, err := e.cfg.Store.LoadSeqs(ctx)
+	if err != nil {
+		return err
+	}
+	nonces, err := e.cfg.Store.LoadNonces(ctx, e.startedAt)
+	if err != nil {
+		return err
+	}
+	e.guard.Restore(seqs, nonces)
+
+	// 최근 종결 — 재시작 직전에 끝난 로트를 발행자가 못 보면 '진입 대기' 에 갇히거나 결과를 놓친다.
+	closes, err := e.cfg.Store.RecentCloses(ctx, e.startedAt.Add(-recentCloseWindow))
+	if err != nil {
+		return err
+	}
+	e.closes = closes
+	return nil
+}
+
+// checkModeLocked — ★ 다른 모드로 연 로트가 열려 있으면 기동하지 않는다.
+//
+// 로트는 "이 주식을 왜 샀나" 의 기억이다. paper 로 연 로트를 live 로 켠 데몬이 이어받으면, flat 신호에
+// **live 계좌의 진짜 주식을 판다** — 사용자가 HTS 로 산 같은 종목이 있으면 그걸 판다 (2026-10-15 실측:
+// paper 로트 500주 → live 계좌 900주 중 500주 매도). 반대 방향은 진짜 보유를 paper 가 '사라짐' 으로 닫는다.
+func (e *Engine) checkModeLocked(ctx context.Context) error {
+	if e.cfg.Mode == "" {
+		return nil
+	}
+	modes, err := e.cfg.Store.OpenIntentModes(ctx)
+	if err != nil {
+		return err
+	}
+	for m, n := range modes {
+		if m != "" && m != e.cfg.Mode {
+			return fmt.Errorf("★ 이 data-dir 에 %s 모드로 연 로트가 %d 개 열려 있다 — %s 모드로 켜면 그 로트를 "+
+				"%s 계좌에서 집행한다. paper 와 live 는 data-dir 을 나눌 것 (--data-dir), 또는 %s 모드로 켜서 로트를 닫은 뒤 전환",
+				m, n, e.cfg.Mode, e.cfg.Mode, m)
+		}
+	}
+	if e.cfg.Mode == protocol.ModePaper {
+		// paper 브로커는 진행 중 주문을 만들지 않는다 — 남아 있다면 live 의 실주문이다.
+		ws, err := e.cfg.Store.OpenWorking(ctx)
+		if err != nil {
+			return err
+		}
+		if len(ws) > 0 {
+			return fmt.Errorf("★ 이 data-dir 에 live 의 진행 중 주문이 %d 건 남아 있다 — paper 로 켜면 그 주문을 잃는다. "+
+				"live 로 켜서 마무리하거나 data-dir 을 나눌 것", len(ws))
+		}
 	}
 	return nil
 }

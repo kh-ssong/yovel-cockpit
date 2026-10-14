@@ -38,7 +38,7 @@ func (x *Executor) blockEntry(ctx context.Context, now time.Time, t protocol.Tar
 		ID: ids.NewAt(now), IntentID: t.IntentID, Phase: "rejected", Symbol: t.Symbol, Side: "buy",
 		Detail: "진입 차단 — " + label + " 종목 (--block-stock-status)",
 	}, res)
-	if err := x.d.Store.UpsertIntent(ctx, store.Intent{
+	if err := x.upsertIntent(ctx, store.Intent{
 		IntentID: t.IntentID, Slot: t.Slot, Kid: kid, Scope: scope, Group: t.Group, Symbol: t.Symbol, Side: string(t.Side),
 	}); err == nil {
 		_ = x.d.Store.CloseIntent(ctx, t.IntentID, "blocked", now)

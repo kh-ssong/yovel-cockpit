@@ -128,7 +128,7 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 	}
 
 	// 진행 중 주문부터 — 체결된 걸 먼저 확정해야 아래 판단이 최신 로트를 본다.
-	x.ensureLoaded(ctx, &res)
+	x.ensureLoaded(ctx, now, &res)
 	if len(x.work) > 0 {
 		r := x.PollWorking(ctx, now)
 		mergeResult(&res, r)
@@ -326,17 +326,20 @@ func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Posit
 
 	req := broker.OrderRequest{IntentID: pos.IntentID, Symbol: pos.Symbol, Qty: qty}
 	if sub, ok := x.d.Broker.(broker.Submitter); ok {
+		w := store.WorkingOrder{
+			IntentID: pos.IntentID, Purpose: "exit", Reason: reason, Side: "sell",
+			Symbol: pos.Symbol, Qty: qty, Kid: pos.Kid, Scope: pos.Scope, PlacedAt: now,
+		}
+		// 청산은 기록이 실패해도 낸다 — 청산 실패는 손실 노출이다 (journal 이 크게 알린다).
+		temp, _ := x.journal(ctx, w, res)
 		s, err := sub.SubmitSell(ctx, req)
 		if err != nil {
+			x.unjournal(ctx, temp, now, res)
 			x.sellFailed(ctx, now, pos, reason, err, res)
 			return
 		}
-		w := store.WorkingOrder{
-			OrderID: s.OrderID, IntentID: pos.IntentID, Purpose: "exit", Reason: reason, Side: "sell",
-			Symbol: pos.Symbol, Qty: s.Qty, RefPrice: s.RefPrice, Kid: pos.Kid, Scope: pos.Scope,
-			SubmittedAt: s.SubmittedAt, PlacedAt: now,
-		}
-		x.track(ctx, w, res)
+		w.OrderID, w.Qty, w.RefPrice, w.SubmittedAt = s.OrderID, s.Qty, s.RefPrice, s.SubmittedAt
+		x.track(ctx, temp, w, res)
 		x.pollOne(ctx, now, x.work[w.OrderID], res) // 대개 바로 체결된다 — 같은 틱에 확정
 		return
 	}
@@ -442,18 +445,24 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 	}
 
 	if sub, ok := x.d.Broker.(broker.Submitter); ok {
+		tt := t
+		w := store.WorkingOrder{
+			IntentID: t.IntentID, Purpose: "entry", Side: "buy", Symbol: t.Symbol,
+			Qty: qty, RefPrice: ref, Kid: kid, Scope: scope, Target: &tt, AsOfBar: asOfBar,
+			PlacedAt: now, Deadline: now.Add(x.entryTimeout()),
+		}
+		temp, ok := x.journal(ctx, w, res)
+		if !ok {
+			return // ★ 기록 없이는 사지 않는다 — 보내는 도중 죽으면 재시작 뒤 같은 목표로 또 산다
+		}
 		s, err := sub.SubmitBuy(ctx, req)
 		if err != nil {
+			x.unjournal(ctx, temp, now, res)
 			x.buyFailed(ctx, now, t, qty, kid, scope, s.OrderID, err, res)
 			return
 		}
-		tt := t
-		w := store.WorkingOrder{
-			OrderID: s.OrderID, IntentID: t.IntentID, Purpose: "entry", Side: "buy", Symbol: t.Symbol,
-			Qty: s.Qty, RefPrice: s.RefPrice, Kid: kid, Scope: scope, Target: &tt, AsOfBar: asOfBar,
-			SubmittedAt: s.SubmittedAt, PlacedAt: now, Deadline: now.Add(x.entryTimeout()),
-		}
-		x.track(ctx, w, res)
+		w.OrderID, w.Qty, w.RefPrice, w.SubmittedAt = s.OrderID, s.Qty, s.RefPrice, s.SubmittedAt
+		x.track(ctx, temp, w, res)
 		x.pendingLot(w)
 		x.pollOne(ctx, now, x.work[w.OrderID], res) // 대개 바로 체결된다 — 같은 틱에 확정
 		return
@@ -479,7 +488,7 @@ func (x *Executor) buyFailed(ctx context.Context, now time.Time, t protocol.Targ
 			Symbol: t.Symbol, Side: "buy", Qty: qty, BrokerOrderID: orderID,
 			Detail: "★ 매수 결과 미상 — 목표 종결(재진입 차단). 브로커 잔고를 사람이 확인할 것: " + err.Error(),
 		}, res)
-		if cerr := x.d.Store.UpsertIntent(ctx, store.Intent{
+		if cerr := x.upsertIntent(ctx, store.Intent{
 			IntentID: t.IntentID, Slot: t.Slot, Kid: kid, Scope: scope, Symbol: t.Symbol, Side: string(t.Side),
 		}); cerr == nil {
 			_ = x.d.Store.CloseIntent(ctx, t.IntentID, "unknown", now)
@@ -522,7 +531,7 @@ func (x *Executor) finishEnter(ctx context.Context, now, asOfBar time.Time, t pr
 	if t.Exit != nil {
 		in.StopArmed, in.TpPrice, in.TimeExitAt = t.Exit.StopPrice, t.Exit.TpPrice, t.Exit.TimeExitAt
 	}
-	if err := x.d.Store.UpsertIntent(ctx, in); err != nil {
+	if err := x.upsertIntent(ctx, in); err != nil {
 		// ★ 이건 조용히 넘길 수 없다. 원장에 없으면 이 포지션은 다음 틱에 유령이 된다.
 		res.fail("★ 진입은 체결됐는데 원장 기록 실패 %s: %v", t.IntentID, err)
 	}
@@ -538,7 +547,7 @@ func (x *Executor) finishEnter(ctx context.Context, now, asOfBar time.Time, t pr
 // armStop 은 stop 을 로컬에 무장한다. 브로커에 주문을 내지 않는다.
 func (x *Executor) armStop(ctx context.Context, pos protocol.Position, to float64) error {
 	pos.StopArmed = to
-	if err := x.d.Store.UpsertIntent(ctx, store.Intent{
+	if err := x.upsertIntent(ctx, store.Intent{
 		IntentID: pos.IntentID, Slot: pos.Slot, Symbol: pos.Symbol, Side: "long",
 		Qty: pos.Qty, AvgEntryPrice: pos.AvgEntryPrice, StopArmed: to, TpOrderID: pos.TpOrderID,
 		// ★ TpPrice 를 같이 실어야 한다 — `UpsertIntent` 는 전체 갱신이라 빼면
@@ -563,7 +572,7 @@ func (x *Executor) placeTP(ctx context.Context, pos protocol.Position, price flo
 	}
 	pos.TpOrderID = id
 	pos.TpArmed = price // ★ 걸어 둔 값을 기억한다 — 다음 틱이 "같은 값인가" 를 비교한다
-	if err := x.d.Store.UpsertIntent(ctx, store.Intent{
+	if err := x.upsertIntent(ctx, store.Intent{
 		IntentID: pos.IntentID, Slot: pos.Slot, Symbol: pos.Symbol, Side: "long",
 		Qty: pos.Qty, AvgEntryPrice: pos.AvgEntryPrice, StopArmed: pos.StopArmed,
 		TpPrice: price, TpOrderID: id,
@@ -572,6 +581,12 @@ func (x *Executor) placeTP(ctx context.Context, pos protocol.Position, price flo
 	}
 	x.d.Engine.UpsertPosition(pos)
 	return nil
+}
+
+// upsertIntent — 로트 기록에 이 데몬의 모드(paper|live)를 싣는다. 다른 모드로 켜면 엔진 복구가 거부한다.
+func (x *Executor) upsertIntent(ctx context.Context, in store.Intent) error {
+	in.Mode = x.d.Mode
+	return x.d.Store.UpsertIntent(ctx, in)
 }
 
 // recordFill — 원장에 남기고, 사람에게 알린다. ★ 알림은 비동기라 여기서 막히지 않는다.

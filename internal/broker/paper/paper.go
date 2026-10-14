@@ -82,6 +82,51 @@ func New(cfg Config) *Broker {
 
 func (b *Broker) Name() string { return "paper" }
 
+// State — 재시작 때 원장에서 다시 만든 paper 계좌 (Restore).
+type State struct {
+	Cash     float64
+	Holdings []broker.Holding
+	TPs      []TP
+	// Seq — 원장에 쓰인 paper 주문번호의 가장 큰 번호. 새 번호가 옛 번호와 겹치지 않게 이어 센다.
+	Seq int
+}
+
+// TP — 걸려 있던 paper 지정가 (원장의 tp_order_id 그대로).
+type TP struct {
+	ID     string
+	Symbol protocol.Symbol
+	Qty    float64
+	Price  float64
+}
+
+// Restore — ★ paper 계좌는 메모리라 재시작하면 예수금이 시드로 돌아가고 보유가 사라진다. 그러면 열린
+// 로트가 "콕핏 밖 매도·가격 미상" 으로 닫혀 전략 검증이 통째로 오염된다 (2026-10-15 실측). 진실인 원장으로
+// 계좌를 다시 세운다. 첫 주문 전에 한 번만 부를 것.
+func (b *Broker) Restore(st State) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cash = st.Cash
+	b.holdings = map[string]*broker.Holding{}
+	for _, h := range st.Holdings {
+		hh := h
+		hh.Sellable = hh.Qty
+		b.holdings[key(h.Symbol)] = &hh
+	}
+	b.tpOrders = map[string]tpOrder{}
+	for _, t := range st.TPs {
+		b.tpOrders[t.ID] = tpOrder{symbol: t.Symbol, qty: t.Qty, price: t.Price}
+		if h := b.holdings[key(t.Symbol)]; h != nil {
+			h.Sellable -= t.Qty // 지정가가 잡은 수량은 팔 수 없다 (PlaceTP 와 같은 규칙)
+			if h.Sellable < 0 {
+				h.Sellable = 0
+			}
+		}
+	}
+	if st.Seq > b.seq {
+		b.seq = st.Seq
+	}
+}
+
 func key(s protocol.Symbol) string { return s.Exchange + ":" + s.Code }
 
 func (b *Broker) Positions(context.Context) ([]broker.Holding, error) {

@@ -33,6 +33,35 @@ type WorkingOrder struct {
 	// Deadline — 진입 주문은 이 시각을 넘으면 잔량을 취소한다 (늦은 체결은 다른 가격이다).
 	Deadline        time.Time `json:"deadline,omitempty"`
 	CancelRequested bool      `json:"cancel_requested,omitempty"`
+	// Unconfirmed — **보내기 전에** 남긴 기록이다 (주문번호 없음, OrderID 는 임시 값).
+	// 접수 응답을 받으면 진짜 주문번호 행으로 바뀐다(ConfirmWorking). 재시작했는데 이게 남아 있으면
+	// 보내는 도중 죽은 것이다 — 주문이 나갔는지 모른다 (executor.resolveUnconfirmed).
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
+}
+
+// ConfirmWorking — 임시 기록(보내기 전)을 접수된 주문으로 바꾼다. ★ 한 트랜잭션 — 사이에 죽어도
+// "임시와 진짜가 둘 다 열림" 이나 "둘 다 없음" 이 생기지 않는다.
+func (s *Store) ConfirmWorking(ctx context.Context, tempID string, w WorkingOrder) error {
+	raw, err := json.Marshal(w)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE working_orders SET done_at=? WHERE order_id=? AND done_at IS NULL`,
+		nowStr(), tempID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO working_orders (order_id, intent_id, payload, created_at) VALUES (?,?,?,?)
+ON CONFLICT(order_id) DO UPDATE SET payload=excluded.payload`,
+		w.OrderID, w.IntentID, string(raw), nowStr()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // PutWorking — 접수 즉시 기록 (같은 주문번호면 덮는다).

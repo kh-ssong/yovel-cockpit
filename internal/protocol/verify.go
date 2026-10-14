@@ -191,6 +191,27 @@ func NewGuard() *Guard {
 
 func seqKey(t Type, kid, scope string) string { return string(t) + "|" + kid + "|" + scope }
 
+// SeqKey — 소스 seq 의 저장 키 (typ|kid|scope). 재시작 복구가 이 키로 적고 읽는다.
+func SeqKey(t Type, kid, scope string) string { return seqKey(t, kid, scope) }
+
+// Restore — 원장에 적어 둔 seq·nonce 로 되살린다 (재시작 직후, 첫 메시지 전에).
+// ★ 이게 없으면 재시작 직후엔 아무 seq 나 받는다 — 시계 오차 허용(기본 2분) 안의 옛 서명 메시지가
+// 다시 먹혀 옛 stop·TP 가 잠깐 돌아오고, 만료 전 옛 de-risk 가 다시 걸린다 (2026-10-15 실측).
+//
+// ★ 마지막으로 받은 seq **와 같은** 메시지는 한 번 더 받는다 (seq−1 로 되살린다). 재접속하면 발행자가
+// 마지막 목표를 같은 seq 로 다시 보내는데(retained), 그건 이미 적용했던 내용이라 안전하고 — 이걸 버리면
+// 변경 시에만 발행하는 발행자의 목표가 다음 변경까지 비어, 들고 있는 로트의 flat·stop 갱신이 멈춘다.
+func (g *Guard) Restore(seqs map[string]uint64, nonces map[string]time.Time) {
+	for k, v := range seqs {
+		if v > 0 && v-1 > g.lastSeq[k] {
+			g.lastSeq[k] = v - 1
+		}
+	}
+	for n, exp := range nonces {
+		g.nonces[n] = exp
+	}
+}
+
 // LastSeq — 그 타입의 모든 소스 중 가장 큰 seq (진단용).
 func (g *Guard) LastSeq(t Type) uint64 {
 	var max uint64
