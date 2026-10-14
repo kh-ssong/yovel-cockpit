@@ -72,19 +72,21 @@ T0=$SECONDS
 # TP 유도가 = 005930 가격표 +2.8% 를 500원 단위로 올림 (71000 → 73000; 500 은 50만원 미만 모든 호가 단위의 배수)
 P5930=$(echo "$PRICES" | tr ',' '\n' | sed -n 's/^ *005930 *= *\([0-9]*\) *$/\1/p')
 TP_PX=$(( (P5930 * 1028 / 1000 + 499) / 500 * 500 ))
-sleep 50;  echo "t+50  TP 유도 005930 → $TP_PX" | tee -a "$OUT/events.log"; curl -s -X POST $A/price -d "{\"code\":\"005930\",\"price\":$TP_PX}" >/dev/null
 if [ "${RESTART:-}" = 1 ]; then
-  # 보유가 생길 때까지 기다렸다가(최대 60초) 콕핏을 강제 종료하고 다시 띄운다 — 잠금 인계·로트 복구·seq 복구.
+  # TP 까지 걸린 로트가 생기면(최대 45초) 콕핏을 강제 종료하고 다시 띄운다 — 잠금 인계·로트 복구·seq 복구.
+  # ★ TP 유도 **전에** 죽인다: 재시작 전에 걸어 둔 TP 가 재시작 뒤 체결되고 제값으로 닫히는지까지 본다.
   T=$(cat "$OUT/cockpit/api-token")
-  for i in $(seq 1 60); do
-    n=$(curl -s -m1 -H "Authorization: Bearer $T" http://127.0.0.1:$CP/v1/state | "$PY" -c "import json,sys;print(len(json.load(sys.stdin).get('positions') or []))" 2>/dev/null)
+  for i in $(seq 1 45); do
+    n=$(curl -s -m1 -H "Authorization: Bearer $T" http://127.0.0.1:$CP/v1/state | "$PY" -c "import json,sys;print(sum(1 for p in json.load(sys.stdin).get('positions') or [] if p.get('tp_order_id')))" 2>/dev/null)
     [ "${n:-0}" -gt 0 ] && break; sleep 1
   done
-  echo "t+$((SECONDS-T0)) 재시작 — 보유 ${n:-0} 로트에서 kill -9" | tee -a "$OUT/events.log"
+  echo "t+$((SECONDS-T0)) 재시작 — TP 건 로트 ${n:-0} 개 보유 중 kill -9" | tee -a "$OUT/events.log"
   kill -9 $CPID 2>/dev/null; wait $CPID 2>/dev/null; sleep 3
   start_cockpit "$OUT/cockpit2.log"
   echo "t+$((SECONDS-T0)) 재기동 완료" | tee -a "$OUT/events.log"
 fi
+left=$(( 50 - (SECONDS - T0) )); [ $left -gt 0 ] && sleep $left
+echo "t+50  TP 유도 005930 → $TP_PX" | tee -a "$OUT/events.log"; curl -s -X POST $A/price -d "{\"code\":\"005930\",\"price\":$TP_PX}" >/dev/null
 left=$(( 180 - (SECONDS - T0) )); [ $left -gt 0 ] && sleep $left
 echo "t+180 장애 kt10000 502 (applied)" | tee -a "$OUT/events.log"; curl -s -X POST $A/fault -d '{"api":"kt10000","http":502,"applied":true,"count":1}' >/dev/null
 wait $F6
@@ -128,6 +130,9 @@ if restart:
     if "cockpitd 시작" not in c2: fails.append("재시작한 콕핏이 안 떴다: " + c2[-300:])
     elif not m or int(m.group(1)) < 1: fails.append("재시작한 콕핏이 로트를 복구하지 않았다 (restored_positions=%s)" % (m and m.group(1)))
     else: print(f"재시작: 로트 {m.group(1)} 개 복구")
+    # 재시작 전에 걸어 둔 TP 가 재시작 뒤 체결돼 제값(체결가)으로 닫혔다
+    if not any(c["reason"] == "tp" and c.get("price", 0) > 0 for c in state["recent_closes"]):
+        fails.append("재시작 전에 건 TP 가 재시작 뒤 체결가로 닫히지 않았다")
 buys = [o for o in fake["orders"] if o["side"] == "buy"]
 print(f"flat6 왕복 {rounds} · 가짜 키움 주문 {len(fake['orders'])}(매수 {len(buys)}) · 콕핏 원장 {len(ledger['orders'])}줄 · 최근 종결 {len(state['recent_closes'])}")
 for c in state["recent_closes"]:
