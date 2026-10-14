@@ -26,8 +26,9 @@ OUT="${OUT:-$(mktemp -d)}"
 #   dummy 기본값(지금은 아래와 같다)을 쓴다. 형식 = "코드=가격,코드=가격".
 PRICES="${PRICES:-005930=71000,000660=195000,035720=41000}"
 CP=7795; FK=7801
-# ★ flat6 의 dummy 발행기(`python -m flat6.main --strategy dummy`)는 flat6 3276172e 에 있다 — 이후 개편으로 빠졌다.
-#   없으면 그 시점 스냅샷을 풀어 쓴다 (flat6 저장소는 건드리지 않는다):
+# ★ flat6 dummy 발행기(`python -m flat6.main --strategy dummy`)는 3276172e 에 고정한다 — flat6 dummy 는
+#   071ffcad(2026-10-09 R2, user 결정)에서 삭제됐고 대체가 없다 (지금 flat6 의 발행은 mockpit 전용 Desk 뿐).
+#   그 시점 스냅샷을 풀어 쓴다 (flat6 저장소는 건드리지 않는다):
 #     mkdir -p /tmp/f6 && git -C ../yovel-flat6 archive 3276172e | tar -x -C /tmp/f6
 #     go run ./cmd/devsign keygen --kid flat6-e2e --out /tmp/e2e_key.json
 #     FLAT6_DIR=/tmp/f6 FLAT6_KEY=/tmp/e2e_key.json scripts/e2e-flat6-fakekiwoom.sh
