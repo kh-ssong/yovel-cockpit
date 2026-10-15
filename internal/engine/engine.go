@@ -105,6 +105,10 @@ type Engine struct {
 	// 이 marks 라서 같은 락을 쓰면 **자기 자신을 기다리는 교착**이 된다.
 	marksMu sync.Mutex
 	marks   map[protocol.Symbol]mark
+
+	// short — 계좌 주문가능금액이 모자라 못 산 목표 → 다시 시도할 시각 (NoteShort).
+	// 그때까지는 진입을 계획하지 않고 per_intent 에 E_CAPITAL 로 답한다.
+	short map[string]time.Time
 }
 
 type source struct{ kid, scope string }
@@ -135,7 +139,24 @@ func New(cfg Config, now time.Time) *Engine {
 		terminal:  map[string]struct{}{},
 		marks:     map[protocol.Symbol]mark{},
 		targets:   map[source]*sourceTarget{},
+		short:     map[string]time.Time{},
 	}
+}
+
+// NoteShort — 이 목표는 계좌 돈이 모자라 못 샀다. until 까지 E_CAPITAL 로 답하고 진입을 쉰다.
+//
+// ★ 장부 예산(E_CAPITAL 의 원래 출처)이 남아 있어도 계좌가 0주면 발행자는 같은 답을 받아야 한다 —
+// 안 그러면 per_intent 는 applied 인데 보유는 안 생겨, 큰 날마다 «진입 만료» 로만 보인다.
+// 비종결이다: until 이 지나면 다시 산다 (청산으로 돈이 돌아왔을 수 있다).
+func (e *Engine) NoteShort(intentID string, until time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for id, t := range e.short {
+		if until.Sub(t) > 10*time.Minute {
+			delete(e.short, id) // 한참 지난 것 — 목표도 이미 만료됐다
+		}
+	}
+	e.short[intentID] = until
 }
 
 // Mark 는 신호원이 보낸 최근 가격을 준다. maxAge 보다 늙었으면 없는 것으로 친다 —
@@ -541,6 +562,10 @@ func (e *Engine) planSourceLocked(src source, now time.Time) reconcile.Plan {
 		Price:           e.cfg.Price,
 		Market:          e.cfg.Market,
 		Terminal:        e.isTerminalLocked,
+		Short: func(id string) bool {
+			until, ok := e.short[id]
+			return ok && now.Before(until)
+		},
 	})
 	for i := range plan.Enters {
 		plan.Enters[i].Kid, plan.Enters[i].Scope = src.kid, src.scope

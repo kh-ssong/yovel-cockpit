@@ -104,8 +104,15 @@ type Options struct {
 	// 3주가 맞는 자리를 42주로 샀다. 콕핏이 **독립 시세**를 알면 신호가가 그보다 RefMaxDev 넘게
 	// 어긋난 진입을 E_LOCAL_GUARD 로 거절한다. 독립 시세를 모르면 막지 않는다(신호가의 존재 이유).
 	// ★ paper 에서는 신호원 mark 가 아니라 거래소 시세여야 한다 — mark 는 같은 신호원이 보낸 값이다.
+	//
+	// ★ 이 함수는 엔진 락 안에서 불린다 — **네트워크를 타면 안 된다** (캐시만, quotes.Ref.Cached).
+	// 모르는 종목은 건너뛰고, 집행기가 주문 직전에 직접 조회해 같은 검사를 한다 (몰림 재생 2026-10-15).
 	RefCheckPrice func(protocol.Symbol) (float64, bool)
 	RefMaxDev     float64
+	// Short — 이 목표가 방금 **계좌** 주문가능금액이 모자라 못 샀고 아직 기다리는 중인가.
+	// 그렇다면 진입을 계획하지 않고 E_CAPITAL 로 답한다 — 장부 예산이 남아도 계좌가 0주면 발행자는
+	// 그걸 알아야 하고, 매 틱 같은 조회로 주문 상한(MaxOrders)을 먹으면 뒤 신호가 E_RATE 로 밀린다.
+	Short func(intentID string) bool
 	// CanEnter — 지금 이 종목에 새 진입을 낼 수 있는가 (장 시간·동시호가·휴장일). nil 이면 안 본다.
 	// ★ 장 밖 진입은 E_MARKET_CLOSED 로 **계획 단계에서** 거절한다 — 발행자가 ack 로 알 수 있게.
 	CanEnter func(protocol.Symbol) bool
@@ -242,6 +249,11 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 				plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{protocol.CodeLocalGuard}))
 				continue
 			}
+			if opt.Short != nil && opt.Short(t.IntentID) {
+				// ★ 비종결이다 — 잠깐 쉬었다가 다시 산다 (그사이 청산으로 돈이 돌아오면 들어간다).
+				plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{protocol.CodeCapital}))
+				continue
+			}
 			enter, codes := buildEnter(t, opt, opt.Budget-spent)
 			if len(codes) > 0 {
 				plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", codes))
@@ -299,12 +311,21 @@ func refPriceGuard(t protocol.Target, opt Options) string {
 	if !ok || q <= 0 {
 		return ""
 	}
+	return RefDeviation(t, q, opt.RefMaxDev)
+}
+
+// RefDeviation — 신호가가 시세 q 와 maxDev 넘게 어긋나면 사유, 아니면 "".
+// 집행기도 주문 직전에 같은 문장으로 검사한다 (엔진은 캐시만 보므로 처음 보는 종목은 거기서 걸린다).
+func RefDeviation(t protocol.Target, q, maxDev float64) string {
+	if maxDev <= 0 || q <= 0 || t.Entry == nil || t.Entry.RefPrice <= 0 {
+		return ""
+	}
 	dev := t.Entry.RefPrice/q - 1
-	if math.Abs(dev) <= opt.RefMaxDev {
+	if math.Abs(dev) <= maxDev {
 		return ""
 	}
 	return fmt.Sprintf("%s(%s): 신호가 %.0f 이 시세 %.0f 와 %+.0f%% 어긋나 진입 거절 (허용 ±%.0f%%) — 신호원 가격을 확인할 것",
-		t.IntentID, t.Symbol.Code, t.Entry.RefPrice, q, dev*100, opt.RefMaxDev*100)
+		t.IntentID, t.Symbol.Code, t.Entry.RefPrice, q, dev*100, maxDev*100)
 }
 
 // reduceOrder — hold_frac 을 "몇 주 팔지" 로 바꾼다. 팔 게 없으면 (nil, "").

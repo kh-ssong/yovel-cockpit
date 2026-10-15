@@ -1,0 +1,415 @@
+{
+ "what": "2026-10-15 gapdown burst (KOSDAQ/KOSPI CB level 1 day) - flat6 Desk signal order",
+ "source": "C:/flat6/data/desk_kiwoom/desk_host.db dk_log kind=signal (read-only)",
+ "n": 54,
+ "by_desk": {
+  "kiwoom/gapdown_main": 43,
+  "kiwoom/gapdown_mild": 11
+ },
+ "span_ms": [
+  2682,
+  139801
+ ],
+ "reflex_reference": {
+  "pool_total_krw": 941382,
+  "pool_effective_krw": 894313,
+  "slot_share_cap_pct": {
+   "gapdown_deep": 50,
+   "gapdown_main": 60,
+   "gapdown_mild": 70,
+   "brkout": 1
+  },
+  "per_pos_krw": {
+   "gapdown_deep": 156897,
+   "gapdown_main": 112966,
+   "gapdown_mild": 131793
+  },
+  "max_open": {
+   "gapdown_deep": 3,
+   "gapdown_main": 5,
+   "gapdown_mild": 5
+  },
+  "intent": "overbook 181% on purpose; big days -> enter with what is left (clamp), not skip",
+  "actual": "2 per slot, 29 skipped no_position_size (engine L1 cash frozen at 06:00 seed) while pool still had 451,863 and 3 free slots; one kt00005 -994 stalled main 31 s"
+ },
+ "signals": [
+  {
+   "t_ms": 2682,
+   "desk": "kiwoom/gapdown_main",
+   "code": "033160",
+   "ref_price": 15940.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 3181,
+   "desk": "kiwoom/gapdown_main",
+   "code": "059090",
+   "ref_price": 22350.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 4182,
+   "desk": "kiwoom/gapdown_mild",
+   "code": "289080",
+   "ref_price": 2380.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 5013,
+   "desk": "kiwoom/gapdown_main",
+   "code": "446540",
+   "ref_price": 9410.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 5276,
+   "desk": "kiwoom/gapdown_main",
+   "code": "090460",
+   "ref_price": 17360.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 6031,
+   "desk": "kiwoom/gapdown_main",
+   "code": "160190",
+   "ref_price": 22550.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 6302,
+   "desk": "kiwoom/gapdown_main",
+   "code": "161000",
+   "ref_price": 11250.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 7085,
+   "desk": "kiwoom/gapdown_mild",
+   "code": "267320",
+   "ref_price": 2670.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 8136,
+   "desk": "kiwoom/gapdown_main",
+   "code": "439960",
+   "ref_price": 5370.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 8136,
+   "desk": "kiwoom/gapdown_main",
+   "code": "200470",
+   "ref_price": 9390.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 8205,
+   "desk": "kiwoom/gapdown_main",
+   "code": "417840",
+   "ref_price": 16710.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 8207,
+   "desk": "kiwoom/gapdown_mild",
+   "code": "321370",
+   "ref_price": 1555.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 8434,
+   "desk": "kiwoom/gapdown_mild",
+   "code": "203650",
+   "ref_price": 2400.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 9275,
+   "desk": "kiwoom/gapdown_main",
+   "code": "052710",
+   "ref_price": 18690.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 9992,
+   "desk": "kiwoom/gapdown_main",
+   "code": "0161M0",
+   "ref_price": 8750.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 10511,
+   "desk": "kiwoom/gapdown_main",
+   "code": "080580",
+   "ref_price": 25350.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 10787,
+   "desk": "kiwoom/gapdown_main",
+   "code": "100590",
+   "ref_price": 4800.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 12149,
+   "desk": "kiwoom/gapdown_main",
+   "code": "072950",
+   "ref_price": 14560.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 14394,
+   "desk": "kiwoom/gapdown_mild",
+   "code": "475040",
+   "ref_price": 2590.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 14516,
+   "desk": "kiwoom/gapdown_main",
+   "code": "394800",
+   "ref_price": 5300.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 15111,
+   "desk": "kiwoom/gapdown_main",
+   "code": "412350",
+   "ref_price": 5060.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 15489,
+   "desk": "kiwoom/gapdown_mild",
+   "code": "069540",
+   "ref_price": 3810.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 15495,
+   "desk": "kiwoom/gapdown_main",
+   "code": "477850",
+   "ref_price": 17480.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 16994,
+   "desk": "kiwoom/gapdown_main",
+   "code": "376900",
+   "ref_price": 21150.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 18087,
+   "desk": "kiwoom/gapdown_main",
+   "code": "032580",
+   "ref_price": 5530.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 18300,
+   "desk": "kiwoom/gapdown_main",
+   "code": "419050",
+   "ref_price": 2100.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 19184,
+   "desk": "kiwoom/gapdown_main",
+   "code": "488280",
+   "ref_price": 12190.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 20286,
+   "desk": "kiwoom/gapdown_main",
+   "code": "086390",
+   "ref_price": 11150.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 20286,
+   "desk": "kiwoom/gapdown_mild",
+   "code": "388790",
+   "ref_price": 4395.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 21197,
+   "desk": "kiwoom/gapdown_main",
+   "code": "017900",
+   "ref_price": 8100.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 21197,
+   "desk": "kiwoom/gapdown_main",
+   "code": "243840",
+   "ref_price": 6420.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 21197,
+   "desk": "kiwoom/gapdown_main",
+   "code": "356680",
+   "ref_price": 15480.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 21197,
+   "desk": "kiwoom/gapdown_mild",
+   "code": "039980",
+   "ref_price": 4375.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 21481,
+   "desk": "kiwoom/gapdown_mild",
+   "code": "027360",
+   "ref_price": 2905.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 21591,
+   "desk": "kiwoom/gapdown_main",
+   "code": "263860",
+   "ref_price": 21450.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 21682,
+   "desk": "kiwoom/gapdown_main",
+   "code": "187870",
+   "ref_price": 12700.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 22603,
+   "desk": "kiwoom/gapdown_main",
+   "code": "100790",
+   "ref_price": 14200.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 22794,
+   "desk": "kiwoom/gapdown_main",
+   "code": "413630",
+   "ref_price": 3495.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 24423,
+   "desk": "kiwoom/gapdown_main",
+   "code": "062970",
+   "ref_price": 2395.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 24534,
+   "desk": "kiwoom/gapdown_main",
+   "code": "033790",
+   "ref_price": 8920.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 24705,
+   "desk": "kiwoom/gapdown_main",
+   "code": "001210",
+   "ref_price": 9380.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 25889,
+   "desk": "kiwoom/gapdown_mild",
+   "code": "126640",
+   "ref_price": 3230.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 26683,
+   "desk": "kiwoom/gapdown_main",
+   "code": "125490",
+   "ref_price": 10350.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 26775,
+   "desk": "kiwoom/gapdown_main",
+   "code": "010170",
+   "ref_price": 13370.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 28101,
+   "desk": "kiwoom/gapdown_main",
+   "code": "347700",
+   "ref_price": 20350.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 30191,
+   "desk": "kiwoom/gapdown_main",
+   "code": "368770",
+   "ref_price": 10930.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 30886,
+   "desk": "kiwoom/gapdown_main",
+   "code": "046970",
+   "ref_price": 7260.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 30886,
+   "desk": "kiwoom/gapdown_mild",
+   "code": "462860",
+   "ref_price": 2490.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 31389,
+   "desk": "kiwoom/gapdown_main",
+   "code": "006910",
+   "ref_price": 5770.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 31492,
+   "desk": "kiwoom/gapdown_main",
+   "code": "089010",
+   "ref_price": 25050.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 31616,
+   "desk": "kiwoom/gapdown_main",
+   "code": "097800",
+   "ref_price": 3000.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 130280,
+   "desk": "kiwoom/gapdown_main",
+   "code": "168360",
+   "ref_price": 11830.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 131086,
+   "desk": "kiwoom/gapdown_main",
+   "code": "020120",
+   "ref_price": 5800.0,
+   "flat6_krw": 1000000
+  },
+  {
+   "t_ms": 139801,
+   "desk": "kiwoom/gapdown_main",
+   "code": "0010F0",
+   "ref_price": 3130.0,
+   "flat6_krw": 1000000
+  }
+ ]
+}

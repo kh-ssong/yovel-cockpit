@@ -19,6 +19,7 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/engine"
 	"github.com/kh-ssong/yovel-cockpit/internal/ids"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
+	"github.com/kh-ssong/yovel-cockpit/internal/reconcile"
 	"github.com/kh-ssong/yovel-cockpit/internal/session"
 	"github.com/kh-ssong/yovel-cockpit/internal/store"
 )
@@ -50,7 +51,20 @@ type Deps struct {
 	BlockStatus map[string]bool
 	// BrokerExchange — 실브로커가 다루는 거래소 ("KRX" 면 점검 시간에 API 를 쉬고 장 밖엔 틱을 늦춘다).
 	BrokerExchange string
+
+	// RefCheck · RefMaxDev — 주문 직전 신호가 검증. 엔진은 캐시만 보므로(락 안 네트워크 금지)
+	// 처음 보는 종목은 여기서 걸린다. RefCheck 는 조회이고 결과를 엔진이 보는 캐시에 남긴다
+	// (quotes.Ref.Fetch) — 그래서 다음 판정부터는 엔진이 E_LOCAL_GUARD 로 발행자에게 답한다.
+	RefCheck  func(protocol.Symbol) (float64, bool)
+	RefMaxDev float64
+	// Observe — 잔고 조회가 같이 준 보유 종목 현재가를 시세 캐시에 넣는 자리 (quotes.Source.Put).
+	// ★ 보유 종목마다 시세를 따로 물으면 키움 한도가 시세 조회로 차서 진입이 밀린다.
+	Observe func(protocol.Symbol, float64)
 }
+
+// shortRetry — 계좌 주문가능금액이 모자라 못 산 목표를 다시 시도하기까지 쉬는 시간.
+// 그사이 엔진은 그 목표에 E_CAPITAL 로 답하고 주문 상한을 다른 신호에 내준다.
+const shortRetry = 2 * time.Second
 
 type Executor struct {
 	d Deps
@@ -63,7 +77,14 @@ type Executor struct {
 	sellAfter map[string]time.Time
 	// tpChecked — 로트별 마지막 TP 체결 조회 시각. 5초 틱마다 전부 물으면 조회 한도를 먹는다.
 	tpChecked map[string]time.Time
+	// syncAfter — 잔고 조회가 실패했으면 이 시각까지 장부·실물 대조를 쉰다 (syncBackoff).
+	syncAfter time.Time
 }
+
+// syncBackoff — 잔고 조회가 실패한 뒤 대조를 쉬는 시간.
+// ★ 조회가 매달리면 틱마다 타임아웃만큼 진입이 밀린다 (몰림 재생: 틱 40초). 대조는 TP 체결·수동 매도를
+// 찾는 일이라 몇 초 늦어도 되지만, 진입은 신호 + 10초가 마감이다.
+const syncBackoff = 10 * time.Second
 
 func New(d Deps) *Executor {
 	if d.Log == nil {
@@ -85,6 +106,12 @@ type Result struct {
 	Reduced int `json:"reduced,omitempty"`
 	// Deferred — 장 밖이라 미룬 주문 수 (로트는 그대로, 장이 열리면 다시).
 	Deferred int `json:"deferred,omitempty"`
+	// Expired — 계획엔 있었는데 내려는 순간 진입 마감(entry.not_after)이 지나 안 낸 진입.
+	// ★ 틱이 길어지면(몰림·조회 지연) 틱 시작 때 세운 계획이 마감을 넘긴다 — 그대로 내면 발행자는
+	//   «만료» 로 아는데 콕핏은 산다 (몰림 재생 2026-10-15: 신호 + 39초에 체결).
+	Expired int `json:"expired,omitempty"`
+	// CapitalShort — 계좌 주문가능금액이 모자라 못 낸 진입 (발행자에겐 E_CAPITAL 로 알린다).
+	CapitalShort int `json:"capital_short,omitempty"`
 	// ClosedByBroker — 우리가 안 팔았는데 브로커에서 사라진 포지션 (TP 체결 또는 수동 매도).
 	ClosedByBroker int `json:"closed_by_broker"`
 	// Blind — stop 이 걸려 있는데 시세가 없거나 늙어 평가하지 못한 포지션.
@@ -112,6 +139,10 @@ type limitSettler interface {
 // 09:00 에 한 종목의 거부가 전체 집행을 막으면 그날 매매가 통째로 증발한다.
 func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 	var res Result
+	// ★ 틱 안에서 시간이 흐른다 — 잔고 대조·stop 감시가 몇 초를 먹으면 now 는 이미 과거다.
+	//   계획과 진입은 그때그때 시각으로 한다. now 는 호출자의 시계(테스트는 가상 시계)라 벽시계 경과만 더한다.
+	wall := time.Now()
+	cur := func() time.Time { return now.Add(time.Since(wall)) }
 
 	// 장 밖 처리 — 점검 시간엔 브로커를 아예 부르지 않고(토큰 발급이 엉뚱한 페이지로 간다),
 	// 한산한 장 밖 시간엔 1분에 한 번만 돈다 (진행 중 주문 추적은 PollWorking 이 따로 한다).
@@ -147,7 +178,7 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 	//   ★ 계획보다 먼저 본다. 여기서 판 포지션은 이번 틱의 계획에서 다시 팔지 않는다.
 	sold := x.enforceLocalExits(ctx, now, &res)
 
-	plan := x.d.Engine.Plan(now)
+	plan := x.d.Engine.Plan(cur())
 
 	// 집행할 수 없었던 지시는 조용히 버리지 않는다.
 	for _, n := range plan.Notes {
@@ -189,9 +220,9 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 		res.TpPlaced++
 	}
 
-	// ④ 진입은 마지막.
+	// ④ 진입은 마지막. 시각은 건마다 다시 잰다 (앞선 진입도 시간을 먹는다).
 	for _, e := range plan.Enters {
-		x.doEnter(ctx, now, plan.AsOfBar, e.Target, e.Qty, e.Price, e.Kid, e.Scope, &res)
+		x.doEnter(ctx, cur(), plan.AsOfBar, e.Target, e.Qty, e.Price, e.Kid, e.Scope, &res)
 	}
 
 	if plan.DroppedEnters > 0 {
@@ -207,14 +238,21 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 // ★ 이 둘을 뭉뚱그리면 형제 레그를 잘못 청산하는 사고가 난다. 구분할 근거는 하나뿐 —
 // 우리가 TP 를 걸어뒀는가. 그마저도 확실하지 않으므로 detail 에 "사후 감지" 를 남긴다.
 func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result) {
+	if now.Before(x.syncAfter) {
+		return
+	}
 	holdings, err := x.d.Broker.Positions(ctx)
 	if err != nil {
-		res.fail("브로커 포지션 조회: %v", err)
+		x.syncAfter = now.Add(syncBackoff)
+		res.fail("브로커 포지션 조회: %v (대조를 %v 쉰다)", err, syncBackoff)
 		return // ★ 조회 실패를 "포지션 없음" 으로 읽지 않는다. 그러면 전부 종결시켜 버린다.
 	}
 	byCode := map[string]broker.Holding{}
 	for _, h := range holdings {
 		byCode[h.Symbol.Code] = h
+		if x.d.Observe != nil && h.Price > 0 {
+			x.d.Observe(h.Symbol, h.Price)
+		}
 	}
 
 	open, err := x.d.Store.OpenIntents(ctx)
@@ -426,12 +464,26 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 	if x.isWorking(t.IntentID) {
 		return // 이미 낸 진입이 진행 중
 	}
+	if x.entryExpired(t, now, res) {
+		return
+	}
 	if x.d.Session != nil && !x.d.Session.CanEnter(t.Symbol.Exchange, now) {
 		res.Deferred++
 		return
 	}
+	wall := time.Now()
 	if label := x.blockedStatus(ctx, t.Symbol); label != "" {
 		x.blockEntry(ctx, now, t, kid, scope, label, res)
+		return
+	}
+	if note := x.refGuard(t); note != "" {
+		// 엔진 캐시에 시세가 남았으니 다음 판정부터 엔진이 E_LOCAL_GUARD 로 답한다 — 여기선 안 사고 알린다.
+		res.fail("지시 불가: %s", note)
+		return
+	}
+	// 조회 두 번(상태·시세)이 시간을 먹었다 — 내기 직전에 마감을 한 번 더 본다.
+	now = now.Add(time.Since(wall))
+	if x.entryExpired(t, now, res) {
 		return
 	}
 	req := broker.OrderRequest{
@@ -476,9 +528,41 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 	x.finishEnter(ctx, now, asOfBar, t, kid, scope, fill, res)
 }
 
+// entryExpired — 진입 마감이 지났으면 내지 않는다 (엔진의 다음 판정이 E_EXPIRED 로 답한다).
+func (x *Executor) entryExpired(t protocol.Target, now time.Time, res *Result) bool {
+	if t.Entry == nil || t.Entry.NotAfter.IsZero() || !now.After(t.Entry.NotAfter) {
+		return false
+	}
+	res.Expired++
+	x.d.Log.Warn("진입 마감이 지나 내지 않았다 — 계획이 늦었다", "intent_id", t.IntentID,
+		"code", t.Symbol.Code, "not_after", t.Entry.NotAfter, "late", now.Sub(t.Entry.NotAfter).Round(time.Millisecond))
+	return true
+}
+
+// refGuard — 주문 직전 신호가 검증 (독립 시세를 직접 조회한다). 시세를 모르면 막지 않는다.
+func (x *Executor) refGuard(t protocol.Target) string {
+	if x.d.RefCheck == nil || x.d.RefMaxDev <= 0 || t.Entry == nil || t.Entry.RefPrice <= 0 {
+		return ""
+	}
+	q, ok := x.d.RefCheck(t.Symbol)
+	if !ok {
+		return ""
+	}
+	return reconcile.RefDeviation(t, q, x.d.RefMaxDev)
+}
+
 // buyFailed — 매수가 안 됐다. ★ 결과를 모르면(ErrMaybeSent) 목표를 종결해 재매수를 막는다.
 func (x *Executor) buyFailed(ctx context.Context, now time.Time, t protocol.Target, qty float64,
 	kid, scope, orderID string, err error, res *Result) {
+	if errors.Is(err, broker.ErrInsufficient) {
+		// ★ 계좌가 0주라고 했다 — 발행자에게 E_CAPITAL 로 알리고 잠깐 쉬었다 다시 산다(비종결).
+		//   오류로 올리지 않는다: 오버부킹이면 큰 날마다 수십 건이고, 그건 사고가 아니라 설계다.
+		x.d.Engine.NoteShort(t.IntentID, now.Add(shortRetry))
+		res.CapitalShort++
+		x.d.Log.Info("계좌 주문가능금액 부족 — E_CAPITAL 로 알리고 대기", "intent_id", t.IntentID,
+			"code", t.Symbol.Code, "qty", qty, "err", err)
+		return
+	}
 	if errors.Is(err, broker.ErrMaybeSent) {
 		// ★ 매수가 나갔는지 모른다. 그냥 실패로 두면 목표가 그대로라 **다음 틱에 또 산다** —
 		// 드라이버가 재시도를 막아도 여기서 두 번 산다. 이 목표는 종결시켜 재진입을 막고 사람에게 알린다.
