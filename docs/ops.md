@@ -19,6 +19,30 @@ schtasks /Create /TN "cockpit" /SC ONLOGON /RL LIMITED /TR "C:\cockpit\cockpitsu
 
 ★ 기계를 옮길 땐 **옛 기계의 자동 시작부터 끈다** — 두 기계가 같은 계좌에 붙는다 (reflex 2026-07-19, 10분간 이중 접속).
 
+## 맥에서 돌리기 (`scripts/macbook.sh`)
+
+빌드하는 PC 에서 SSH 로 맥을 부린다. 접속 정보는 저장소 루트 `.env.macbook` (gitignore — `MAC_SSH=user@host.local`,
+mDNS 가 안 풀릴 때 `MAC_SSH_FALLBACK="user@192.168.x.y"`). 맥에 Go 는 필요 없다 (PC 에서 darwin/amd64 로 빌드).
+
+| 명령 | 하는 일 |
+|---|---|
+| `smoke` | 맥 임시 폴더에서 키·`.env` 없이 paper 로 띄워 health·집행 루프·SIGTERM 정지를 보고 지운다 |
+| `push` | 빌드 → `~/cockpit/releases/<sha>` → `~/cockpit/bin` 이 가리킨다 (재시작 안 함 · 커밋 안 한 변경이 있으면 거부) |
+| `install paper\|live [-- 플래그]` | launchd 설정을 `~/cockpit` 에 만들어만 둔다 · live 는 `COCKPIT_LIVE_OK=1` 필요 |
+| `start` / `stop` / `restart` | start = 설정에 **지금 release 를 박아** `~/Library/LaunchAgents` 에 넣고 켠다 (재부팅 뒤에도 뜬다) · stop = 끄고 뺀다 |
+| `status` | launchd·도는 release·health·하트비트·reflex supervisor·잠자기·메모리·시계·로그 끝 |
+| `tunnel` | 이 PC `127.0.0.1:7737` → 맥 콕핏 (끊기면 5초 뒤 다시) + API 토큰 사본 `data/macbook/api-token` |
+
+- 맥 `~/cockpit/.env` 에 키 `*_FILE` 경로·`COCKPIT_ACCT`·텔레그램 (push 가 `.env.example` 을 남긴다). data-dir 은 `~/cockpit/paper` · `~/cockpit/live`.
+- flat6(PC) 는 `FLAT6_COCKPIT_URL=http://127.0.0.1:7737` · `FLAT6_COCKPIT_TOKEN_FILE=<저장소>/data/macbook/api-token`.
+  터널이 끊기면 목표가 낡아 **신규 진입만** 멈춘다 — stop·시간청산은 맥에서 원장으로 계속 돈다.
+- 터널 자동 시작 (PC 로그온 시):
+  `schtasks /Create /TN "cockpit-tunnel" /SC ONLOGON /RL LIMITED /TR "\"C:\Program Files\Git\bin\bash.exe\" -lc '<저장소>/scripts/macbook.sh tunnel >> ~/cockpit-tunnel.log 2>&1'"`
+- 맥 IP 가 DHCP 로 바뀐 적이 있다 — 공유기에서 맥 IP 를 고정해 두면 폴백이 늘 맞는다.
+- ★ **키움 키는 한 곳에서만.** `start` 는 콕핏 키가 reflex `.env` 의 키움 키와 같고 reflex supervisor 에 `kiwoom`·`us` 가
+  있으면 거부한다 — reflex 는 국내봇과 미장봇이 같은 키를 쓴다 (2026-10-15 실측). paper 도 시세를 그 키로 받으니 마찬가지.
+- 로그는 `~/cockpit/logs/cockpit.log` 하나 (하루 수 MB) — 회전은 아직 안 한다.
+
 ## 껐다 켜면 — 무엇이 복구되나
 
 원장(`{data-dir}/cockpit.db`)에서 되살린다. 데몬은 아무 데서나 죽어도 된다 (전원·`kill -9`·감시자의 재기동).

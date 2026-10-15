@@ -14,7 +14,10 @@
 # 사용:
 #   scripts/build.sh              현재 플랫폼
 #   scripts/build.sh cross        macOS(arm64/amd64) + Windows + Linux 전부
+#   scripts/build.sh mac          macOS Intel(amd64) 만 — 운영 맥북 (scripts/macbook.sh 가 부른다)
 #   COCKPIT_SKIP_UI=1 scripts/build.sh   UI 없이 (헤드리스·긴급용. 데몬이 안내 페이지를 낸다)
+#
+# 산출물 = bin/cockpitd-<os>-<arch> + bin/cockpitsup-<os>-<arch> (감시자도 같은 sha 로 같이 낸다).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -33,6 +36,9 @@ build_ui() {
   # npm ci 는 package-lock.json 을 그대로 재현한다 (install 과 달리 잠금을 갱신하지 않는다).
   # 재현 가능 빌드가 목표이므로 여기서 잠금이 흔들리면 안 된다.
   (cd ui && npm ci --silent && npm run build --silent)
+  # vite 플러그인(keepGitkeep)이 .gitkeep 을 LF 로 다시 써서, autocrlf 환경에선 내용이 같아도 git 이 «수정됨» 으로 본다
+  # → 바이너리 vcs 스탬프가 dirty 가 되고 macbook.sh push 가 거부한다. 커밋된 그대로 되돌린다.
+  git checkout -- internal/webui/dist/.gitkeep 2>/dev/null || true
 }
 
 PKG=github.com/kh-ssong/yovel-cockpit/internal/version
@@ -49,9 +55,12 @@ COMMON=(-trimpath -ldflags "${LDFLAGS}")
 export CGO_ENABLED=0
 
 build() { # os arch suffix
-  local os=$1 arch=$2 out="bin/cockpitd-$1-$2$3"
-  echo "  $out"
-  GOOS="$os" GOARCH="$arch" go build "${COMMON[@]}" -o "$out" ./cmd/cockpitd
+  local os=$1 arch=$2 cmd out
+  for cmd in cockpitd cockpitsup; do
+    out="bin/$cmd-$1-$2$3"
+    echo "  $out"
+    GOOS="$os" GOARCH="$arch" go build "${COMMON[@]}" -o "$out" ./cmd/$cmd
+  done
 }
 
 build_ui
@@ -64,6 +73,9 @@ if [[ "${1:-}" == "cross" ]]; then
   build darwin amd64 ""
   build windows amd64 ".exe"
   build linux amd64 ""
+elif [[ "${1:-}" == "mac" ]]; then
+  echo "맥 빌드 ${VERSION} (${SHA})"
+  build darwin amd64 ""
 else
   echo "빌드 ${VERSION} (${SHA})"
   suffix=""; [[ "$(go env GOOS)" == "windows" ]] && suffix=".exe"
