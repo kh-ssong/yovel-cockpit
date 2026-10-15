@@ -47,6 +47,10 @@ func Key(kid, scope string) string { return kid + "/" + scope }
 type Set struct {
 	books []Book
 	deflt float64
+	// overbook — 장부 합이 계좌보다 큰 것이 **의도된** 설정이다 (books.json "overbook": true).
+	// 그러면 매일 예산 점검(08:50)이 «예산이 계좌를 넘는다» 로 울리지 않는다 — 모자람은 계좌 층에서
+	// 줄여 사고(최소 1주) 0주면 E_CAPITAL 로 답한다 (user 2026-10-15).
+	overbook bool
 }
 
 // New — ★ 한 소스가 두 장부에 걸리면 기동을 거부한다. 어느 돈으로 샀는지 모르는 매수는
@@ -81,7 +85,7 @@ func New(books []Book, defaultBudget float64) (*Set, error) {
 //	  {"name": "d205",  "kid": "flat6-1", "scope": "intraday/d205",   "seed": 16000000},
 //	  {"name": "klev",  "kid": "flat6-1", "scope": "intraday/klev",   "seed":  3000000},
 //	  {"name": "coin",  "kid": "flat6-1", "scope": "scalp/coin",      "seed":  2000000, "enabled": false}
-//	]}
+//	], "overbook": true}
 func Load(path string, defaultBudget float64) (*Set, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -91,13 +95,22 @@ func Load(path string, defaultBudget float64) (*Set, error) {
 		return nil, err
 	}
 	var f struct {
-		Books []Book `json:"books"`
+		Books    []Book `json:"books"`
+		Overbook bool   `json:"overbook"`
 	}
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return New(f.Books, defaultBudget)
+	s, err := New(f.Books, defaultBudget)
+	if err != nil {
+		return nil, err
+	}
+	s.overbook = f.Overbook
+	return s, nil
 }
+
+// Overbook — 장부 합 > 계좌가 의도된 설정인가 (예산 점검이 경고하지 않는다).
+func (s *Set) Overbook() bool { return s != nil && s.overbook }
 
 // Of — 소스의 장부. active=false 면 진입 금지 (장부에 없거나 꺼졌다).
 func (s *Set) Of(kid, scope string) (name string, budget float64, active bool) {

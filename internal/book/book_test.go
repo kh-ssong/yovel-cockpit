@@ -72,3 +72,16 @@ func TestLoadFile(t *testing.T) {
 		t.Fatalf("%s %v %v", n, b, a)
 	}
 }
+
+// 오버부킹 표시 — 없으면 꺼짐(예산 점검이 경고한다), 있으면 켜짐 (user 2026-10-15).
+func TestLoadOverbook(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "books.json")
+	os.WriteFile(p, []byte(`{"books":[{"name":"m","scope":"kiwoom/gapdown_main","seed":20000000}]}`), 0o600)
+	if s, err := Load(p, 0); err != nil || s.Overbook() {
+		t.Fatalf("표시가 없는데 켜졌다: %v", err)
+	}
+	os.WriteFile(p, []byte(`{"books":[{"name":"m","scope":"kiwoom/gapdown_main","seed":20000000}],"overbook":true}`), 0o600)
+	if s, err := Load(p, 0); err != nil || !s.Overbook() {
+		t.Fatalf("표시를 못 읽었다: %v", err)
+	}
+}

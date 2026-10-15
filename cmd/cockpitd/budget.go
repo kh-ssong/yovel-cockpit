@@ -21,8 +21,13 @@ const budgetCheckHour, budgetCheckMin = 8, 50
 // (reflex 2026-08-04: 배정 137만 → 매수 79% 실패, 국내 API 에선 흔적이 안 보였다).
 //
 // ★ 이미 들고 있는 자리(open)는 현금이 아니라 주식으로 있으므로 예산에서 빼고 본다.
-// 남은 예산 = budget − open 이 Seed 보다 크면, 뒤에 오는 진입이 전부 E_CAPITAL·거부가 된다.
-func budgetVerdict(budget, open float64, c broker.Cash) (ok bool, msg string) {
+// 남은 예산 = budget − open 이 Seed 보다 크면, 계좌 돈이 먼저 바닥나 뒤 순위 진입은 줄거나(최소 1주)
+// 0주면 E_CAPITAL 이 된다.
+//
+// ★ overbook(books.json) 이면 그게 의도된 설정이라 경고하지 않고 비율만 알린다 (user 2026-10-15) —
+// 매일 울리는 경고는 무시당하고, 그러면 진짜 사고(해외 원화배정 등)도 같이 묻힌다.
+// 표시가 없는 계좌는 그대로 경고한다.
+func budgetVerdict(budget, open float64, c broker.Cash, overbook bool) (ok bool, msg string) {
 	if budget <= 0 {
 		return true, ""
 	}
@@ -32,6 +37,10 @@ func budgetVerdict(budget, open float64, c broker.Cash) (ok bool, msg string) {
 	need := budget - open
 	if need <= c.Seed {
 		return true, ""
+	}
+	if overbook {
+		return true, fmt.Sprintf("의도한 오버부킹 — 남은 예산 %.0f원이 현금 한도 %.0f원의 %.0f%% (books.json overbook: 경고 안 함)",
+			need, c.Seed, need/c.Seed*100)
 	}
 	return false, fmt.Sprintf("예산이 계좌를 넘는다: 남은 예산 %.0f원(예산 %.0f − 보유 %.0f) > 현금 한도 %.0f원 "+
 		"(%.0f%% 만 집행 가능 — 뒤 순위 진입은 거부된다. 해외 원화배정·출금·다른 봇 사용을 확인할 것)",
@@ -51,7 +60,7 @@ func nextBudgetCheck(now time.Time) time.Time {
 //
 // ★ 막지 않고 **크게 경고만** 한다. 줄여서 집행할지는 사람이 정할 일이고, 조용히 예산을
 // 깎으면 "왜 이 크기로 샀는지" 를 원장에서 재현할 수 없게 된다.
-func watchBudget(ctx context.Context, br broker.Broker, budget float64,
+func watchBudget(ctx context.Context, br broker.Broker, budget float64, overbook bool,
 	positions func() []protocol.Position, log *slog.Logger, alert func(key, text string)) {
 
 	check := func() {
@@ -64,7 +73,7 @@ func watchBudget(ctx context.Context, br broker.Broker, budget float64,
 		for _, p := range positions() {
 			open += p.Qty * p.AvgEntryPrice
 		}
-		ok, msg := budgetVerdict(budget, open, c)
+		ok, msg := budgetVerdict(budget, open, c, overbook)
 		switch {
 		case !ok:
 			log.Warn("★★ "+msg, "engine_budget", budget, "seed", c.Seed,
