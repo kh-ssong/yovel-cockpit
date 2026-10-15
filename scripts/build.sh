@@ -36,6 +36,9 @@ build_ui() {
   # npm ci 는 package-lock.json 을 그대로 재현한다 (install 과 달리 잠금을 갱신하지 않는다).
   # 재현 가능 빌드가 목표이므로 여기서 잠금이 흔들리면 안 된다.
   (cd ui && npm ci --silent && npm run build --silent)
+  # vite 플러그인(keepGitkeep)이 .gitkeep 을 LF 로 다시 써서, autocrlf 환경에선 내용이 같아도 git 이 «수정됨» 으로 본다
+  # → 바이너리 vcs 스탬프가 dirty 가 되고 macbook.sh push 가 거부한다. 커밋된 그대로 되돌린다.
+  git checkout -- internal/webui/dist/.gitkeep 2>/dev/null || true
 }
 
 PKG=github.com/kh-ssong/yovel-cockpit/internal/version

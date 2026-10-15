@@ -103,7 +103,7 @@ EOF
 cmd_push() {
   local sha
   sha=$(git -C "$ROOT" rev-parse --short HEAD)
-  if [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ] && [ "${ALLOW_DIRTY:-}" != 1 ]; then
+  if ! git -C "$ROOT" diff --quiet HEAD -- && [ "${ALLOW_DIRTY:-}" != 1 ]; then
     echo "★ 커밋 안 한 변경이 있다 — 바이너리가 sha $sha 와 어긋난다 (그래도 올리려면 ALLOW_DIRTY=1)" >&2
     exit 1
   fi
