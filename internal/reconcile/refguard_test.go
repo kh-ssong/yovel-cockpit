@@ -39,3 +39,20 @@ func TestRefPriceUncheckedWithoutQuote(t *testing.T) {
 		t.Fatalf("%+v", p)
 	}
 }
+
+// ★ 계좌 0주로 기다리는 목표 — 진입을 계획하지 않고 E_CAPITAL 로 답하며, 주문 상한을 먹지 않는다.
+// 먹으면 매 틱 같은 0주 조회가 상한을 채워 뒤 신호가 E_RATE 로 밀린다.
+func TestShortTargetAcksCapitalAndFreesOrderCap(t *testing.T) {
+	o := opts()
+	o.MaxOrders = 1
+	o.Short = func(id string) bool { return id == "a" }
+
+	p := Build(book(openTargetW("a", "005930", 0.1), openTargetW("b", "000660", 0.1)), nil, o)
+	a, _ := ackFor(p, "a")
+	if a.Status != "rejected" || len(a.Codes) != 1 || a.Codes[0] != protocol.CodeCapital {
+		t.Fatalf("대기 중인 목표의 답 %+v", a)
+	}
+	if len(p.Enters) != 1 || p.Enters[0].Target.IntentID != "b" {
+		t.Fatalf("뒤 신호가 상한에 밀렸다: %+v", p.Enters)
+	}
+}

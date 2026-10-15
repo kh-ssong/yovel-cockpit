@@ -79,6 +79,12 @@ type Config struct {
 
 	// IsETP — ETF/ETN 여부. 호가단위가 다르다.
 	IsETP func(protocol.Symbol) bool
+
+	// QueryTimeout — 조회(주문·취소 아닌 것) 한 번의 상한. 기본 4초.
+	// ★ 집행 루프는 한 줄이라, 응답 없이 매달린 조회 하나가 그 뒤 주문을 전부 붙잡는다
+	//   (HTTP 클라 상한 15초 그대로면 틱 하나가 40초를 넘었다 — 몰림 재생 2026-10-15).
+	//   주문은 짧게 끊으면 "나갔는지 모름" 이 되므로 클라 상한을 그대로 쓴다.
+	QueryTimeout time.Duration
 }
 
 type Broker struct {
@@ -113,6 +119,9 @@ func New(cfg Config) (*Broker, error) {
 	}
 	if cfg.FillPoll <= 0 {
 		cfg.FillPoll = time.Second
+	}
+	if cfg.QueryTimeout <= 0 {
+		cfg.QueryTimeout = 4 * time.Second
 	}
 
 	url := cfg.APIURL
@@ -187,6 +196,7 @@ func (b *Broker) Positions(ctx context.Context) ([]broker.Holding, error) {
 			StkCd  string `json:"stk_cd"`
 			CurQty string `json:"cur_qty"`
 			BuyUv  string `json:"buy_uv"`
+			CurPrc string `json:"cur_prc"`
 		}
 		if err := json.Unmarshal(raw, &row); err != nil {
 			continue
@@ -202,6 +212,7 @@ func (b *Broker) Positions(ctx context.Context) ([]broker.Holding, error) {
 			// ★ 키움 잔고는 "매도 가능 수량" 을 따로 주지 않는다. 미체결 매도(위임한 TP)가
 			// 걸려 있으면 실제 가용은 이보다 적다 — 그래서 청산 경로가 TP 를 **먼저 취소**한다.
 			Sellable: qty,
+			Price:    math.Abs(num(row.CurPrc)), // "+72100" · "-72100" — 부호는 등락 표시
 		})
 	}
 	return out, nil
@@ -316,6 +327,10 @@ func (b *Broker) SubmitBuy(ctx context.Context, req broker.OrderRequest) (broker
 		body["ord_qty"] = strconv.FormatFloat(qty, 'f', -1, 64)
 		submitted = b.now().UTC()
 		err = b.call(ctx, apiBuy, pathOrder, body, &out)
+	}
+	if _, short := marginAllowance(err); short {
+		// 줄여서 다시 냈는데도(또는 0주라 못 냈는데) 증거금 부족 — 집행기가 «돈이 없다» 로 읽게 한다.
+		err = fmt.Errorf("%w: %w", broker.ErrInsufficient, err)
 	}
 	if err != nil {
 		return broker.Submitted{SubmittedAt: submitted}, err

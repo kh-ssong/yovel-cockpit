@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -173,6 +174,8 @@ func run() error {
 	// 그게 맞는 동작이다 — 가짜 가격을 채워 "계획이 나오는 것처럼" 보이게 두면
 	// 배선이 빠진 상태와 정상 상태가 같아 보인다.
 	qs := quotes.New(br, 3*time.Second, func() time.Time { return time.Now().UTC() })
+	// 신호가 검증 시세 — 엔진은 캐시만 보고(락 안 네트워크 금지), 집행기가 주문 직전에 조회해 채운다.
+	ref := quotes.NewRef(refCheck(refFeed, qs.Price), time.Minute, nil)
 
 	eng = engine.New(engine.Config{
 		Mode:         cfg.Mode,
@@ -183,7 +186,7 @@ func run() error {
 		EngineBudget: cfg.EngineBudget,
 		Books:        books,
 		// 신호가 검증 — 실브로커면 브로커 시세, paper 면 신호원 mark 를 뺀 거래소 시세.
-		RefCheckPrice: refCheck(refFeed, qs.Price),
+		RefCheckPrice: ref.Cached,
 		RefMaxDev:     cfg.RefMaxDev,
 		CanEnter:      canEnter(cal, cfg.IgnoreMarketHours),
 		OnInactive: func(kid, scope string, n int) {
@@ -353,6 +356,9 @@ func run() error {
 		ExitCutoff:       exitCutoff(cfg),
 		BrokerExchange:   brokerExchange(cfg.Broker),
 		BlockStatus:      labelSet(cfg.BlockStockStatus),
+		RefCheck:         ref.Fetch,
+		RefMaxDev:        cfg.RefMaxDev,
+		Observe:          qs.Put,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -548,13 +554,19 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 			alert("mismatch", fmt.Sprintf("❓ 장부·실물 불일치: %v", res.Mismatch))
 		}
 
+		if res.CapitalShort > 0 {
+			// 오버부킹이면 큰 날마다 생긴다 — 오류가 아니라 알림 하나 (10분에 한 번).
+			alert("capital", fmt.Sprintf("💰 계좌 주문가능금액이 모자라 진입 %d 건을 못 냈다 — 발행자에겐 E_CAPITAL 로 알렸고, 진입 마감 전 돈이 돌아오면 다시 산다", res.CapitalShort))
+		}
+
 		// 아무 일도 없었으면 조용히 넘긴다 — 5초마다 로그를 찍으면 진짜 사건이 묻힌다.
-		if res.Entered+res.Exited+res.PartialExits+res.Reduced+res.StopsArmed+res.TpPlaced+res.ClosedByBroker == 0 &&
-			len(res.Errors) == 0 && len(res.Mismatch) == 0 {
+		if res.Entered+res.Exited+res.PartialExits+res.Reduced+res.StopsArmed+res.TpPlaced+res.ClosedByBroker+
+			res.Expired+res.CapitalShort == 0 && len(res.Errors) == 0 && len(res.Mismatch) == 0 {
 			continue
 		}
 		log.Info("집행", "entered", res.Entered, "exited", res.Exited, "partial_exits", res.PartialExits, "reduced", res.Reduced,
 			"stops", res.StopsArmed, "tp", res.TpPlaced, "closed_by_broker", res.ClosedByBroker,
+			"expired", res.Expired, "capital_short", res.CapitalShort,
 			"mismatch", res.Mismatch, "errors", res.Errors)
 	}
 }
@@ -624,31 +636,58 @@ func lotsOf(ctx context.Context, eng *engine.Engine, price func(protocol.Symbol)
 // 그러면 Equity 가 실제와 다른데, 그걸 조용히 두면 손익 그래프가 조용히 틀린다.
 func accountProvider(br broker.Broker, price func(protocol.Symbol) (float64, bool),
 	log *slog.Logger) func(context.Context) *protocol.Account {
+	// ★ 짧게 기억한다 — 발행자(Desk)마다 2초에 한 번 /v1/state 를 부르고, 한 번에 잔고를 두 번 묻는다.
+	//   몰림 중엔 그 조회가 진입 주문과 같은 한도를 먹는다 (몰림 재생 2026-10-15).
+	var mu sync.Mutex
+	var last *protocol.Account
+	var lastAt time.Time
 	return func(ctx context.Context) *protocol.Account {
-		cash, err := br.Cash(ctx)
-		if err != nil {
-			log.Warn("잔고 조회 실패 — account 를 싣지 않는다", "err", err)
-			return nil
+		mu.Lock()
+		defer mu.Unlock()
+		if last != nil && time.Since(lastAt) < accountCacheTTL {
+			c := *last
+			return &c
 		}
-		holdings, err := br.Positions(ctx)
-		if err != nil {
-			log.Warn("보유 조회 실패 — account 를 싣지 않는다", "err", err)
-			return nil
+		acc := readAccount(ctx, br, price, log)
+		if acc != nil {
+			last, lastAt = acc, time.Now()
 		}
-		acc := &protocol.Account{
-			Deposit: cash.Deposit, Orderable: cash.Orderable, Currency: cash.Currency,
-		}
-		for _, h := range holdings {
-			px, ok := price(h.Symbol)
-			if !ok || px <= 0 {
-				px = h.AvgPrice // 모르는 것 ≠ 없는 것 — 평단으로라도 값을 매긴다
-				acc.StaleHoldings++
-			}
-			acc.Holdings += px * h.Qty
-		}
-		acc.Equity = acc.Deposit + acc.Holdings
 		return acc
 	}
+}
+
+// accountCacheTTL — /v1/state 의 계좌 값을 다시 묻기까지. 표시용이라 몇 초 늙어도 된다.
+const accountCacheTTL = 3 * time.Second
+
+func readAccount(ctx context.Context, br broker.Broker, price func(protocol.Symbol) (float64, bool),
+	log *slog.Logger) *protocol.Account {
+	cash, err := br.Cash(ctx)
+	if err != nil {
+		log.Warn("잔고 조회 실패 — account 를 싣지 않는다", "err", err)
+		return nil
+	}
+	holdings, err := br.Positions(ctx)
+	if err != nil {
+		log.Warn("보유 조회 실패 — account 를 싣지 않는다", "err", err)
+		return nil
+	}
+	acc := &protocol.Account{
+		Deposit: cash.Deposit, Orderable: cash.Orderable, Currency: cash.Currency,
+	}
+	for _, h := range holdings {
+		// 잔고가 현재가를 같이 주면 그걸 쓴다 — 보유 종목마다 시세를 또 묻지 않는다.
+		px, ok := h.Price, h.Price > 0
+		if !ok {
+			px, ok = price(h.Symbol)
+		}
+		if !ok || px <= 0 {
+			px = h.AvgPrice // 모르는 것 ≠ 없는 것 — 평단으로라도 값을 매긴다
+			acc.StaleHoldings++
+		}
+		acc.Holdings += px * h.Qty
+	}
+	acc.Equity = acc.Deposit + acc.Holdings
+	return acc
 }
 
 // exitCutoff — 장 시간을 무시하는 테스트에선 15:15 상한도 끈다 (장 밖 시각에 돌리면 모든 로트가 곧바로 팔린다).

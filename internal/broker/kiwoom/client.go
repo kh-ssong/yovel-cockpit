@@ -99,10 +99,15 @@ func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any
 			envelope
 		}
 		raw := json.RawMessage{}
-		err = postJSON(ctx, b.http, b.apiURL+path, map[string]string{
+		cctx, cancel := ctx, context.CancelFunc(func() {})
+		if !isOrderAPI(apiID) && apiID != apiCancel && b.cfg.QueryTimeout > 0 {
+			cctx, cancel = context.WithTimeout(ctx, b.cfg.QueryTimeout)
+		}
+		err = postJSON(cctx, b.http, b.apiURL+path, map[string]string{
 			"api-id":        apiID,
 			"authorization": "Bearer " + tok,
 		}, body, &raw)
+		cancel()
 
 		if err != nil {
 			var he httpError
@@ -213,25 +218,32 @@ func isRateLimited(rc int, msg string) bool {
 // pacer — API 별 최소 간격. 키움 REST 는 API ID 마다 초당 ~5회라, 여유를 둬 4회(250ms)로 맞춘다.
 // ★ 09:01 처럼 여러 종목이 몰리면 주문가능수량·주문·체결조회가 한꺼번에 나간다 — 한도를 넘으면
 // 키움이 거절하고, 그 거절을 다른 오류로 읽으면 진입을 잃는다.
+//
+// ★ 자리(다음 발사 시각)만 락 안에서 잡고 **기다리기는 락 밖에서** 한다 (2026-10-15).
+// 예전엔 락을 쥔 채 잤다 — 그러면 시세 조회(ka10007) 대기열이 주문(kt10000)까지 붙잡아
+// API 별 한도가 사실상 계좌 전체 한 줄이 됐다 (몰림 재생: 한 틱 27~35초).
 type pacer struct {
 	mu   sync.Mutex
-	last map[string]time.Time
+	last map[string]time.Time // API 별 마지막으로 잡힌 발사 시각 (미래일 수 있다)
 }
 
 const pacerGap = 250 * time.Millisecond
 
 func (p *pacer) wait(apiID string, now func() time.Time, sleep func(time.Duration)) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.last == nil {
 		p.last = map[string]time.Time{}
 	}
-	if l, ok := p.last[apiID]; ok {
-		if d := pacerGap - now().Sub(l); d > 0 {
-			sleep(d)
-		}
+	t := now()
+	at := t
+	if l, ok := p.last[apiID]; ok && l.Add(pacerGap).After(t) {
+		at = l.Add(pacerGap)
 	}
-	p.last[apiID] = now()
+	p.last[apiID] = at
+	p.mu.Unlock()
+	if d := at.Sub(t); d > 0 {
+		sleep(d)
+	}
 }
 
 func backoff(attempt int) time.Duration { return time.Duration(1<<attempt) * time.Second }
