@@ -14,7 +14,10 @@
 # 사용:
 #   scripts/build.sh              현재 플랫폼
 #   scripts/build.sh cross        macOS(arm64/amd64) + Windows + Linux 전부
+#   scripts/build.sh mac          macOS Intel(amd64) 만 — 운영 맥북 (scripts/macbook.sh 가 부른다)
 #   COCKPIT_SKIP_UI=1 scripts/build.sh   UI 없이 (헤드리스·긴급용. 데몬이 안내 페이지를 낸다)
+#
+# 산출물 = bin/cockpitd-<os>-<arch> + bin/cockpitsup-<os>-<arch> (감시자도 같은 sha 로 같이 낸다).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -49,9 +52,12 @@ COMMON=(-trimpath -ldflags "${LDFLAGS}")
 export CGO_ENABLED=0
 
 build() { # os arch suffix
-  local os=$1 arch=$2 out="bin/cockpitd-$1-$2$3"
-  echo "  $out"
-  GOOS="$os" GOARCH="$arch" go build "${COMMON[@]}" -o "$out" ./cmd/cockpitd
+  local os=$1 arch=$2 cmd out
+  for cmd in cockpitd cockpitsup; do
+    out="bin/$cmd-$1-$2$3"
+    echo "  $out"
+    GOOS="$os" GOARCH="$arch" go build "${COMMON[@]}" -o "$out" ./cmd/$cmd
+  done
 }
 
 build_ui
@@ -64,6 +70,9 @@ if [[ "${1:-}" == "cross" ]]; then
   build darwin amd64 ""
   build windows amd64 ".exe"
   build linux amd64 ""
+elif [[ "${1:-}" == "mac" ]]; then
+  echo "맥 빌드 ${VERSION} (${SHA})"
+  build darwin amd64 ""
 else
   echo "빌드 ${VERSION} (${SHA})"
   suffix=""; [[ "$(go env GOOS)" == "windows" ]] && suffix=".exe"
