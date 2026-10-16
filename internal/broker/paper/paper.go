@@ -48,6 +48,10 @@ type Config struct {
 	Now func() time.Time
 	// Price — 기준가 공급. 없으면 Quote 가 실패한다.
 	Price func(protocol.Symbol) (float64, bool)
+	// FeeFor — 장부(kid, scope)별 편도 비용 (books.json paper_fee_bp). ok=false 면 거래소·기본 요율.
+	// ★ 같은 KRX 라도 ETF 는 거래세가 없다 — 키 없는 paper 는 종목이 ETF 인지 모르므로
+	// 이미 주식/ETF 로 나뉜 장부 단위로 받는다 (mockpit 의 scope_fees 와 같은 단위).
+	FeeFor func(kid, scope string) (buy, sell float64, ok bool)
 }
 
 type Broker struct {
@@ -167,7 +171,18 @@ type Rule struct {
 	FeeBpSell float64
 }
 
-func (b *Broker) fees(s protocol.Symbol) (buy, sell float64) {
+// fees — 주문의 편도 비용: 장부 요율 → 거래소 요율 → 기본 요율 순.
+func (b *Broker) fees(req broker.OrderRequest) (buy, sell float64) {
+	if b.cfg.FeeFor != nil && req.Scope != "" {
+		if buy, sell, ok := b.cfg.FeeFor(req.Kid, req.Scope); ok {
+			return buy, sell
+		}
+	}
+	return b.exchangeFees(req.Symbol)
+}
+
+// exchangeFees — 장부를 모르는 체결(걸어 둔 TP 지정가)의 비용.
+func (b *Broker) exchangeFees(s protocol.Symbol) (buy, sell float64) {
 	if r, ok := b.cfg.Rules[s.Exchange]; ok && (r.FeeBpBuy > 0 || r.FeeBpSell > 0) {
 		return r.FeeBpBuy, r.FeeBpSell
 	}
@@ -222,7 +237,7 @@ func (b *Broker) Buy(_ context.Context, req broker.OrderRequest) (broker.Fill, e
 	}
 	price := b.fillPrice(req, "buy", ref)
 	notional := price * req.Qty
-	feeBuy, _ := b.fees(req.Symbol)
+	feeBuy, _ := b.fees(req)
 	fee := notional * feeBuy / 10000
 
 	b.mu.Lock()
@@ -291,7 +306,7 @@ func (b *Broker) Sell(_ context.Context, req broker.OrderRequest) (broker.Fill, 
 	}
 
 	notional := price * req.Qty
-	_, feeSell := b.fees(req.Symbol)
+	_, feeSell := b.fees(req)
 	fee := notional * feeSell / 10000
 	b.cash += notional - fee
 
@@ -393,7 +408,7 @@ func (b *Broker) SettleLimits(context.Context) ([]broker.LimitFill, error) {
 		}
 
 		notional := o.price * o.qty
-		_, feeSell := b.fees(o.symbol)
+		_, feeSell := b.exchangeFees(o.symbol)
 		fee := notional * feeSell / 10000
 		b.cash += notional - fee
 
