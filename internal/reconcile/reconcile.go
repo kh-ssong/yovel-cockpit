@@ -95,6 +95,8 @@ type Options struct {
 	//
 	// ★ 소스(kid × scope)마다 Build 를 따로 부른다 — 이 값은 **그 소스의 장부 예산**이다.
 	Budget float64
+	// MaxQty — 이 소스(장부)의 진입 한 건 수량 상한 (books.json max_qty, 0 = 없음).
+	MaxQty float64
 	// Inactive — 이 소스는 이 콕핏에서 활성화되지 않았다 → 진입은 E_INACTIVE, 청산은 그대로.
 	Inactive bool
 	// RefCheckPrice · RefMaxDev — ★ 신호가(entry.ref_price) 검증 (2026-09-30).
@@ -416,7 +418,8 @@ func buildEnter(t protocol.Target, opt Options, remaining float64) (EnterOrder, 
 		price = t.Entry.LimitPrice
 	}
 
-	res := sizing.Shares(t.Weight, opt.Budget, price, opt.market(t.Symbol))
+	m := opt.market(t.Symbol)
+	res := sizing.Cap(sizing.Shares(t.Weight, opt.Budget, price, m), opt.MaxQty, opt.Budget, price, m)
 	if len(res.Codes) > 0 {
 		return EnterOrder{}, res.Codes
 	}

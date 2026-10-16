@@ -93,3 +93,34 @@ func TestLotSize(t *testing.T) {
 		t.Fatalf("qty=%v, 기대 80", res.Qty)
 	}
 }
+
+// Cap — 상한이지 목표가 아니다: 넘을 때만 줄이고, 아래면 그대로, 위로는 안 올린다.
+func TestCap(t *testing.T) {
+	stock := StockMarket()
+	r := Cap(Shares(0.5, 1_000_000, 20_000, stock), 1, 1_000_000, 20_000, stock) // 25주 → 1주
+	if r.Qty != 1 || r.Notional != 20_000 || len(r.Codes) != 0 || math.Abs(r.RealizedWeight-0.02) > 1e-12 {
+		t.Fatalf("1주로 안 줄었다: %+v", r)
+	}
+	if r := Cap(Shares(0.5, 1_000_000, 20_000, stock), 100, 1_000_000, 20_000, stock); r.Qty != 25 {
+		t.Fatalf("상한 아래인데 바뀌었다: %+v", r)
+	}
+	if r := Cap(Shares(0.5, 1_000_000, 20_000, stock), 0, 1_000_000, 20_000, stock); r.Qty != 25 {
+		t.Fatalf("0 = 상한 없음인데 바뀌었다: %+v", r)
+	}
+	// 시드가 모자라 0주면 상한이 있어도 E_CAPITAL 그대로 (상한이 사게 만들지 않는다).
+	if r := Cap(Shares(0.01, 1_000_000, 20_000, stock), 1, 1_000_000, 20_000, stock); !hasCode(r.Codes, protocol.CodeCapital) || r.Qty != 0 {
+		t.Fatalf("0주가 상한 때문에 1주가 됐다: %+v", r)
+	}
+	// 주식 상한이 단위 아래면(0.5주) 살 수 없다.
+	if r := Cap(Shares(0.5, 1_000_000, 20_000, stock), 0.5, 1_000_000, 20_000, stock); !hasCode(r.Codes, protocol.CodeCapital) {
+		t.Fatalf("0.5주 상한: %+v", r)
+	}
+	// 코인 — 소수 상한 그대로, 줄인 금액이 최소주문금액 아래면 E_CAPITAL.
+	coin := Market{Fractional: true, MinOrderValue: 5000}
+	if r := Cap(Shares(0.2, 5_000_000, 100_000_000, coin), 0.001, 5_000_000, 100_000_000, coin); r.Qty != 0.001 || r.Notional != 100_000 {
+		t.Fatalf("코인 상한: %+v", r)
+	}
+	if r := Cap(Shares(0.2, 5_000_000, 100_000_000, coin), 0.00001, 5_000_000, 100_000_000, coin); !hasCode(r.Codes, protocol.CodeCapital) {
+		t.Fatalf("1000원어치 코인: %+v", r)
+	}
+}

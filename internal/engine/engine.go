@@ -555,6 +555,7 @@ func (e *Engine) planSourceLocked(src source, now time.Time) reconcile.Plan {
 		BlockEntryUntil: e.blockEntryUntil,
 		MaxOrders:       e.cfg.MaxOrders,
 		Budget:          budget,
+		MaxQty:          e.cfg.Books.MaxQty(src.kid, src.scope),
 		Inactive:        !active,
 		RefCheckPrice:   e.cfg.RefCheckPrice,
 		RefMaxDev:       e.cfg.RefMaxDev,

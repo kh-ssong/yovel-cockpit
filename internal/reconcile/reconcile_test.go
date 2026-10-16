@@ -449,3 +449,13 @@ func TestTpIsPlacedWhenNoOrderYetEvenIfPriceMatches(t *testing.T) {
 		t.Fatalf("주문이 없는데 안 걸었다: %+v", p.TpUpdates)
 	}
 }
+
+// MaxQty — 사이징이 정한 수량이 상한을 넘으면 상한만큼 (장부 max_qty).
+func TestMaxQtyCapsEnter(t *testing.T) {
+	o := opts()
+	o.MaxQty = 1
+	p := Build(book(openTarget("a", "122630")), nil, o)
+	if len(p.Enters) != 1 || p.Enters[0].Qty != 1 || p.Enters[0].Notional != 1000 {
+		t.Fatalf("enters=%+v", p.Enters)
+	}
+}

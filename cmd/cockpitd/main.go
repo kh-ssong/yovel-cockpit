@@ -129,7 +129,7 @@ func run() error {
 		return fmt.Errorf("장부 설정: %w", err)
 	}
 	for _, b := range books.Books() {
-		log.Info("활성 전략(장부)", "name", b.Name, "kid", b.Kid, "scope", b.Scope, "seed", b.Seed, "enabled", b.On())
+		log.Info("활성 전략(장부)", "name", b.Name, "kid", b.Kid, "scope", b.Scope, "seed", b.Seed, "max_qty", b.MaxQty, "enabled", b.On())
 	}
 	if books.Configured() {
 		log.Info("장부에 없는 (kid, scope) 의 진입은 E_INACTIVE 로 거절된다 — 청산은 계속")

@@ -37,6 +37,12 @@ type Book struct {
 	Seed float64 `json:"seed"`
 	// Enabled — 이 전략을 돌릴지. 생략하면 켬. 끄면 진입만 막고 청산은 계속한다.
 	Enabled *bool `json:"enabled,omitempty"`
+	// MaxQty — 진입 한 건의 수량 상한 (주·코인 개수). 0 = 없음.
+	//
+	// ★ 사이징(weight × seed ÷ 가격)이 정한 수량이 이보다 크면 **이 수량만** 산다 — 첫 실전을
+	// «1주씩» 검증하는 용도 (user 2026-10-16). 시드 부족 축소(E_CAPITAL)와는 다른 층이다: 이건
+	// 사용자가 미리 정한 크기라 조용한 축소가 아니다. 사이징이 0주면(시드 부족) 여전히 E_CAPITAL.
+	MaxQty float64 `json:"max_qty,omitempty"`
 }
 
 func (b Book) On() bool { return b.Enabled == nil || *b.Enabled }
@@ -69,6 +75,9 @@ func New(books []Book, defaultBudget float64) (*Set, error) {
 		if b.Seed <= 0 {
 			return nil, fmt.Errorf("장부 %s: seed 가 0 이하", b.Name)
 		}
+		if b.MaxQty < 0 {
+			return nil, fmt.Errorf("장부 %s: max_qty 가 음수", b.Name)
+		}
 		for _, o := range s.books {
 			if o.Scope == b.Scope && (o.Kid == b.Kid || o.Kid == "" || b.Kid == "") {
 				return nil, fmt.Errorf("장부 %s 와 %s 가 같은 소스(%s)를 잡는다", o.Name, b.Name, Key(b.Kid, b.Scope))
@@ -83,7 +92,7 @@ func New(books []Book, defaultBudget float64) (*Set, error) {
 //
 //	{"books": [
 //	  {"name": "d205",  "kid": "flat6-1", "scope": "intraday/d205",   "seed": 16000000},
-//	  {"name": "klev",  "kid": "flat6-1", "scope": "intraday/klev",   "seed":  3000000},
+//	  {"name": "klev",  "kid": "flat6-1", "scope": "intraday/klev",   "seed":  3000000, "max_qty": 1},
 //	  {"name": "coin",  "kid": "flat6-1", "scope": "scalp/coin",      "seed":  2000000, "enabled": false}
 //	], "overbook": true}
 func Load(path string, defaultBudget float64) (*Set, error) {
@@ -127,6 +136,19 @@ func (s *Set) Of(kid, scope string) (name string, budget float64, active bool) {
 		}
 	}
 	return "", 0, false
+}
+
+// MaxQty — 소스의 진입 수량 상한 (0 = 없음). 장부가 없거나 그 소스가 장부에 없으면 0.
+func (s *Set) MaxQty(kid, scope string) float64 {
+	if s == nil {
+		return 0
+	}
+	for _, b := range s.books {
+		if b.Scope == scope && (b.Kid == "" || b.Kid == kid) {
+			return b.MaxQty
+		}
+	}
+	return 0
 }
 
 // Configured — 장부 설정이 있는가 (없으면 옛 방식).
