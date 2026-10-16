@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 )
 
 // Default — 장부 설정이 없을 때 모든 소스가 가는 곳.
@@ -67,6 +68,8 @@ type Set struct {
 	// 그러면 매일 예산 점검(08:50)이 «예산이 계좌를 넘는다» 로 울리지 않는다 — 모자람은 계좌 층에서
 	// 줄여 사고(최소 1주) 0주면 E_CAPITAL 로 답한다 (user 2026-10-15).
 	overbook bool
+	// paperFees — 이 사용자 계좌의 거래소별 paper 편도 비용 (books.json "paper_fees").
+	paperFees map[string]Fee
 }
 
 // New — ★ 한 소스가 두 장부에 걸리면 기동을 거부한다. 어느 돈으로 샀는지 모르는 매수는
@@ -107,7 +110,8 @@ func New(books []Book, defaultBudget float64) (*Set, error) {
 //	  {"name": "d205",  "kid": "flat6-1", "scope": "intraday/d205",   "seed": 16000000},
 //	  {"name": "klev",  "kid": "flat6-1", "scope": "intraday/klev",   "seed":  3000000, "max_qty": 1},
 //	  {"name": "coin",  "kid": "flat6-1", "scope": "scalp/coin",      "seed":  2000000, "enabled": false}
-//	], "overbook": true}
+//	], "overbook": true,
+//	 "paper_fees": {"KRX": {"buy": 0, "sell": 20}, "UPBIT": {"buy": 5, "sell": 5}}}
 func Load(path string, defaultBudget float64) (*Set, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -117,8 +121,9 @@ func Load(path string, defaultBudget float64) (*Set, error) {
 		return nil, err
 	}
 	var f struct {
-		Books    []Book `json:"books"`
-		Overbook bool   `json:"overbook"`
+		Books     []Book         `json:"books"`
+		Overbook  bool           `json:"overbook"`
+		PaperFees map[string]Fee `json:"paper_fees"`
 	}
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -128,7 +133,32 @@ func Load(path string, defaultBudget float64) (*Set, error) {
 		return nil, err
 	}
 	s.overbook = f.Overbook
+	for ex, fee := range f.PaperFees {
+		// 오타("krx")가 조용히 무시되면 사용자는 자기 요율이 걸린 줄 안다 — 기동을 거부한다.
+		if ex == "" || strings.ToUpper(ex) != ex || strings.ContainsAny(ex, " /") {
+			return nil, fmt.Errorf("%s: paper_fees 의 거래소 %q — 대문자 거래소 이름이어야 한다 (KRX·UPBIT)", path, ex)
+		}
+		if fee.Buy < 0 || fee.Sell < 0 {
+			return nil, fmt.Errorf("%s: paper_fees.%s 가 음수", path, ex)
+		}
+	}
+	s.paperFees = f.PaperFees
 	return s, nil
+}
+
+// PaperFees — 사용자가 정한 거래소별 paper 편도 비용 (books.json "paper_fees", 없으면 빈 맵).
+//
+// ★ 수수료는 계좌마다 다르다 (우대·이벤트·등급) — 콕핏을 쓰는 사람이 자기 요율을 자기 설정 파일에 둔다
+// (user 2026-10-16). 우선순위: 장부 paper_fee_bp → 여기 거래소 요율 → 내장 기본(--paper-fee-bp-*·업비트 5bp).
+func (s *Set) PaperFees() map[string]Fee {
+	out := map[string]Fee{}
+	if s == nil {
+		return out
+	}
+	for ex, f := range s.paperFees {
+		out[ex] = f
+	}
+	return out
 }
 
 // Overbook — 장부 합 > 계좌가 의도된 설정인가 (예산 점검이 경고하지 않는다).

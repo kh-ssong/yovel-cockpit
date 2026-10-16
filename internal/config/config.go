@@ -174,7 +174,7 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 	// ★ paper 비용은 사용자마다 다르다 (이벤트·등급 우대) — 상수로 박으면 남의 요율이 된다.
 	//   라이브 체결이 생기면 기동 로그에 관측치가 찍히므로, 그 값으로 맞추는 게 정답이다.
 	fs.Float64Var(&c.PaperFeeBpBuy, "paper-fee-bp-buy", c.PaperFeeBpBuy,
-		"paper 매수 편도 비용 (bp) — ★ 추정치. 라이브 체결로 관측되면 그 값으로 맞출 것")
+		"paper 매수 편도 비용 (bp) — ★ 추정치. 라이브 체결로 관측되면 그 값으로 맞출 것 (books.json paper_fees 가 있으면 그게 이긴다)")
 	fs.Float64Var(&c.PaperFeeBpSell, "paper-fee-bp-sell", c.PaperFeeBpSell,
 		"paper 매도 편도 비용 (bp) — 국내는 여기에 증권거래세가 포함된다")
 	fs.Float64Var(&c.PaperSlipBp, "paper-slip-bp", c.PaperSlipBp,

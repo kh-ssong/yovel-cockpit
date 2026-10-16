@@ -166,3 +166,17 @@ func TestFeeForBook(t *testing.T) {
 		t.Fatalf("장부 요율 없는 주문이 기본 요율이 아니다: 매수 %v 매도 %v", f.FeeKRW, s.FeeKRW)
 	}
 }
+
+// 사용자가 정한 거래소 요율은 0/0 이어도 그 값이다 (FeeSet) — 예전 규칙(둘 다 0 = 기본)으로 읽으면
+// 수수료 무료 계좌에 주식 매도세가 붙는다.
+func TestUserExchangeFeeZeroIsZero(t *testing.T) {
+	ctx := context.Background()
+	b := newBroker(1.5, 21.5, 0)
+	b.cfg.Rules = map[string]Rule{"KRX": {Lot: 1, FeeSet: true}}
+	s := protocol.Symbol{Exchange: "KRX", Code: "005930"}
+	f, _ := b.Buy(ctx, broker.OrderRequest{Symbol: s, Qty: 10, RefPrice: 70000})
+	x, _ := b.Sell(ctx, broker.OrderRequest{Symbol: s, Qty: 10, RefPrice: 70000})
+	if f.FeeKRW != 0 || x.FeeKRW != 0 {
+		t.Fatalf("0/0 인데 비용: %v %v", f.FeeKRW, x.FeeKRW)
+	}
+}
