@@ -169,6 +169,8 @@ type Rule struct {
 	// 코인에 주식 매도세(거래세 포함 ~20bp)를 물리면 코인 전략이 억울하게 진다.
 	FeeBpBuy  float64
 	FeeBpSell float64
+	// FeeSet — 사용자가 정한 요율이다 (books.json paper_fees). 0/0 이어도 이 값을 쓴다.
+	FeeSet bool
 }
 
 // fees — 주문의 편도 비용: 장부 요율 → 거래소 요율 → 기본 요율 순.
@@ -183,7 +185,7 @@ func (b *Broker) fees(req broker.OrderRequest) (buy, sell float64) {
 
 // exchangeFees — 장부를 모르는 체결(걸어 둔 TP 지정가)의 비용.
 func (b *Broker) exchangeFees(s protocol.Symbol) (buy, sell float64) {
-	if r, ok := b.cfg.Rules[s.Exchange]; ok && (r.FeeBpBuy > 0 || r.FeeBpSell > 0) {
+	if r, ok := b.cfg.Rules[s.Exchange]; ok && (r.FeeSet || r.FeeBpBuy > 0 || r.FeeBpSell > 0) {
 		return r.FeeBpBuy, r.FeeBpSell
 	}
 	return b.cfg.FeeBpBuy, b.cfg.FeeBpSell

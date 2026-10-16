@@ -140,3 +140,32 @@ func TestLoadPaperFee(t *testing.T) {
 		t.Fatal("음수 비용을 받았다")
 	}
 }
+
+// paper_fees — 사용자 계좌의 거래소별 paper 요율 (user 2026-10-16 «사용자별로 설정»).
+// 오타(소문자)·음수는 기동 거부 — 조용히 무시되면 자기 요율이 걸린 줄 안다.
+func TestLoadPaperFeesPerUser(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "books.json")
+	os.WriteFile(p, []byte(`{"books":[{"name":"m","scope":"kiwoom/gapdown_main","seed":20000000}],
+	  "paper_fees":{"KRX":{"buy":0,"sell":20},"UPBIT":{"buy":5,"sell":5}}}`), 0o600)
+	s, err := Load(p, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := s.PaperFees()
+	if f["KRX"] != (Fee{Buy: 0, Sell: 20}) || f["UPBIT"] != (Fee{Buy: 5, Sell: 5}) || len(f) != 2 {
+		t.Fatalf("%+v", f)
+	}
+	f["KRX"] = Fee{Buy: 9, Sell: 9} // 복사본이어야 한다
+	if s.PaperFees()["KRX"].Sell != 20 {
+		t.Fatal("PaperFees 가 내부 맵을 그대로 내줬다")
+	}
+	if len((*Set)(nil).PaperFees()) != 0 {
+		t.Fatal("nil 장부")
+	}
+	for _, bad := range []string{`{"krx":{"buy":0,"sell":20}}`, `{"KRX":{"buy":-1,"sell":20}}`, `{"":{"buy":0,"sell":0}}`} {
+		os.WriteFile(p, []byte(`{"books":[],"paper_fees":`+bad+`}`), 0o600)
+		if _, err := Load(p, 0); err == nil {
+			t.Fatalf("받으면 안 되는 paper_fees: %s", bad)
+		}
+	}
+}

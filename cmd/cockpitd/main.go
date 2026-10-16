@@ -480,6 +480,8 @@ func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) 
 	}
 	pcfg.Price = markFirst(mark, byExchange(feeds))
 	pcfg.FeeFor = books.PaperFee
+	applyUserPaperFees(&pcfg, books.PaperFees())
+	logPaperFees(log, pcfg, books)
 	return paper.New(pcfg), byExchange(feeds), nil
 }
 
@@ -761,6 +763,41 @@ func markFirst(mark, fallback func(protocol.Symbol) (float64, bool)) func(protoc
 }
 
 // paperSeed — paper 계좌의 시드. 지정이 없으면 켜진 장부 시드 합 (장부가 없으면 엔진 예산).
+// logPaperFees — 실제로 물릴 paper 요율을 기동 로그에 남긴다 (어디서 온 값인지까지).
+// ★ 요율이 틀리면 손익분기 근처 전략의 판정이 뒤집힌다 — 사용자가 자기 값이 걸렸는지 눈으로 확인할 수 있어야 한다.
+func logPaperFees(log *slog.Logger, pcfg paper.Config, books *book.Set) {
+	user := books.PaperFees()
+	src := func(ex string) string {
+		if _, ok := user[ex]; ok {
+			return "books.json paper_fees"
+		}
+		return "내장 기본"
+	}
+	krx := []float64{pcfg.FeeBpBuy, pcfg.FeeBpSell}
+	if r, ok := pcfg.Rules["KRX"]; ok && (r.FeeSet || r.FeeBpBuy > 0 || r.FeeBpSell > 0) {
+		krx = []float64{r.FeeBpBuy, r.FeeBpSell}
+	}
+	up := pcfg.Rules[upbit.Exchange]
+	log.Info("paper 요율 (편도 bp · 장부 paper_fee_bp 가 있으면 그 장부는 그 값)", "KRX", krx, "KRX_from", src("KRX"),
+		"UPBIT", []float64{up.FeeBpBuy, up.FeeBpSell}, "UPBIT_from", src(upbit.Exchange))
+}
+
+// applyUserPaperFees — 사용자 계좌 요율(books.json paper_fees)로 내장 기본을 거래소별로 덮는다.
+// 거래소 규칙(최소 주문 단위·금액)은 그대로 두고 요율만 바꾼다.
+func applyUserPaperFees(pcfg *paper.Config, fees map[string]book.Fee) {
+	if pcfg.Rules == nil {
+		pcfg.Rules = map[string]paper.Rule{}
+	}
+	for ex, f := range fees {
+		r, ok := pcfg.Rules[ex]
+		if !ok {
+			r = paper.Rule{Lot: pcfg.Lot, MinOrderValue: pcfg.MinOrderValue}
+		}
+		r.FeeBpBuy, r.FeeBpSell, r.FeeSet = f.Buy, f.Sell, true
+		pcfg.Rules[ex] = r
+	}
+}
+
 func paperSeed(cfg config.Config, books *book.Set) float64 {
 	if cfg.PaperSeed > 0 {
 		return cfg.PaperSeed
