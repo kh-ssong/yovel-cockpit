@@ -437,12 +437,12 @@ func (e *Engine) MarkClosed(intentID string) {
 	delete(e.positions, intentID)
 }
 
-// Ledger 는 매매기록을 준다. ★ mode 없이는 조회할 수 없다 (합산 = 허위 표시).
-func (e *Engine) Ledger(ctx context.Context, mode protocol.Mode, limit int) ([]store.Order, error) {
+// Ledger 는 매매기록을 준다. ★ mode 없이는 조회할 수 없다 (합산 = 허위 표시). since 가 있으면 그 시각 이후 기록만.
+func (e *Engine) Ledger(ctx context.Context, mode protocol.Mode, since *time.Time, limit int) ([]store.Order, error) {
 	if e.cfg.Store == nil {
 		return nil, nil
 	}
-	return e.cfg.Store.Ledger(ctx, store.LedgerQuery{Mode: mode, Limit: limit})
+	return e.cfg.Store.Ledger(ctx, store.LedgerQuery{Mode: mode, Since: since, Limit: limit})
 }
 
 // SetPositions 는 브로커 조회 결과를 반영한다 (브로커가 붙기 전에는 테스트가 쓴다).

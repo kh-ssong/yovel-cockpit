@@ -79,6 +79,9 @@ type Executor struct {
 	tpChecked map[string]time.Time
 	// syncAfter — 잔고 조회가 실패했으면 이 시각까지 장부·실물 대조를 쉰다 (syncBackoff).
 	syncAfter time.Time
+	// expired — 진입 마감이 지나 원장에 «안 냄» 을 남긴 intent. 목표가 스냅샷에 남아 있는 동안
+	// 매 틱 같은 판정이 반복되므로 기록·경고는 한 번만 (원장 행 id 도 고정이라 재시작해도 한 행).
+	expired map[string]struct{}
 }
 
 // syncBackoff — 잔고 조회가 실패한 뒤 대조를 쉬는 시간.
@@ -91,7 +94,7 @@ func New(d Deps) *Executor {
 		d.Log = slog.Default()
 	}
 	return &Executor{d: d, tpChecked: map[string]time.Time{}, work: map[string]*store.WorkingOrder{},
-		sellAfter: map[string]time.Time{}}
+		sellAfter: map[string]time.Time{}, expired: map[string]struct{}{}}
 }
 
 // Result — 이번 틱에 실제로 일어난 일.
@@ -464,7 +467,7 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 	if x.isWorking(t.IntentID) {
 		return // 이미 낸 진입이 진행 중
 	}
-	if x.entryExpired(t, now, res) {
+	if x.entryExpired(ctx, t, kid, scope, now, res) {
 		return
 	}
 	if x.d.Session != nil && !x.d.Session.CanEnter(t.Symbol.Exchange, now) {
@@ -483,7 +486,7 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 	}
 	// 조회 두 번(상태·시세)이 시간을 먹었다 — 내기 직전에 마감을 한 번 더 본다.
 	now = now.Add(time.Since(wall))
-	if x.entryExpired(t, now, res) {
+	if x.entryExpired(ctx, t, kid, scope, now, res) {
 		return
 	}
 	req := broker.OrderRequest{
@@ -529,13 +532,29 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 }
 
 // entryExpired — 진입 마감이 지났으면 내지 않는다 (엔진의 다음 판정이 E_EXPIRED 로 답한다).
-func (x *Executor) entryExpired(t protocol.Target, now time.Time, res *Result) bool {
+//
+// ★ 원장에 rejected 행으로 **한 번** 남긴다 (detail 이 "expired" 로 시작). 예전엔 로그뿐이라
+// 대조하는 쪽(flat6 compare)이 «콕핏 행 없음» 을 «미집행» 으로 추정해야 했다.
+// 목표는 종결하지 않는다 — per_intent·recent_closes 의 의미는 그대로다.
+func (x *Executor) entryExpired(ctx context.Context, t protocol.Target, kid, scope string,
+	now time.Time, res *Result) bool {
 	if t.Entry == nil || t.Entry.NotAfter.IsZero() || !now.After(t.Entry.NotAfter) {
 		return false
 	}
 	res.Expired++
+	if _, done := x.expired[t.IntentID]; done {
+		return true
+	}
+	x.expired[t.IntentID] = struct{}{}
+	late := now.Sub(t.Entry.NotAfter).Round(time.Millisecond)
 	x.d.Log.Warn("진입 마감이 지나 내지 않았다 — 계획이 늦었다", "intent_id", t.IntentID,
-		"code", t.Symbol.Code, "not_after", t.Entry.NotAfter, "late", now.Sub(t.Entry.NotAfter).Round(time.Millisecond))
+		"code", t.Symbol.Code, "not_after", t.Entry.NotAfter, "late", late)
+	x.recordOrder(ctx, store.Order{
+		ID: ids.Derive(t.Entry.NotAfter, "expired:"+t.IntentID), IntentID: t.IntentID, Kid: kid, Scope: scope,
+		Phase: "rejected", Symbol: t.Symbol, Side: "buy",
+		Detail: fmt.Sprintf("expired — 진입 마감(not_after %s)을 %s 넘겨 주문을 내지 않았다",
+			t.Entry.NotAfter.UTC().Format(time.RFC3339Nano), late),
+	}, res)
 	return true
 }
 

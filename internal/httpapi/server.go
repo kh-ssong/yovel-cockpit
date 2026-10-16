@@ -38,7 +38,7 @@ type Engine interface {
 	// Plan 은 지금 무엇을 할지 계산한다 (주문은 내지 않는다).
 	Plan(now time.Time) reconcile.Plan
 	// Ledger 는 매매기록. ★ mode 없이는 조회할 수 없다.
-	Ledger(ctx context.Context, mode protocol.Mode, limit int) ([]store.Order, error)
+	Ledger(ctx context.Context, mode protocol.Mode, since *time.Time, limit int) ([]store.Order, error)
 }
 
 // maxDownlinkBytes — 목표 스냅샷은 포지션 수백 개여도 수십 KB 다.
@@ -365,7 +365,20 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	orders, err := s.eng.Ledger(r.Context(), mode, limit)
+	// since — 이 시각(RFC3339) 이후 기록만. 대조 도구가 하루치를 끊어 읽는다.
+	var since *time.Time
+	if v := r.URL.Query().Get("since"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "since 는 RFC3339 시각이어야 한다 (예: 2026-10-17T00:00:00+09:00)",
+			})
+			return
+		}
+		since = &t
+	}
+
+	orders, err := s.eng.Ledger(r.Context(), mode, since, limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

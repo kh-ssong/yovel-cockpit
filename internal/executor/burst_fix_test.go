@@ -4,6 +4,7 @@ package executor
 // 검증은 엔진 락 밖에서 한다.
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/kh-ssong/yovel-cockpit/internal/quotes"
 	"github.com/kh-ssong/yovel-cockpit/internal/reconcile"
 	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
+	"github.com/kh-ssong/yovel-cockpit/internal/store"
 )
 
 func planAck(p reconcile.Plan, id string) (protocol.AckIntent, bool) {
@@ -40,6 +42,53 @@ func TestEntryNotSentPastNotAfter(t *testing.T) {
 	res := h.x.Tick(ctx, t0.Add(1100*time.Millisecond))
 	if res.Expired != 1 || h.fk.State().Calls["kt10000"] != 0 || len(h.eng.Positions()) != 0 {
 		t.Fatalf("마감 지난 진입을 냈다: %+v 주문 %d", res, h.fk.State().Calls["kt10000"])
+	}
+}
+
+// ★ 만료는 원장에 rejected 행으로 **한 번만** 남는다 — 매 틱·재시작해도 한 행. 예전엔 로그뿐이라
+// 대조하는 쪽이 «콕핏 행 없음» 을 «미집행» 으로 추정해야 했다.
+func TestExpiredEntryLeavesOneLedgerRow(t *testing.T) {
+	t0 := kst("09:00:00")
+	h := newKiwoomHarness(t, t0)
+	notAfter := t0.Add(500 * time.Millisecond)
+	tgt := openT(t0, nil)
+	tgt["entry"] = map[string]any{"mode": "market", "not_after": notAfter, "ref_price": 1000}
+	h.sign(t, 1, t0, tgt)
+
+	rejected := func() []store.Order {
+		rows, err := h.st.Ledger(ctx, store.LedgerQuery{Mode: protocol.ModeLive})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []store.Order
+		for _, r := range rows {
+			if r.Phase == "rejected" {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+
+	// 엔진은 계획을 세웠는데(시각 판정은 executor 가 한다) 내는 순간 마감이 지났다.
+	h.x.entryExpired(ctx, protocol.Target{IntentID: aid, Symbol: protocol.Symbol{Exchange: "KRX", Code: "005930"},
+		Entry: &protocol.Entry{NotAfter: notAfter}}, "k1", "intraday/x", t0.Add(time.Second), &Result{})
+	h.x.Tick(ctx, t0.Add(6*time.Second))
+	// 재시작 — 기억이 비어도 행 id 가 (not_after, intent) 로 고정이라 한 행.
+	again := New(h.x.d)
+	again.entryExpired(ctx, protocol.Target{IntentID: aid, Symbol: protocol.Symbol{Exchange: "KRX", Code: "005930"},
+		Entry: &protocol.Entry{NotAfter: notAfter}}, "k1", "intraday/x", t0.Add(9*time.Second), &Result{})
+
+	rows := rejected()
+	if len(rows) != 1 {
+		t.Fatalf("만료 행 %d개, 기대 1: %+v", len(rows), rows)
+	}
+	r := rows[0]
+	if r.IntentID != aid || r.Side != "buy" || r.Kid != "k1" || r.Scope != "intraday/x" ||
+		!strings.HasPrefix(r.Detail, "expired") || r.Qty != 0 {
+		t.Fatalf("만료 행: %+v", r)
+	}
+	if h.fk.State().Calls["kt10000"] != 0 {
+		t.Fatal("만료된 진입을 냈다")
 	}
 }
 

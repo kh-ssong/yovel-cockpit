@@ -16,7 +16,10 @@ import (
 
 const tok = "test-token-0123456789abcdef"
 
-type fakeEngine struct{ applied [][]byte }
+type fakeEngine struct {
+	applied [][]byte
+	since   *time.Time // 마지막 원장 조회의 since
+}
 
 func (f *fakeEngine) Snapshot() protocol.StateSnapshot {
 	return protocol.StateSnapshot{
@@ -38,7 +41,8 @@ func (f *fakeEngine) Apply(raw []byte, _ time.Time) protocol.Ack {
 
 func (f *fakeEngine) Plan(time.Time) reconcile.Plan { return reconcile.Plan{} }
 
-func (f *fakeEngine) Ledger(_ context.Context, mode protocol.Mode, _ int) ([]store.Order, error) {
+func (f *fakeEngine) Ledger(_ context.Context, mode protocol.Mode, since *time.Time, _ int) ([]store.Order, error) {
+	f.since = since
 	return []store.Order{{ID: "o1", IntentID: "i1", Phase: "exit_filled", Mode: mode}}, nil
 }
 
@@ -216,6 +220,32 @@ func TestBindsToLoopbackOnly(t *testing.T) {
 	// 0.0.0.0 에 붙으면 같은 와이파이의 아무나 접근할 수 있다.
 	if got := newTestServer().Addr(); got != "127.0.0.1:7737" {
 		t.Fatalf("addr=%q", got)
+	}
+}
+
+// since — 대조 도구가 하루치를 끊어 읽는다. 시각이 아니면 조용히 전체를 주지 않고 400.
+func TestLedgerSince(t *testing.T) {
+	eng := &fakeEngine{}
+	srv := newTestServerWith(eng)
+	get := func(q string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, "/v1/ledger"+q, nil)
+		r.Host = "127.0.0.1:7737"
+		r.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if w := get("?mode=paper"); w.Code != http.StatusOK || eng.since != nil {
+		t.Fatalf("since 없음: code=%d since=%v", w.Code, eng.since)
+	}
+	if w := get("?mode=paper&since=2026-10-17T00:00:00%2B09:00"); w.Code != http.StatusOK ||
+		eng.since == nil || !eng.since.Equal(time.Date(2026, 10, 16, 15, 0, 0, 0, time.UTC)) {
+		t.Fatalf("since 전달: code=%d since=%v", w.Code, eng.since)
+	}
+	for _, bad := range []string{"yesterday", "2026-10-17", "1697500000"} {
+		if w := get("?mode=paper&since=" + bad); w.Code != http.StatusBadRequest {
+			t.Fatalf("since=%s: code=%d, 기대 400", bad, w.Code)
+		}
 	}
 }
 

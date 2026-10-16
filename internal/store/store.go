@@ -381,9 +381,11 @@ func (s *Store) Ledger(ctx context.Context, q LedgerQuery) ([]Order, error) {
 	if q.Limit <= 0 || q.Limit > 5000 {
 		q.Limit = 500
 	}
+	// ★ created_at 은 RFC3339Nano 라 소수점 뒤 0 이 잘려 **문자열 길이가 다르다** ("…08Z" 와 "…08.05Z").
+	//   문자열 비교는 같은 초 안에서 순서가 뒤집히므로 SQL 은 1초 넉넉히 거르고, 정확한 경계는 아래에서 시각으로 자른다.
 	since := "0001-01-01T00:00:00Z"
 	if q.Since != nil {
-		since = ts(*q.Since)
+		since = ts(q.Since.Add(-time.Second))
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
@@ -413,6 +415,9 @@ ORDER BY created_at DESC, id DESC LIMIT ?`, string(q.Mode), since, q.Limit)
 		o.SignalTS, o.SubmittedAt, o.FilledAt = parseTime(signalTS), parseTime(submitted), parseTime(filled)
 		if t, err := time.Parse(time.RFC3339Nano, created); err == nil {
 			o.CreatedAt = t
+		}
+		if q.Since != nil && o.CreatedAt.Before(*q.Since) {
+			continue
 		}
 		out = append(out, o)
 	}

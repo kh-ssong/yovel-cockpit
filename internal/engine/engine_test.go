@@ -320,7 +320,7 @@ func TestEngineWorksWithoutStore(t *testing.T) {
 	if ack := e.Apply(signEnv(t, targetMsg(1, base, base.Add(time.Minute), base.Add(time.Minute), base), priv), now); ack.Status != "applied" {
 		t.Fatalf("ack=%+v", ack)
 	}
-	if _, err := e.Ledger(context.Background(), protocol.ModeLive, 10); err != nil {
+	if _, err := e.Ledger(context.Background(), protocol.ModeLive, nil, 10); err != nil {
 		t.Fatalf("store 없을 때 원장 조회가 터졌다: %v", err)
 	}
 }
