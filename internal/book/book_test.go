@@ -112,3 +112,31 @@ func TestLoadMaxQty(t *testing.T) {
 		t.Fatal("음수 max_qty 를 받았다")
 	}
 }
+
+// paper_fee_bp — 장부별 paper 비용. 생략 = ok false (거래소·기본 요율), 음수는 기동 거부.
+func TestLoadPaperFee(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "books.json")
+	os.WriteFile(p, []byte(`{"books":[
+	  {"name":"f60","kid":"flat6-1","scope":"kiwoom/klev_push10_f60","seed":10000000,"paper_fee_bp":{"buy":0,"sell":0}},
+	  {"name":"sc","kid":"flat6-1","scope":"kiwoom/surge_chase","seed":20000000,"paper_fee_bp":{"buy":0,"sell":20}},
+	  {"name":"gd","kid":"flat6-1","scope":"kiwoom/gapdown_main","seed":20000000}]}`), 0o600)
+	s, err := Load(p, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, sl, ok := s.PaperFee("flat6-1", "kiwoom/klev_push10_f60"); !ok || b != 0 || sl != 0 {
+		t.Fatalf("ETF 장부: %v %v %v", b, sl, ok)
+	}
+	if b, sl, ok := s.PaperFee("flat6-1", "kiwoom/surge_chase"); !ok || b != 0 || sl != 20 {
+		t.Fatalf("주식 장부: %v %v %v", b, sl, ok)
+	}
+	if _, _, ok := s.PaperFee("flat6-1", "kiwoom/gapdown_main"); ok {
+		t.Fatal("정하지 않은 장부가 ok")
+	}
+	if _, _, ok := (*Set)(nil).PaperFee("flat6-1", "x"); ok {
+		t.Fatal("nil 장부가 ok")
+	}
+	if _, err := New([]Book{{Name: "x", Scope: "a", Seed: 1, PaperFeeBp: &Fee{Buy: 0, Sell: -1}}}, 0); err == nil {
+		t.Fatal("음수 비용을 받았다")
+	}
+}

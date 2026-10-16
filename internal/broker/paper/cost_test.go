@@ -141,3 +141,28 @@ func TestSettleLimitsNoPriceSourceDoesNothing(t *testing.T) {
 		t.Fatalf("시세원 없이 체결됐다: %v %v", fills, err)
 	}
 }
+
+// ★ 장부 요율 — 같은 KRX 라도 ETF 장부는 거래세가 없다 (user 2026-10-16 «주식/ETF 구분»).
+// 장부가 정하지 않았거나 소스를 모르는 주문(수동·TP)은 거래소·기본 요율.
+func TestFeeForBook(t *testing.T) {
+	ctx := context.Background()
+	b := newBroker(1.5, 21.5, 0)
+	b.cfg.FeeFor = func(kid, scope string) (float64, float64, bool) {
+		if kid == "flat6-1" && scope == "kiwoom/klev_push10_f60" {
+			return 0, 0, true
+		}
+		return 0, 0, false
+	}
+	etf := protocol.Symbol{Exchange: "KRX", Code: "122630"}
+	stock := protocol.Symbol{Exchange: "KRX", Code: "005930"}
+	f, _ := b.Buy(ctx, broker.OrderRequest{Symbol: etf, Qty: 10, RefPrice: 70000, Kid: "flat6-1", Scope: "kiwoom/klev_push10_f60"})
+	s, _ := b.Sell(ctx, broker.OrderRequest{Symbol: etf, Qty: 10, RefPrice: 70000, Kid: "flat6-1", Scope: "kiwoom/klev_push10_f60"})
+	if f.FeeKRW != 0 || s.FeeKRW != 0 {
+		t.Fatalf("ETF 장부인데 비용: 매수 %v 매도 %v", f.FeeKRW, s.FeeKRW)
+	}
+	f, _ = b.Buy(ctx, broker.OrderRequest{Symbol: stock, Qty: 10, RefPrice: 70000, Kid: "flat6-1", Scope: "kiwoom/surge_chase"})
+	s, _ = b.Sell(ctx, broker.OrderRequest{Symbol: stock, Qty: 10, RefPrice: 70000})
+	if math.Abs(f.FeeKRW-70000*10*1.5/10000) > 1e-6 || math.Abs(s.FeeKRW-70000*10*21.5/10000) > 1e-6 {
+		t.Fatalf("장부 요율 없는 주문이 기본 요율이 아니다: 매수 %v 매도 %v", f.FeeKRW, s.FeeKRW)
+	}
+}

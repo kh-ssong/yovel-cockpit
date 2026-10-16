@@ -63,6 +63,9 @@ type OrderRequest struct {
 	RefPrice float64
 	// MaxSlipBp — 0 이면 제한 없음. 지정가로 표현할 수 있으면 드라이버가 그렇게 한다.
 	MaxSlipBp int
+	// Kid · Scope — 이 주문을 낸 소스(장부). paper 가 장부별 비용(books.json paper_fee_bp)을
+	// 고르는 데만 쓴다 — 실브로커는 무시한다 (진짜 비용은 체결 통지가 준다).
+	Kid, Scope string
 }
 
 // Fill — 체결 결과.

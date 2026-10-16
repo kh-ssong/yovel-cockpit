@@ -365,7 +365,7 @@ func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Posit
 		x.d.Engine.UpsertPosition(pos)
 	}
 
-	req := broker.OrderRequest{IntentID: pos.IntentID, Symbol: pos.Symbol, Qty: qty}
+	req := broker.OrderRequest{IntentID: pos.IntentID, Symbol: pos.Symbol, Qty: qty, Kid: pos.Kid, Scope: pos.Scope}
 	if sub, ok := x.d.Broker.(broker.Submitter); ok {
 		w := store.WorkingOrder{
 			IntentID: pos.IntentID, Purpose: "exit", Reason: reason, Side: "sell",
@@ -490,7 +490,7 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 		return
 	}
 	req := broker.OrderRequest{
-		IntentID: t.IntentID, Symbol: t.Symbol, Qty: qty, RefPrice: ref,
+		IntentID: t.IntentID, Symbol: t.Symbol, Qty: qty, RefPrice: ref, Kid: kid, Scope: scope,
 	}
 	if t.Entry != nil {
 		req.MaxSlipBp = t.Entry.MaxSlipBp

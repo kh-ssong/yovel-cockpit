@@ -129,7 +129,7 @@ func run() error {
 		return fmt.Errorf("장부 설정: %w", err)
 	}
 	for _, b := range books.Books() {
-		log.Info("활성 전략(장부)", "name", b.Name, "kid", b.Kid, "scope", b.Scope, "seed", b.Seed, "max_qty", b.MaxQty, "enabled", b.On())
+		log.Info("활성 전략(장부)", "name", b.Name, "kid", b.Kid, "scope", b.Scope, "seed", b.Seed, "max_qty", b.MaxQty, "paper_fee_bp", b.PaperFeeBp, "enabled", b.On())
 	}
 	if books.Configured() {
 		log.Info("장부에 없는 (kid, scope) 의 진입은 E_INACTIVE 로 거절된다 — 청산은 계속")
@@ -479,6 +479,7 @@ func buildBroker(cfg config.Config, books *book.Set, mark func(protocol.Symbol) 
 			"flat6 발행에 mark_price 가 실렸는지 확인할 것")
 	}
 	pcfg.Price = markFirst(mark, byExchange(feeds))
+	pcfg.FeeFor = books.PaperFee
 	return paper.New(pcfg), byExchange(feeds), nil
 }
 

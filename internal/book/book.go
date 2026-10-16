@@ -43,6 +43,16 @@ type Book struct {
 	// «1주씩» 검증하는 용도 (user 2026-10-16). 시드 부족 축소(E_CAPITAL)와는 다른 층이다: 이건
 	// 사용자가 미리 정한 크기라 조용한 축소가 아니다. 사이징이 0주면(시드 부족) 여전히 E_CAPITAL.
 	MaxQty float64 `json:"max_qty,omitempty"`
+	// PaperFeeBp — paper 체결의 편도 비용 (bp). 생략하면 거래소·기본 요율 (--paper-fee-bp-*).
+	// ★ ETF 는 거래세가 없어 주식 요율을 물리면 안 된다 — ETF 장부에 {"buy":0,"sell":0} 처럼 준다
+	// (user 2026-10-16 «주식/ETF 구분»). live 에선 쓰지 않는다 — 진짜 비용은 체결 통지가 준다.
+	PaperFeeBp *Fee `json:"paper_fee_bp,omitempty"`
+}
+
+// Fee — 편도 비용 (bp).
+type Fee struct {
+	Buy  float64 `json:"buy"`
+	Sell float64 `json:"sell"`
 }
 
 func (b Book) On() bool { return b.Enabled == nil || *b.Enabled }
@@ -77,6 +87,9 @@ func New(books []Book, defaultBudget float64) (*Set, error) {
 		}
 		if b.MaxQty < 0 {
 			return nil, fmt.Errorf("장부 %s: max_qty 가 음수", b.Name)
+		}
+		if f := b.PaperFeeBp; f != nil && (f.Buy < 0 || f.Sell < 0) {
+			return nil, fmt.Errorf("장부 %s: paper_fee_bp 가 음수", b.Name)
 		}
 		for _, o := range s.books {
 			if o.Scope == b.Scope && (o.Kid == b.Kid || o.Kid == "" || b.Kid == "") {
@@ -149,6 +162,22 @@ func (s *Set) MaxQty(kid, scope string) float64 {
 		}
 	}
 	return 0
+}
+
+// PaperFee — 소스의 paper 편도 비용. ok=false 면 장부가 정하지 않았다 (거래소·기본 요율을 쓴다).
+func (s *Set) PaperFee(kid, scope string) (buy, sell float64, ok bool) {
+	if s == nil {
+		return 0, 0, false
+	}
+	for _, b := range s.books {
+		if b.Scope == scope && (b.Kid == "" || b.Kid == kid) {
+			if b.PaperFeeBp == nil {
+				return 0, 0, false
+			}
+			return b.PaperFeeBp.Buy, b.PaperFeeBp.Sell, true
+		}
+	}
+	return 0, 0, false
 }
 
 // Configured — 장부 설정이 있는가 (없으면 옛 방식).
