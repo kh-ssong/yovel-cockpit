@@ -61,3 +61,21 @@ func TestTimestampIsStable(t *testing.T) {
 		t.Fatalf("1ms 뒤가 더 작거나 같다: %s vs %s", later[:10], a[:10])
 	}
 }
+
+// Derive — 같은 (시각, key) 는 늘 같은 id, 다른 key 는 다른 id. 형식·시각 정렬은 New 와 같다.
+func TestDerive(t *testing.T) {
+	at := time.Date(2026, 10, 17, 0, 0, 5, 0, time.UTC)
+	a, b := Derive(at, "expired:X"), Derive(at, "expired:X")
+	if a != b {
+		t.Fatalf("같은 입력인데 다르다: %s %s", a, b)
+	}
+	if Derive(at, "expired:Y") == a {
+		t.Fatal("다른 key 인데 같다")
+	}
+	if !regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`).MatchString(a) {
+		t.Fatalf("형식: %s", a)
+	}
+	if a[:10] != NewAt(at)[:10] {
+		t.Fatalf("시각 부분이 New 와 다르다: %s vs %s", a, NewAt(at))
+	}
+}

@@ -202,6 +202,11 @@ Content-Type: application/json
    목표가 계획이 됐는지, 안 됐으면 무엇이 막았는지(E_SYMBOL · E_TERMINAL · E_EXPIRED)가 한 화면에 나온다.
    같은 것을 curl 로도 본다: `/v1/plan` · `/v1/ledger?mode=paper`
 5. 하루치 대조: flat6 가 낸 목표 수 ↔ 콕핏 ack 수 ↔ 원장 건수
+   - `/v1/ledger?mode=paper&since=<RFC3339>&limit=<≤5000>` — since 이후 행만 (최신순). 조인 키 = `intent_id`
+   - 진입 = `phase=filled` · 청산 = `exit_filled`(+`exit_reason` flat|stop|time|tp|liquidate|manual) ·
+     안 낸 진입 = `rejected` (`detail` 이 `expired` 로 시작 = not_after 를 넘겨 안 냄, intent 마다 한 행)
+   - `realized_pct` 는 수수료 전 가격 수익률 — 원화 손익은 qty×(청산가−진입가) − 양쪽 `fee_krw`
+   - 판정 단계 거절(E_CAPITAL·E_INACTIVE …)은 원장이 아니라 downlink ack 의 `per_intent` 에 온다
 6. 그 다음에야 `--broker kiwoom --mode live` + 소액
 
 ★ 4~5 단계를 건너뛰지 말 것. 여기서 걸리는 것은 대부분 계약이 아니라

@@ -101,3 +101,34 @@ func Shares(weight, engineBudget, price float64, m Market) Result {
 	}
 	return res
 }
+
+// Cap — 수량 상한(maxQty, 장부 max_qty)을 건다. maxQty ≤ 0 이거나 이미 그 아래면 그대로.
+//
+// ★ 위로는 절대 올리지 않는다 — 상한이지 목표 수량이 아니다. 주식은 상한도 단위로 내림하고,
+// 줄인 금액이 최소주문금액 아래면 E_CAPITAL (그만큼만 사는 건 시장이 안 받는다).
+func Cap(res Result, maxQty, engineBudget, price float64, m Market) Result {
+	if maxQty <= 0 || len(res.Codes) > 0 || res.Qty <= maxQty {
+		return res
+	}
+	q := maxQty
+	if !m.Fractional {
+		lot := m.LotSize
+		if lot <= 0 {
+			lot = 1
+		}
+		q = math.Floor(maxQty/lot) * lot
+	}
+	if q <= 0 {
+		res.Codes = []protocol.RejectCode{protocol.CodeCapital}
+		res.Qty, res.Notional, res.RealizedWeight = 0, 0, 0
+		return res
+	}
+	res.Qty = q
+	res.Notional = q * price
+	res.RealizedWeight = res.Notional / engineBudget
+	if m.MinOrderValue > 0 && res.Notional < m.MinOrderValue {
+		res.Codes = []protocol.RejectCode{protocol.CodeCapital}
+		res.Qty, res.Notional, res.RealizedWeight = 0, 0, 0
+	}
+	return res
+}

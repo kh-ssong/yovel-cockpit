@@ -7,6 +7,7 @@ package ids
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"time"
 )
@@ -32,6 +33,21 @@ func NewAt(t time.Time) string {
 	if _, err := rand.Read(b[6:]); err != nil {
 		panic("ids: 난수원 실패 — 멱등키를 만들 수 없다: " + err.Error())
 	}
+	return encode(b)
+}
+
+// Derive — 시각 t 와 key 로 **늘 같은** ULID 를 만든다 (80비트 = sha256(key) 앞부분).
+//
+// ★ 같은 사실을 여러 번 기록해도 한 행만 남아야 하는 자리에 쓴다 (원장·업링크 큐는 id 로
+// INSERT OR IGNORE 한다). 매 틱·재시작마다 같은 판정이 반복되는 기록이 그렇다.
+func Derive(t time.Time, key string) string {
+	var b [16]byte
+	ms := uint64(t.UTC().UnixMilli())
+	var tsBuf [8]byte
+	binary.BigEndian.PutUint64(tsBuf[:], ms)
+	copy(b[0:6], tsBuf[2:8])
+	h := sha256.Sum256([]byte(key))
+	copy(b[6:], h[:10])
 	return encode(b)
 }
 

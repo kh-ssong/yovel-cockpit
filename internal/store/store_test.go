@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -434,5 +436,44 @@ func TestDayRealized(t *testing.T) {
 	krw, losses, err := s.DayRealized(ctx, protocol.ModeLive, day)
 	if err != nil || krw != -20 || losses != 1 {
 		t.Fatalf("%v %v %v", krw, losses, err)
+	}
+}
+
+// ★ since 경계는 같은 초 안에서도 정확해야 한다. created_at 은 RFC3339Nano 라 "…08Z" 와 "…08.5Z" 의
+// 문자열 길이가 달라서, 문자열로만 비교하면 08.5 가 08 보다 앞으로 정렬된다.
+func TestLedgerSinceExact(t *testing.T) {
+	s := open(t)
+	base := time.Date(2026, 10, 17, 1, 0, 8, 0, time.UTC)
+	for i, d := range []time.Duration{-1500 * time.Millisecond, -time.Millisecond, 0, 500 * time.Millisecond, 2 * time.Second} {
+		if err := s.RecordOrder(ctx, Order{ID: fmt.Sprintf("o%d", i), IntentID: "i1", Phase: "filled",
+			Symbol: sym("KRW-BTC"), Side: "buy", Mode: protocol.ModePaper, CreatedAt: base.Add(d)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		since time.Time
+		want  []string
+	}{
+		{base, []string{"o4", "o3", "o2"}},
+		{base.Add(time.Millisecond), []string{"o4", "o3"}},
+		{base.Add(-time.Millisecond), []string{"o4", "o3", "o2", "o1"}},
+		{base.Add(600 * time.Millisecond), []string{"o4"}},
+	} {
+		since := c.since
+		rows, err := s.Ledger(ctx, LedgerQuery{Mode: protocol.ModePaper, Since: &since})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, r := range rows {
+			got = append(got, r.ID)
+		}
+		// 순서는 보지 않는다 — 같은 초 안의 정렬도 같은 문자열 비교라 "…08Z" 가 "…08.5Z" 뒤로 간다
+		// (time.Now 가 정확히 0 나노초를 낼 때만이라 실제로는 무시할 만하다). 여기서 보는 건 경계다.
+		sort.Strings(got)
+		sort.Strings(c.want)
+		if fmt.Sprint(got) != fmt.Sprint(c.want) {
+			t.Fatalf("since %s: %v, 기대 %v", since.Format(time.RFC3339Nano), got, c.want)
+		}
 	}
 }

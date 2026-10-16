@@ -153,6 +153,29 @@ func TestInactiveSourceBlocksEntryNotExit(t *testing.T) {
 	}
 }
 
+// 장부 max_qty — 그 장부의 진입만 상한까지 줄인다 (user 2026-10-16 «1주씩»). 다른 장부는 그대로.
+func TestBookMaxQtyCapsEntry(t *testing.T) {
+	books, err := book.New([]book.Book{
+		{Name: "f60", Kid: "flat6-1", Scope: "kiwoom/klev_push10_f60", Seed: 1_000_000, MaxQty: 1},
+		{Name: "d205", Kid: "flat6-1", Scope: "intraday/d205", Seed: 1_000_000},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat6 := mkSigner("flat6-1", 3)
+	e := multiEngine(t, books, flat6)
+	applied(t, e, flat6.snap(t, 1, "kiwoom/klev_push10_f60", tgt("01J9Z8QK3M7X2ABCDEFGHJKME1", "122630", "open")))
+	applied(t, e, flat6.snap(t, 1, "intraday/d205", tgt("01J9Z8QK3M7X2ABCDEFGHJKME2", "005930", "open")))
+	qty := map[string]float64{}
+	for _, en := range e.Plan(base.Add(time.Second)).Enters {
+		qty[en.Target.Symbol.Code] = en.Qty
+	}
+	// weight 0.5 × 시드 100만 ÷ 1000원 = 500주 → f60 은 1주, d205 는 500주.
+	if qty["122630"] != 1 || qty["005930"] != 500 {
+		t.Fatalf("수량: %v", qty)
+	}
+}
+
 // 전략마다 예산이 따로다 — 한 전략이 다 써도 다른 전략은 산다.
 func TestBudgetIsPerSource(t *testing.T) {
 	books, _ := book.New([]book.Book{

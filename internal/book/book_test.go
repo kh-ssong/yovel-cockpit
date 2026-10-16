@@ -85,3 +85,30 @@ func TestLoadOverbook(t *testing.T) {
 		t.Fatalf("표시를 못 읽었다: %v", err)
 	}
 }
+
+// max_qty — 진입 한 건 수량 상한 (user 2026-10-16 «1주씩»). 없으면 0, 음수는 기동 거부.
+func TestLoadMaxQty(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "books.json")
+	os.WriteFile(p, []byte(`{"books":[
+	  {"name":"f60","kid":"flat6-1","scope":"kiwoom/klev_push10_f60","seed":1000000,"max_qty":1},
+	  {"name":"d205","kid":"flat6-1","scope":"intraday/d205","seed":16000000}]}`), 0o600)
+	s, err := Load(p, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := s.MaxQty("flat6-1", "kiwoom/klev_push10_f60"); q != 1 {
+		t.Fatalf("max_qty=%v", q)
+	}
+	if q := s.MaxQty("flat6-1", "intraday/d205"); q != 0 {
+		t.Fatalf("없는데 %v", q)
+	}
+	if q := s.MaxQty("otto-1", "kiwoom/klev_push10_f60"); q != 0 {
+		t.Fatalf("다른 kid 인데 %v", q)
+	}
+	if q := (*Set)(nil).MaxQty("flat6-1", "x"); q != 0 {
+		t.Fatalf("nil 장부 %v", q)
+	}
+	if _, err := New([]Book{{Name: "x", Scope: "a", Seed: 1, MaxQty: -1}}, 0); err == nil {
+		t.Fatal("음수 max_qty 를 받았다")
+	}
+}
