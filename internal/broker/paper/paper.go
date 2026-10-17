@@ -205,9 +205,14 @@ func (b *Broker) MinOrderValue(s protocol.Symbol) float64 {
 	return b.cfg.MinOrderValue
 }
 
-// dust — 소수 수량을 빼고 남는 표현 오차. 이 밑이면 다 판 것이다.
-// ★ 없으면 0.1+0.2 류 오차(1e-17)로 코인 보유가 "남아 있는" 것으로 보여 영영 종결되지 않는다.
-const dust = 1e-12
+// half — 수량을 견줄 때 봐주는 폭 = 주문 단위의 절반 (executor 가 체결·보유를 견주는 규칙과 같다).
+// 보유가 이 밑이면 다 판 것이고, 요청이 보유를 이만큼 안쪽으로 넘는 건 표현 오차다.
+//
+// ★ 같은 코인을 여러 장부가 사면 보유는 로트의 합이고, 로트를 하나씩 빼면 **합계 크기의** float 오차가
+// 남는다. 2026-10-17 맥 paper KRW-ICX: 세 장부가 69444.44444444 씩 사고 둘이 판 뒤 보유 69444.44444443997
+// < 로트 69444.44444444 → 남은 장부의 청산이 «매도가능 부족» 으로 매분 거부됐다. 옛 비교는 오차를 0 으로,
+// 먼지를 1e-12 로 봤는데 20만 개 합계의 오차는 4e-11 이다.
+func (b *Broker) half(s protocol.Symbol) float64 { return b.LotSize(s) / 2 }
 
 // fillPrice — 지정가면 그대로, 시장가면 기준가에서 SlipBp 만큼 불리하게.
 func (b *Broker) fillPrice(req broker.OrderRequest, side string, ref float64) float64 {
@@ -299,7 +304,7 @@ func (b *Broker) Sell(_ context.Context, req broker.OrderRequest) (broker.Fill, 
 	}
 	price := b.fillPrice(req, "sell", ref)
 
-	if h == nil || h.Sellable < req.Qty {
+	if h == nil || h.Sellable < req.Qty-b.half(req.Symbol) {
 		have := 0.0
 		if h != nil {
 			have = h.Sellable
@@ -314,7 +319,7 @@ func (b *Broker) Sell(_ context.Context, req broker.OrderRequest) (broker.Fill, 
 
 	h.Qty -= req.Qty
 	h.Sellable = h.Qty
-	if h.Qty <= dust {
+	if h.Qty < b.half(req.Symbol) {
 		delete(b.holdings, key(req.Symbol))
 	}
 
@@ -339,7 +344,7 @@ func (b *Broker) PlaceTP(_ context.Context, s protocol.Symbol, qty, price float6
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	h := b.holdings[key(s)]
-	if h == nil || h.Qty < qty {
+	if h == nil || h.Qty < qty-b.half(s) {
 		return "", broker.ErrNotEnoughShare
 	}
 	b.seq++
@@ -403,7 +408,7 @@ func (b *Broker) SettleLimits(context.Context) ([]broker.LimitFill, error) {
 			continue
 		}
 		h := b.holdings[key(o.symbol)]
-		if h == nil || h.Qty < o.qty {
+		if h == nil || h.Qty < o.qty-b.half(o.symbol) {
 			// 장부와 실물이 어긋났다. ★ 추측해서 맞추지 않고 주문만 거둔다.
 			delete(b.tpOrders, id)
 			continue
@@ -416,7 +421,7 @@ func (b *Broker) SettleLimits(context.Context) ([]broker.LimitFill, error) {
 
 		h.Qty -= o.qty
 		h.Sellable = h.Qty
-		if h.Qty <= dust {
+		if h.Qty < b.half(o.symbol) {
 			delete(b.holdings, key(o.symbol))
 		}
 		delete(b.tpOrders, id)
