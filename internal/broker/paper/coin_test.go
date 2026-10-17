@@ -2,6 +2,7 @@ package paper
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -47,5 +48,38 @@ func TestCoinPaperRoundTrip(t *testing.T) {
 	}
 	if hs, _ := b.Positions(c); len(hs) != 0 {
 		t.Fatalf("다 팔았는데 먼지가 남았다: %+v", hs)
+	}
+}
+
+// ★ 같은 코인을 여러 장부가 같은 수량으로 사고 따로 팔면, 보유(로트의 합)에서 로트를 빼는 사이
+// float 오차가 쌓여 마지막 로트가 보유보다 4e-11 커진다. 그걸 «매도가능 부족» 으로 거부하면
+// 그 장부는 영영 청산되지 않는다 (2026-10-17 맥 paper KRW-ICX 실측 수치 그대로).
+func TestSharedCoinLastLotStillSells(t *testing.T) {
+	c := context.Background()
+	icx := protocol.Symbol{Exchange: "UPBIT", Code: "KRW-ICX"}
+	b := New(Config{
+		Cash: 10_000_000, Lot: 1, Now: func() time.Time { return time.Unix(0, 0) },
+		Rules: map[string]Rule{"UPBIT": {Lot: 1e-8, MinOrderValue: 5000, FeeBpBuy: 5, FeeBpSell: 5}},
+	})
+	const lot = 69444.44444444
+	for i := 0; i < 3; i++ {
+		if _, err := b.Buy(c, broker.OrderRequest{Symbol: icx, Qty: lot, RefPrice: 14.4}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := b.Sell(c, broker.OrderRequest{Symbol: icx, Qty: lot, RefPrice: 14.6}); err != nil {
+			t.Fatalf("%d번째 매도: %v", i+1, err)
+		}
+	}
+	if hs, _ := b.Positions(c); len(hs) != 0 {
+		t.Fatalf("다 팔았는데 먼지가 남았다: %+v", hs)
+	}
+	// 반 단위 넘게 모자라면 여전히 거부한다.
+	if _, err := b.Buy(c, broker.OrderRequest{Symbol: icx, Qty: lot, RefPrice: 14.4}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Sell(c, broker.OrderRequest{Symbol: icx, Qty: lot + 1e-8, RefPrice: 14.6}); !errors.Is(err, broker.ErrNotEnoughShare) {
+		t.Fatalf("한 단위 더 팔았는데 거부 안 됨: %v", err)
 	}
 }
