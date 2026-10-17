@@ -519,6 +519,7 @@ func (e *Engine) planLocked(now time.Time) reconcile.Plan {
 		plan.Exits = append(plan.Exits, p.Exits...)
 		plan.StopUpdates = append(plan.StopUpdates, p.StopUpdates...)
 		plan.TpUpdates = append(plan.TpUpdates, p.TpUpdates...)
+		plan.TimeExitUpdates = append(plan.TimeExitUpdates, p.TimeExitUpdates...)
 		plan.Orphans = append(plan.Orphans, p.Orphans...)
 		plan.Acks = append(plan.Acks, p.Acks...)
 		plan.DroppedEnters += p.DroppedEnters

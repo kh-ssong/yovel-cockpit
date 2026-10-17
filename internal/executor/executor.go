@@ -174,6 +174,8 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 	// 실브로커의 TP 체결을 **주문번호로** 확인한다 — 같은 종목에 로트가 여럿이면 아래 syncPositions
 	// ("종목이 사라졌나")로는 한 로트의 TP 체결을 못 본다.
 	x.checkDelegatedTPs(ctx, now, &res)
+	// 장이 끝났으면 KRX 당일 TP 를 정산하고 지운다 (날 넘겨 드는 로트 — tp_day.go).
+	x.expireDayTPs(ctx, now, &res)
 
 	x.syncPositions(ctx, now, &res)
 
@@ -211,9 +213,24 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 		res.StopsArmed++
 	}
 
+	// ②' 시간청산 갱신 — stop 과 같은 성격(우리가 기억할 숫자)이다.
+	for _, u := range plan.TimeExitUpdates {
+		if sold[u.Position.IntentID] || x.isWorking(u.Position.IntentID) || u.Position.Pending {
+			continue
+		}
+		if err := x.setTimeExit(ctx, u.Position, u.To); err != nil {
+			res.fail("시간청산 갱신 %s: %v", u.Position.IntentID, err)
+		}
+	}
+
 	// ③ TP 위임 — exit 3층 중 제일 튼튼한 층. 데몬도 서버도 죽어도 이건 체결된다.
 	for _, u := range plan.TpUpdates {
 		if sold[u.Position.IntentID] || x.isWorking(u.Position.IntentID) {
+			continue
+		}
+		// ★ 지정가는 접속매매에서만 건다. 장 밖 주문을 증권사가 어떻게 받는지(거부·다음 장 이월)에 기대지 않는다 —
+		//   KRX 지정가는 당일 주문이라 날을 넘긴 로트는 다음 장에 다시 건다 (tp_day.go).
+		if x.d.Session != nil && !x.d.Session.CanEnter(u.Position.Symbol.Exchange, now) {
 			continue
 		}
 		if err := x.placeTP(ctx, u.Position, u.To); err != nil {
@@ -660,6 +677,18 @@ func (x *Executor) armStop(ctx context.Context, pos protocol.Position, to float6
 		return err
 	}
 	x.d.Engine.UpsertPosition(pos)
+	return nil
+}
+
+// setTimeExit — 시간청산 시각을 원장과 엔진에 같이 바꾼다.
+func (x *Executor) setTimeExit(ctx context.Context, pos protocol.Position, at time.Time) error {
+	if err := x.d.Store.SetTimeExit(ctx, pos.IntentID, at); err != nil {
+		return err
+	}
+	from := pos.TimeExitAt
+	pos.TimeExitAt = &at
+	x.d.Engine.UpsertPosition(pos)
+	x.d.Log.Info("시간청산 갱신", "intent_id", pos.IntentID, "code", pos.Symbol.Code, "from", from, "to", at)
 	return nil
 }
 

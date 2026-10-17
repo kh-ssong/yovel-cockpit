@@ -168,6 +168,12 @@ Content-Type: application/json
     동시호가 시작이라 장중 매도가 안 된다. 콕핏도 KRX 시간청산을 15:15 로 당기지만(`--krx-exit-cutoff`), 판단자 신호
     (`want=flat`)도 15:15 전에 내야 연속매매로 나간다. 장 밖 진입은 `E_MARKET_CLOSED`, 접수됐지만 미확정 진입은
     `positions[].pending: true` 로 보인다 (`protocol.md §8.1`).
+13. **날 넘겨 드는 로트(스윙)** (2026-10-17, `protocol.md §8`) — 콕핏은 장 마감에 알아서 닫지 않는다. 닫히는 건
+    `time_exit_at`(데드맨)·stop·TP·`want=flat` 뿐이다. 들고 있는 intent 는 **보내는 봉투마다 전부** 실을 것 —
+    빠지면 `E_ORPHAN`(자동 청산은 안 하지만 flat·stop·TP·기한 갱신이 안 먹는다). 봉투를 아예 안 보내는 건 괜찮다
+    (`target_stale` 은 진입만 막는다). `time_exit_at` 은 보유 중 바꾸면 갱신되고 빼면 그대로다. KRX 는 거래일
+    09:00~15:15 안의 시각으로 — 장 밖에 걸리면 다음 장 08:59 에 팔고, 키 없는 paper 는 그때 mark 가 없으면 평단으로
+    근사한다. KRX TP 위임은 당일 주문이라 콕핏이 장 마감 뒤 지우고 다음 장에 다시 건다.
 
 응답은 `ack` 다. 거절도 HTTP 200 으로 오고 `codes` 에 이유가 담긴다
 (MQTT 에는 상태코드가 없어서, 두 경로가 다른 모양이면 그게 곧 배선 버그가 된다).

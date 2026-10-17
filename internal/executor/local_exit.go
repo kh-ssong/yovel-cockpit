@@ -46,6 +46,11 @@ func (x *Executor) enforceLocalExits(ctx context.Context, now time.Time, res *Re
 		in := guard.Inputs{Now: now, MaxPriceAge: x.d.MaxPriceAge}
 
 		timeDue := rules.TimeExitAt != nil && !now.Before(*rules.TimeExitAt)
+		if !timeDue && !x.canExit(pos.Symbol, now) {
+			// ★ 장 밖 — stop 이 걸려 있어도 지금은 팔 수 없고 시세도 안 온다. 이걸 Blind 로 세면 날 넘겨
+			//   드는 로트(스윙)마다 밤새 경보가 쌓여 진짜 Blind(장중 시세 끊김)가 묻힌다. 다음 장(08:59~)부터 다시 본다.
+			continue
+		}
 		if !timeDue && rules.StopPrice > 0 && x.d.Quote != nil {
 			if p, at, ok := x.d.Quote(ctx, pos.Symbol); ok {
 				in.LastPrice, in.PriceAsOf = p, at
