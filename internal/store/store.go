@@ -217,6 +217,13 @@ UPDATE intents SET qty=?, tp_order_id=NULL, tp_price=0, updated_at=? WHERE inten
 	return err
 }
 
+// SetTimeExit — 들고 있는 로트의 시간청산 시각만 바꾼다 (보유 중 time_exit_at 갱신).
+func (s *Store) SetTimeExit(ctx context.Context, intentID string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE intents SET time_exit_at=?, updated_at=? WHERE intent_id=?`, ts(at), nowStr(), intentID)
+	return err
+}
+
 // ClearTP — 걸어 둔 TP 를 취소했다는 사실만 남긴다.
 //
 // ★ 취소 직후 매도가 실패하면, 이게 없으면 다음 틱이 **이미 죽은 주문**을 또 취소하려 들고

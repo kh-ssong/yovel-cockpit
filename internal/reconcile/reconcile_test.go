@@ -104,6 +104,28 @@ func TestStopUpdateWhenHeld(t *testing.T) {
 	}
 }
 
+// 보유 중 time_exit_at 이 바뀌면 갱신하고, 같거나 빠지면 그대로 둔다 (빠진 건 데드맨을 끄는 게 아니다).
+func TestTimeExitUpdateWhenHeld(t *testing.T) {
+	t1, t2 := now.Add(time.Hour), now.Add(48*time.Hour)
+	pos := held("a", "005930", 900)
+	pos.TimeExitAt = &t1
+	tgt := openTarget("a", "005930")
+
+	tgt.Exit.TimeExitAt = &t2
+	if p := Build(book(tgt), []protocol.Position{pos}, opts()); len(p.TimeExitUpdates) != 1 || !p.TimeExitUpdates[0].To.Equal(t2) {
+		t.Fatalf("바뀐 기한을 안 실었다: %+v", p.TimeExitUpdates)
+	}
+	same := t1.In(time.FixedZone("KST", 9*3600)) // 같은 순간이면 표기가 달라도 같다
+	tgt.Exit.TimeExitAt = &same
+	if p := Build(book(tgt), []protocol.Position{pos}, opts()); len(p.TimeExitUpdates) != 0 {
+		t.Fatalf("같은 기한인데 갱신했다: %+v", p.TimeExitUpdates)
+	}
+	tgt.Exit.TimeExitAt = nil
+	if p := Build(book(tgt), []protocol.Position{pos}, opts()); len(p.TimeExitUpdates) != 0 {
+		t.Fatalf("목표에서 빠졌다고 데드맨을 건드렸다: %+v", p.TimeExitUpdates)
+	}
+}
+
 func TestNoStopUpdateWhenUnchanged(t *testing.T) {
 	p := Build(book(openTarget("a", "005930")), []protocol.Position{held("a", "005930", 900)}, opts())
 	if len(p.StopUpdates) != 0 {

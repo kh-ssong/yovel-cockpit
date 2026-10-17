@@ -130,7 +130,7 @@
         },
         "time_exit_at": {
           "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
-          "description": "로컬 타이머가 지킨다. ★ 청산은 만료시키지 않는다."
+          "description": "로컬 타이머가 지킨다. ★ 청산은 만료시키지 않는다. 보유 중 다른 값을 실으면 갱신되고, 빼면 그대로다 (protocol.md §8)."
         }
       }
     }

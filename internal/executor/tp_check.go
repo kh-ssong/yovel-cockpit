@@ -43,6 +43,13 @@ func (x *Executor) closeIfTPFilled(ctx context.Context, now time.Time, p protoco
 	if err != nil || st.FilledQty < p.Qty-x.d.Broker.LotSize(p.Symbol)/2 {
 		return false
 	}
+	x.closeTPFill(ctx, now, p, st, res)
+	return true
+}
+
+// closeTPFill — 다 찬 TP 로 로트를 체결가와 함께 닫는다.
+func (x *Executor) closeTPFill(ctx context.Context, now time.Time, p protocol.Position, st broker.LimitStatus,
+	res *Result) {
 	filledAt := st.FilledAt
 	if filledAt.IsZero() {
 		filledAt = now
@@ -56,7 +63,7 @@ func (x *Executor) closeIfTPFilled(ctx context.Context, now time.Time, p protoco
 	}, res)
 	if err := x.d.Store.CloseIntent(ctx, p.IntentID, "tp", now); err != nil {
 		res.fail("TP 종결 %s: %v", p.IntentID, err)
-		return true // 원장엔 적었다 — 사후 감지로 한 번 더 적지 않게 true
+		return // 원장엔 적었다 — 호출자는 닫은 것으로 친다 (사후 감지로 한 번 더 적지 않게)
 	}
 	x.d.Engine.MarkClosed(p.IntentID)
 	x.noteClose(p, "tp", st.AvgPrice, now)
@@ -64,5 +71,4 @@ func (x *Executor) closeIfTPFilled(ctx context.Context, now time.Time, p protoco
 	res.Exited++
 	x.d.Log.Info("TP 체결 (주문번호 확인)", "intent_id", p.IntentID, "code", p.Symbol.Code,
 		"price", st.AvgPrice, "realized_pct", fmt.Sprintf("%.2f%%", realizedPct(p.AvgEntryPrice, st.AvgPrice)*100))
-	return true
 }

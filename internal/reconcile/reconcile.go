@@ -47,6 +47,12 @@ type TpUpdate struct {
 	To       float64           `json:"to"`
 }
 
+// TimeExitUpdate — 들고 있는 로트의 시간청산(데드맨) 시각을 바꾼다.
+type TimeExitUpdate struct {
+	Position protocol.Position `json:"position"`
+	To       time.Time         `json:"to"`
+}
+
 // Plan 은 이번 틱에 할 일 전부.
 type Plan struct {
 	// AsOfBar — 이 계획이 근거한 목표 스냅샷의 기준봉 시각 (= 신호가 나온 시각).
@@ -59,6 +65,8 @@ type Plan struct {
 	Exits       []ExitOrder  `json:"exits"`
 	StopUpdates []StopUpdate `json:"stop_updates"`
 	TpUpdates   []TpUpdate   `json:"tp_updates"`
+	// TimeExitUpdates — 보유 중 time_exit_at 이 바뀐 로트.
+	TimeExitUpdates []TimeExitUpdate `json:"time_exit_updates,omitempty"`
 	// Orphans — 목표에 없는데 실제로 들고 있는 포지션. ★ 자동 청산하지 않는다.
 	Orphans []protocol.Position  `json:"orphans"`
 	Acks    []protocol.AckIntent `json:"acks"`
@@ -225,6 +233,12 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 				if t.Exit.TpDelegate && t.Exit.TpPrice > 0 &&
 					(pos.TpOrderID == "" || t.Exit.TpPrice != pos.TpArmed) {
 					plan.TpUpdates = append(plan.TpUpdates, TpUpdate{Position: pos, To: t.Exit.TpPrice})
+				}
+				// ★ 시간청산도 갱신한다 — 날 넘겨 드는 로트(스윙)는 판단자가 기한을 늘리거나 당길 수 있어야 한다
+				//   (예전엔 진입 때 값으로 고정이었다). 목표에서 빠지면(nil) 그대로 둔다 — 지우는 건 데드맨을
+				//   끄는 일이라 필드 하나 빠진 걸로 하지 않는다.
+				if te := t.Exit.TimeExitAt; te != nil && (pos.TimeExitAt == nil || !te.Equal(*pos.TimeExitAt)) {
+					plan.TimeExitUpdates = append(plan.TimeExitUpdates, TimeExitUpdate{Position: pos, To: *te})
 				}
 			}
 			plan.Acks = append(plan.Acks, ack(t.IntentID, "applied", nil))

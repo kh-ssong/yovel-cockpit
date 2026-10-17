@@ -639,6 +639,31 @@ func (s *Server) matchLocked() {
 		}
 	}
 }
+
+// FillLimit — 열린 지정가 주문 no 를 q 만큼 그 지정가로 체결한다 (지정가 일부 체결 흉내).
+func (s *Server) FillLimit(no string, q float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	o := s.orders[no]
+	if o == nil || o.status != "open" || o.market {
+		return
+	}
+	s.fillLocked(o, math.Min(q, o.qty-o.filled), o.limit, s.cfg.Now())
+	if o.filled >= o.qty {
+		o.status = "done"
+	}
+}
+
+// EndDay — 장 마감을 지나 다음 날이 됐다: 당일 주문은 거래소에서 사라지고(안 찬 지정가 소멸)
+// ka10076 의 금일 체결 목록도 비어 있다.
+func (s *Server) EndDay() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for no := range s.orders {
+		delete(s.orders, no)
+	}
+}
+
 func (s *Server) AddFault(f Fault) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
