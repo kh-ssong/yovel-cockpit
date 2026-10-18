@@ -60,10 +60,15 @@ func nextBudgetCheck(now time.Time) time.Time {
 //
 // ★ 막지 않고 **크게 경고만** 한다. 줄여서 집행할지는 사람이 정할 일이고, 조용히 예산을
 // 깎으면 "왜 이 크기로 샀는지" 를 원장에서 재현할 수 없게 된다.
+//
+// onCheck — 점검마다 먼저 부른다 (자동 배분의 오늘 몫 재계산). nil 이면 없음.
 func watchBudget(ctx context.Context, br broker.Broker, budget float64, overbook bool,
-	positions func() []protocol.Position, log *slog.Logger, alert func(key, text string)) {
+	positions func() []protocol.Position, log *slog.Logger, alert func(key, text string), onCheck func()) {
 
 	check := func() {
+		if onCheck != nil {
+			onCheck()
+		}
 		c, err := br.Cash(ctx)
 		if err != nil {
 			log.Warn("예산 점검: 잔고 조회 실패", "err", err)

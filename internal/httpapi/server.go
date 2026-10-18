@@ -101,6 +101,7 @@ func New(opt Options, eng Engine) *Server {
 	mux.HandleFunc("POST /v1/downlink", s.handleDownlink)
 	mux.HandleFunc("GET /v1/ledger", s.handleLedger)
 	mux.HandleFunc("GET /v1/books", s.handleBooks)
+	mux.HandleFunc("GET /v1/allocation", s.handleAllocation)
 	mux.HandleFunc("GET /v1/lots", s.provided(func() func(context.Context) (any, error) { return s.opt.Lots }))
 	mux.HandleFunc("GET /v1/holdings", s.provided(func() func(context.Context) (any, error) { return s.opt.Holdings }))
 
@@ -322,6 +323,26 @@ func (s *Server) provided(get func() func(context.Context) (any, error)) http.Ha
 // booksEngine — 장부별 성적을 주는 엔진. 인터페이스를 넓히지 않고 선택으로 둔다.
 type booksEngine interface {
 	BookStats(ctx context.Context, mode protocol.Mode) ([]engine.BookStat, error)
+}
+
+type allocEngine interface {
+	AllocReport(now time.Time) *engine.AllocReport
+}
+
+// handleAllocation — 자동 배분: 오늘 몫·남은 돈·스윙 예비분·가동률·놓친 신호 (docs/allocation.md §4).
+func (s *Server) handleAllocation(w http.ResponseWriter, r *http.Request) {
+	ae, ok := s.eng.(allocEngine)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "자동 배분을 모르는 엔진"})
+		return
+	}
+	rep := ae.AllocReport(time.Now())
+	if rep == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"as_of": time.Now().UTC(), "enabled": false,
+			"note": "books.json 에 capital 이 없다 — 장부마다 seed (옛 방식)"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"as_of": time.Now().UTC(), "enabled": true, "allocation": rep})
 }
 
 // handleBooks — 전략(장부)별 성적. ★ mode 는 필수다 (paper 와 live 를 합산하지 않는다).

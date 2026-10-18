@@ -159,6 +159,7 @@ func run() error {
 	// 간접 참조로 둔다 (엔진 → 시세 → paper → marks → 엔진 순환을 끊는다).
 	var eng *engine.Engine
 	var onInactive func(kid, scope string, n int)
+	var onAllocWarn func(msg string)
 	mark := func(s protocol.Symbol) (float64, bool) {
 		if eng == nil {
 			return 0, false
@@ -195,6 +196,11 @@ func run() error {
 				onInactive(kid, scope, n)
 			}
 		},
+		OnAllocWarn: func(msg string) {
+			if onAllocWarn != nil {
+				onAllocWarn(msg)
+			}
+		},
 		Price: qs.Price,
 		Market: func(s protocol.Symbol) sizing.Market {
 			return sizing.Market{LotSize: br.LotSize(s), MinOrderValue: br.MinOrderValue(s)}
@@ -206,6 +212,8 @@ func run() error {
 	if err := eng.Restore(context.Background()); err != nil {
 		return fmt.Errorf("상태 복구 실패: %w", err)
 	}
+	// 자동 배분 — 첫 목표를 받기 전에 오늘 몫을 건다 (그 뒤엔 매일 08:50 점검이 다시 건다).
+	applyAlloc(eng, books, time.Now(), log)
 	// ★ paper 계좌는 메모리라 원장에서 다시 세운다 — 안 하면 재시작마다 열린 로트가 '사라짐' 으로 닫히고
 	//   예수금이 시드로 돌아간다. 모드 대조(엔진 복구)를 통과한 **뒤에** 한다.
 	if pb, ok := br.(*paper.Broker); ok {
@@ -336,6 +344,10 @@ func run() error {
 		alert("inactive:"+book.Key(kid, scope), fmt.Sprintf(
 			"🔕 활성화 안 된 전략의 진입 %d 건을 거절했다 — %s (켜려면 books.json 에 추가)", n, book.Key(kid, scope)))
 	}
+	onAllocWarn = func(msg string) {
+		log.Warn(msg)
+		alert("alloc:"+msg, "⚖️ "+msg)
+	}
 	notifyFill := func(o store.Order, slot string) {
 		if o.Mode == protocol.ModePaper && !cfg.NotifyPaper {
 			return
@@ -380,8 +392,12 @@ func run() error {
 		log.Info("일일 손실 한도", "krw", cfg.DailyLossLimit)
 	}
 	go watchLoss(ctx, st, eng, cfg.Mode, cfg.DailyLossLimit, log, alert)
-	go watchBudget(ctx, br, books.Total(), books.Overbook(), // 장부 시드 합 + 엔진 예산
-		func() []protocol.Position { return eng.Snapshot().Positions }, log, alert)
+	go watchBudget(ctx, br, books.Total(), books.Overbook(), // 장부 시드 합 + 엔진 예산 (자동 배분이면 capital)
+		func() []protocol.Position { return eng.Snapshot().Positions }, log, alert,
+		func() { applyAlloc(eng, books, time.Now(), log) }) // 08:50 — 날이 바뀌었으면 오늘 몫을 다시 건다
+	if books.Alloc().On() {
+		go watchAllocReport(ctx, eng, log, notifier.Send)
+	}
 
 	<-ctx.Done()
 

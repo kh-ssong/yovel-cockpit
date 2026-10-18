@@ -249,6 +249,8 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 		// ★ 조용한 절단 금지.
 		x.d.Log.Warn("주문 상한에 걸려 진입을 잘랐다", "dropped", plan.DroppedEnters)
 	}
+	// 자동 배분 계기판 — 지금 보유(가동률)와 이번 계획에서 한도에 걸린 진입 (docs/allocation.md §4).
+	x.d.Engine.RecordAlloc(cur(), plan.Alloc)
 	return res
 }
 
@@ -594,6 +596,11 @@ func (x *Executor) buyFailed(ctx context.Context, now time.Time, t protocol.Targ
 		// ★ 계좌가 0주라고 했다 — 발행자에게 E_CAPITAL 로 알리고 잠깐 쉬었다 다시 산다(비종결).
 		//   오류로 올리지 않는다: 오버부킹이면 큰 날마다 수십 건이고, 그건 사고가 아니라 설계다.
 		x.d.Engine.NoteShort(t.IntentID, now.Add(shortRetry))
+		ref := 0.0
+		if t.Entry != nil {
+			ref = t.Entry.RefPrice
+		}
+		x.d.Engine.NoteCapitalShort(kid, scope, t.IntentID, qty*ref, now)
 		res.CapitalShort++
 		x.d.Log.Info("계좌 주문가능금액 부족 — E_CAPITAL 로 알리고 대기", "intent_id", t.IntentID,
 			"code", t.Symbol.Code, "qty", qty, "err", err)
