@@ -46,9 +46,18 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=15 -o Serv
 HOST=""
 
 pick_host() {
-  local h
+  local h ip p
   for h in $MAC_SSH ${MAC_SSH_FALLBACK:-}; do
-    if ssh "${SSH_OPTS[@]}" "$h" true 2>/dev/null; then HOST=$h; return 0; fi
+    ip=$(ssh "${SSH_OPTS[@]}" "$h" 'echo $SSH_CONNECTION' 2>/dev/null | awk '{print $3}') || continue
+    [ -n "$ip" ] || continue
+    HOST=$h
+    # ★ 붙은 IP 로 고정한다 — mDNS(.local)는 이 PC 에서 풀렸다 안 풀렸다 해서, 고른 직후 다음 ssh 가
+    #   이름을 못 풀어 start 가 실패한 적이 있다 (2026-10-18). IP 로 안 붙으면(known_hosts 등) 이름 그대로.
+    case "$ip" in *[!0-9.]*) ;; *)
+      case "$h" in *@*) p="${h%@*}@$ip" ;; *) p=$ip ;; esac
+      ssh "${SSH_OPTS[@]}" "$p" true 2>/dev/null && HOST=$p ;;
+    esac
+    return 0
   done
   echo "★ 맥에 못 붙었다: $MAC_SSH ${MAC_SSH_FALLBACK:-}" >&2
   return 1
