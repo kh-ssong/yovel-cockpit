@@ -44,15 +44,24 @@ func (e *Engine) BookStats(ctx context.Context, mode protocol.Mode) ([]BookStat,
 	for _, p := range e.positions {
 		open = append(open, p)
 	}
+	plan := e.alloc
 	e.mu.Unlock()
 
 	books := e.cfg.Books
+	// 자동 배분 장부의 분모는 오늘 몫이다 (seed 를 안 적는다).
+	seedOf := func(name string, seed float64) float64 {
+		if ab, ok := plan.Book(name); ok {
+			return ab.Base
+		}
+		return seed
+	}
 	stats := map[string]*BookStat{}
 	get := func(kid, scope string) *BookStat {
 		name, seed, active := books.Of(kid, scope)
 		if books == nil {
 			name, seed, active = book.Default, e.cfg.EngineBudget, true
 		}
+		seed = seedOf(name, seed)
 		key := name
 		if key == "" {
 			key = "?" + book.Key(kid, scope)
@@ -66,7 +75,7 @@ func (e *Engine) BookStats(ctx context.Context, mode protocol.Mode) ([]BookStat,
 	}
 	// 설정된 장부는 거래가 없어도 보인다 — "안 샀다" 도 성적이다.
 	for _, b := range books.Books() {
-		stats[b.Name] = &BookStat{Name: b.Name, Kid: b.Kid, Scope: b.Scope, Seed: b.Seed, Enabled: b.On()}
+		stats[b.Name] = &BookStat{Name: b.Name, Kid: b.Kid, Scope: b.Scope, Seed: seedOf(b.Name, b.Seed), Enabled: b.On()}
 	}
 
 	for _, p := range open {

@@ -35,7 +35,15 @@ type Book struct {
 	// Scope — 발행 범위. 빈 값은 scope 없이 발행하는 옛 발행자.
 	Scope string `json:"scope"`
 	// Seed — 이 전략에 배정한 돈. 사이징의 분모이자 자본 한도다.
+	// ★ 자동 배분(파일 맨 위 capital — docs/allocation.md)에선 생략한다. 그러면 콕핏이 몫을 계산한다.
+	//   적으면 그 장부는 «고정 장부»라 자동 배분에서 빠진다 (1주 검증·도장 대조용).
 	Seed float64 `json:"seed"`
+	// Share — 자동 배분의 비중 (많이 2 · 보통 1 · 적게 0.5). 생략 = 1. 고정 장부엔 안 쓴다.
+	Share *float64 `json:"share,omitempty"`
+	// Hold — carry(날을 넘겨 든다) · day(당일 청산). 자동 배분에서 몫을 밤 한도에서 받을지(carry),
+	// 낮에 계좌 전체에서 받을지(day) 정한다. 생략 = carry — 밤 몫이 더 작아 안전한 쪽이다.
+	// 목표의 청산 기한과 어긋나면 콕핏이 알린다 (그 장부의 hold 를 고칠 것).
+	Hold string `json:"hold,omitempty"`
 	// Enabled — 이 전략을 돌릴지. 생략하면 켬. 끄면 진입만 막고 청산은 계속한다.
 	Enabled *bool `json:"enabled,omitempty"`
 	// MaxQty — 진입 한 건의 수량 상한 (주·코인 개수). 0 = 없음.
@@ -58,6 +66,52 @@ type Fee struct {
 
 func (b Book) On() bool { return b.Enabled == nil || *b.Enabled }
 
+// 장부의 반 (Book.Hold).
+const (
+	HoldCarry = "carry"
+	HoldDay   = "day"
+)
+
+// HoldOrCarry — 생략한 hold 는 carry 다.
+func (b Book) HoldOrCarry() string {
+	if b.Hold == "" {
+		return HoldCarry
+	}
+	return b.Hold
+}
+
+// ShareOr1 — 생략한 비중은 1 이다.
+func (b Book) ShareOr1() float64 {
+	if b.Share == nil {
+		return 1
+	}
+	return *b.Share
+}
+
+// Fixed — seed 를 직접 적은 장부. 자동 배분에선 몫을 받지 않고 seed 대로 산다.
+func (b Book) Fixed() bool { return b.Seed > 0 }
+
+// Alloc — 자동 배분 설정 (books.json 맨 위 — docs/allocation.md). Capital 0 = 꺼짐 (장부마다 seed).
+type Alloc struct {
+	// Capital — 맡길 돈. 콕핏 보유 합은 이걸 못 넘는다.
+	Capital float64 `json:"capital"`
+	// OvernightPct — 밤 한도 (%). 날을 넘겨 드는 보유 합 ≤ Capital × 이 %.
+	OvernightPct float64 `json:"overnight_pct"`
+	// BorrowX — 한 장부가 자기 몫의 몇 배까지 쓸 수 있나 (남는 돈 빌려 쓰기).
+	BorrowX float64 `json:"borrow_x"`
+	// ReserveTrades — 스윙 예비분 = 밤 장부 건당 × 이 건수 (밤 장부 전체 합).
+	ReserveTrades int `json:"reserve_trades"`
+}
+
+// 자동 배분 기본값 (docs/allocation.md §2).
+const (
+	DefaultOvernightPct  = 70.0 // reflex 스윙 pool 과 같은 숫자
+	DefaultBorrowX       = 2.0
+	DefaultReserveTrades = 10
+)
+
+func (a Alloc) On() bool { return a.Capital > 0 }
+
 // Key — 소스 식별자 문자열 (로그·API 용).
 func Key(kid, scope string) string { return kid + "/" + scope }
 
@@ -70,12 +124,29 @@ type Set struct {
 	overbook bool
 	// paperFees — 이 사용자 계좌의 거래소별 paper 편도 비용 (books.json "paper_fees").
 	paperFees map[string]Fee
+	// alloc — 자동 배분 (books.json "capital" …). 꺼져 있으면 장부마다 seed.
+	alloc Alloc
 }
 
 // New — ★ 한 소스가 두 장부에 걸리면 기동을 거부한다. 어느 돈으로 샀는지 모르는 매수는
 // 장부 대조를 통째로 무효로 만든다.
 func New(books []Book, defaultBudget float64) (*Set, error) {
-	s := &Set{deflt: defaultBudget}
+	return NewAlloc(books, defaultBudget, Alloc{})
+}
+
+// NewAlloc — 자동 배분이 켜져 있으면(a.Capital > 0) seed 를 생략한 장부가 몫을 받는다.
+func NewAlloc(books []Book, defaultBudget float64, a Alloc) (*Set, error) {
+	if a.On() {
+		switch {
+		case a.OvernightPct <= 0 || a.OvernightPct > 100:
+			return nil, fmt.Errorf("overnight_pct %.4g — 0 초과 100 이하여야 한다", a.OvernightPct)
+		case a.BorrowX < 1:
+			return nil, fmt.Errorf("borrow_x %.4g — 1 이상이어야 한다 (1 = 빌려 쓰지 않음)", a.BorrowX)
+		case a.ReserveTrades < 0:
+			return nil, fmt.Errorf("reserve_trades %d — 음수", a.ReserveTrades)
+		}
+	}
+	s := &Set{deflt: defaultBudget, alloc: a}
 	names := map[string]bool{}
 	for i, b := range books {
 		if b.Name == "" || b.Name == Default {
@@ -85,8 +156,17 @@ func New(books []Book, defaultBudget float64) (*Set, error) {
 			return nil, fmt.Errorf("장부 이름 중복: %s", b.Name)
 		}
 		names[b.Name] = true
-		if b.Seed <= 0 {
-			return nil, fmt.Errorf("장부 %s: seed 가 0 이하", b.Name)
+		switch {
+		case b.Seed < 0 || (b.Seed == 0 && !a.On()):
+			return nil, fmt.Errorf("장부 %s: seed 가 0 이하 (seed 를 생략하려면 파일 맨 위에 capital)", b.Name)
+		case b.Share != nil && !a.On():
+			return nil, fmt.Errorf("장부 %s: share 는 자동 배분(capital)에서만 쓴다", b.Name)
+		case b.Share != nil && *b.Share <= 0:
+			return nil, fmt.Errorf("장부 %s: share 가 0 이하 — 끄려면 enabled: false", b.Name)
+		case b.Share != nil && b.Fixed():
+			return nil, fmt.Errorf("장부 %s: seed 를 적은 고정 장부에 share 를 줬다 — 둘 중 하나만", b.Name)
+		case b.Hold != "" && b.Hold != HoldCarry && b.Hold != HoldDay:
+			return nil, fmt.Errorf("장부 %s: hold %q — carry 또는 day", b.Name, b.Hold)
 		}
 		if b.MaxQty < 0 {
 			return nil, fmt.Errorf("장부 %s: max_qty 가 음수", b.Name)
@@ -112,6 +192,14 @@ func New(books []Book, defaultBudget float64) (*Set, error) {
 //	  {"name": "coin",  "kid": "flat6-1", "scope": "scalp/coin",      "seed":  2000000, "enabled": false}
 //	], "overbook": true,
 //	 "paper_fees": {"KRX": {"buy": 0, "sell": 20}, "UPBIT": {"buy": 5, "sell": 5}}}
+//
+// 자동 배분 (docs/allocation.md) — 맡길 돈 하나와 비중만 적고, seed 를 생략한 장부는 콕핏이 몫을 계산한다:
+//
+//	{"capital": 1460000, "overnight_pct": 70,
+//	 "books": [
+//	  {"name": "swing_60m", "kid": "flat6-1", "scope": "kiwoom/swing_60m", "hold": "carry"},
+//	  {"name": "push10",    "kid": "flat6-1", "scope": "kiwoom/push10",    "seed": 300000, "max_qty": 1}
+//	]}
 func Load(path string, defaultBudget float64) (*Set, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -124,11 +212,33 @@ func Load(path string, defaultBudget float64) (*Set, error) {
 		Books     []Book         `json:"books"`
 		Overbook  bool           `json:"overbook"`
 		PaperFees map[string]Fee `json:"paper_fees"`
+		// 자동 배분 — 비면 기본값 (포인터라 «0 을 적었다» 와 «안 적었다» 를 가른다).
+		Capital       float64  `json:"capital"`
+		OvernightPct  *float64 `json:"overnight_pct"`
+		BorrowX       *float64 `json:"borrow_x"`
+		ReserveTrades *int     `json:"reserve_trades"`
 	}
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	s, err := New(f.Books, defaultBudget)
+	a := Alloc{Capital: f.Capital, OvernightPct: DefaultOvernightPct, BorrowX: DefaultBorrowX, ReserveTrades: DefaultReserveTrades}
+	switch {
+	case f.Capital < 0:
+		return nil, fmt.Errorf("%s: capital 이 음수", path)
+	case f.Capital == 0 && (f.OvernightPct != nil || f.BorrowX != nil || f.ReserveTrades != nil):
+		// 자동 배분 설정만 적고 capital 을 빠뜨리면 조용히 옛 방식으로 돈다 — 사용자는 켠 줄 안다.
+		return nil, fmt.Errorf("%s: overnight_pct·borrow_x·reserve_trades 는 capital 과 같이 적어야 한다", path)
+	}
+	if f.OvernightPct != nil {
+		a.OvernightPct = *f.OvernightPct
+	}
+	if f.BorrowX != nil {
+		a.BorrowX = *f.BorrowX
+	}
+	if f.ReserveTrades != nil {
+		a.ReserveTrades = *f.ReserveTrades
+	}
+	s, err := NewAlloc(f.Books, defaultBudget, a)
 	if err != nil {
 		return nil, err
 	}
@@ -163,6 +273,14 @@ func (s *Set) PaperFees() map[string]Fee {
 
 // Overbook — 장부 합 > 계좌가 의도된 설정인가 (예산 점검이 경고하지 않는다).
 func (s *Set) Overbook() bool { return s != nil && s.overbook }
+
+// Alloc — 자동 배분 설정 (꺼져 있으면 Capital 0).
+func (s *Set) Alloc() Alloc {
+	if s == nil {
+		return Alloc{}
+	}
+	return s.alloc
+}
 
 // Of — 소스의 장부. active=false 면 진입 금지 (장부에 없거나 꺼졌다).
 func (s *Set) Of(kid, scope string) (name string, budget float64, active bool) {
@@ -224,9 +342,13 @@ func (s *Set) Books() []Book {
 }
 
 // Total 은 **켜진** 장부 시드 합 (장부가 없으면 엔진 예산) — paper 기본 시드·예산 점검의 기준.
+// 자동 배분이면 맡긴 돈(capital)이다 — 고정 장부도 그 안에서 산다.
 func (s *Set) Total() float64 {
 	if s == nil {
 		return 0
+	}
+	if s.alloc.On() {
+		return s.alloc.Capital
 	}
 	if len(s.books) == 0 {
 		return s.deflt

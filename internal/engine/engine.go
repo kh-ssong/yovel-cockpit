@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kh-ssong/yovel-cockpit/internal/alloc"
 	"github.com/kh-ssong/yovel-cockpit/internal/book"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/reconcile"
@@ -67,6 +68,8 @@ type Config struct {
 	RefMaxDev     float64
 	// CanEnter — (종목, 시각) → 새 진입 가능 여부 (internal/session). nil 이면 안 본다.
 	CanEnter func(protocol.Symbol, time.Time) bool
+	// OnAllocWarn — 자동 배분이 사람에게 알릴 일 (장부 hold 와 목표가 어긋남 등). 비동기로 부른다.
+	OnAllocWarn func(msg string)
 }
 
 type Engine struct {
@@ -109,6 +112,13 @@ type Engine struct {
 	// short — 계좌 주문가능금액이 모자라 못 산 목표 → 다시 시도할 시각 (NoteShort).
 	// 그때까지는 진입을 계획하지 않고 per_intent 에 E_CAPITAL 로 답한다.
 	short map[string]time.Time
+
+	// alloc — 그날의 자동 배분 (docs/allocation.md). nil 이면 장부마다 seed (옛 방식). SetAlloc 이 통째로 바꾼다.
+	alloc *alloc.Plan
+	// meter — 가동률·놓친 신호 (자동 배분일 때만 쓴다).
+	meter *alloc.Meter
+	// lastW — 장부 → 최근 진입 목표의 weight (스윙 예비분의 건당 추정).
+	lastW map[string]float64
 }
 
 type source struct{ kid, scope string }
@@ -140,6 +150,8 @@ func New(cfg Config, now time.Time) *Engine {
 		marks:     map[protocol.Symbol]mark{},
 		targets:   map[source]*sourceTarget{},
 		short:     map[string]time.Time{},
+		meter:     alloc.NewMeter(),
+		lastW:     map[string]float64{},
 	}
 }
 
@@ -231,7 +243,8 @@ func (e *Engine) Apply(raw []byte, now time.Time) protocol.Ack {
 		}
 		e.marksMu.Unlock()
 		// ack 은 **이 소스의** 판정만 싣는다 — 다른 소스의 거절이 섞이면 발행자가 오독한다.
-		ack.PerIntent = e.planSourceLocked(src, now).Acks
+		// 자동 배분의 한도도 지금 보유로 같이 본다 (여기서 걸린 건 계측하지 않는다 — 집행 틱이 센다).
+		ack.PerIntent = e.planSourceLocked(src, now, e.newGateLocked(now)).Acks
 		if e.cfg.OnInactive != nil {
 			n := 0
 			for _, a := range ack.PerIntent {
@@ -509,9 +522,14 @@ func (e *Engine) planLocked(now time.Time) reconcile.Plan {
 		return keys[i].scope < keys[j].scope
 	})
 
+	// 자동 배분의 소스를 가로지르는 한도 (밤 한도·스윙 예비분·맡긴 돈) — 한 Gate 를 모든 소스가 같이 쓴다.
+	e.observeAllocLocked(now)
+	gate := e.newGateLocked(now)
+
 	var plan reconcile.Plan
 	for _, k := range keys {
-		p := e.planSourceLocked(k, now)
+		p := e.planSourceLocked(k, now, gate)
+		plan.Alloc = append(plan.Alloc, p.Alloc...)
 		if p.AsOfBar.After(plan.AsOfBar) {
 			plan.AsOfBar = p.AsOfBar
 		}
@@ -525,6 +543,9 @@ func (e *Engine) planLocked(now time.Time) reconcile.Plan {
 		plan.DroppedEnters += p.DroppedEnters
 		plan.Notes = append(plan.Notes, p.Notes...)
 	}
+	if gate != nil {
+		plan.Alloc = append(plan.Alloc, gate.Events()...)
+	}
 	// 상한은 계좌 전체의 폭주 차단이라 합친 뒤 한 번 더 건다.
 	reconcile.ApplyOrderCap(&plan, e.cfg.MaxOrders)
 	return plan
@@ -532,7 +553,8 @@ func (e *Engine) planLocked(now time.Time) reconcile.Plan {
 
 // planSourceLocked — 한 소스의 목표를 **그 소스가 만든 포지션**하고만 맞춘다.
 // 다른 소스의 포지션은 보지도, 유령으로 신고하지도, 예산으로 세지도 않는다.
-func (e *Engine) planSourceLocked(src source, now time.Time) reconcile.Plan {
+// gate — 자동 배분의 장부 밖 한도 (nil 이면 없음).
+func (e *Engine) planSourceLocked(src source, now time.Time, gate *alloc.Gate) reconcile.Plan {
 	st := e.targets[src]
 	if st == nil {
 		return reconcile.Plan{}
@@ -543,12 +565,16 @@ func (e *Engine) planSourceLocked(src source, now time.Time) reconcile.Plan {
 			mine = append(mine, p)
 		}
 	}
-	_, budget, active := e.cfg.Books.Of(src.kid, src.scope)
+	name, budget, active := e.cfg.Books.Of(src.kid, src.scope)
 	if e.cfg.Books == nil {
 		budget, active = e.cfg.EngineBudget, true
 	}
+	budget, capv, admit, bookName := e.allocOptsLocked(name, budget, gate)
 
 	plan := reconcile.Build(st.it, mine, reconcile.Options{
+		Cap:             capv,
+		Admit:           admit,
+		Book:            bookName,
 		Now:             now,
 		EntryAllowed:    e.entryAllowedLocked(st, now),
 		Paused:          e.paused,

@@ -10,6 +10,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/kh-ssong/yovel-cockpit/internal/alloc"
 	"github.com/kh-ssong/yovel-cockpit/internal/protocol"
 	"github.com/kh-ssong/yovel-cockpit/internal/sizing"
 )
@@ -76,6 +77,9 @@ type Plan struct {
 	// Notes — 지시를 받았지만 집행할 수 없었던 사유 (예: 최초 진입 수량을 모르는 로트의 hold_frac).
 	// ★ 조용히 무시하지 않는다 — 집행기가 오류로 올려 사람에게 보인다.
 	Notes []string `json:"notes,omitempty"`
+	// Alloc — 자동 배분 한도에 걸린 진입들 (docs/allocation.md). 집행기가 계측기로 넘긴다 —
+	// 미리보기(/v1/plan)가 놓친 신호를 세지 않게 계획 안에 실어 둔다.
+	Alloc []alloc.Event `json:"alloc,omitempty"`
 }
 
 // Options 는 계획에 필요한 로컬 사실들.
@@ -103,6 +107,15 @@ type Options struct {
 	//
 	// ★ 소스(kid × scope)마다 Build 를 따로 부른다 — 이 값은 **그 소스의 장부 예산**이다.
 	Budget float64
+	// Cap — 이 장부가 동시에 들 수 있는 돈 (보유 + 이번 진입). 0 이면 Budget 과 같다.
+	// 자동 배분에선 몫 × borrow_x — 건당 크기(Budget × weight)는 그대로 두고 «동시에 더 많이» 를 허락한다.
+	Cap float64
+	// Admit — 장부 밖 한도 (자동 배분의 밤 한도 · 스윙 예비분 · 맡긴 돈 — alloc.Gate). 엔진이 소스들을
+	// 가로질러 계획마다 하나 만든다. 수량을 줄이거나 거절한다 (codes 가 비면 통과). nil 이면 없음.
+	Admit func(t protocol.Target, e EnterOrder, m sizing.Market) (EnterOrder, []protocol.RejectCode)
+	// Book — 장부 이름. 비어 있지 않으면 장부 층에서 걸린 진입(장부 상한·1주 미만)을 Plan.Alloc 에 남긴다
+	// (자동 배분의 «놓친 신호» 계측 — 엔진이 자동 배분일 때만 채운다).
+	Book string
 	// MaxQty — 이 소스(장부)의 진입 한 건 수량 상한 (books.json max_qty, 0 = 없음).
 	MaxQty float64
 	// Inactive — 이 소스는 이 콕핏에서 활성화되지 않았다 → 진입은 E_INACTIVE, 청산은 그대로.
@@ -270,7 +283,17 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 				plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", []protocol.RejectCode{protocol.CodeCapital}))
 				continue
 			}
-			enter, codes := buildEnter(t, opt, opt.Budget-spent)
+			limit := opt.Budget
+			if opt.Cap > 0 {
+				limit = opt.Cap
+			}
+			enter, codes, why := buildEnter(t, opt, limit-spent)
+			if why != "" && opt.Book != "" {
+				plan.Alloc = append(plan.Alloc, alloc.Event{Book: opt.Book, IntentID: t.IntentID, Reason: why, KRW: enter.Notional})
+			}
+			if len(codes) == 0 && opt.Admit != nil {
+				enter, codes = opt.Admit(t, enter, opt.market(t.Symbol))
+			}
 			if len(codes) > 0 {
 				plan.Acks = append(plan.Acks, ack(t.IntentID, "rejected", codes))
 				continue
@@ -412,7 +435,10 @@ func committed(actual []protocol.Position, opt Options) float64 {
 // ★ 남은 예산을 넘으면 **거절하지 축소하지 않는다.** 줄여서 사면 그건 엔진이 지시한 적 없는
 // 비중이고 (§7 "조용히 1주" 금지와 같은 병), 사용자는 자기가 무엇을 못 샀는지도 모르게 된다.
 // 거절은 ack{E_CAPITAL} 로 남으므로 화면에서 보인다.
-func buildEnter(t protocol.Target, opt Options, remaining float64) (EnterOrder, []protocol.RejectCode) {
+//
+// why — 장부 층에서 돈 때문에 걸렸으면 그 사유 (자동 배분 계측용): alloc.ReasonTooSmall(건당이 1단위 값보다 작다)
+// · alloc.ReasonBookCap(장부 상한). 그때 돌려주는 EnterOrder.Notional 은 원래 사려던 금액이다.
+func buildEnter(t protocol.Target, opt Options, remaining float64) (EnterOrder, []protocol.RejectCode, string) {
 	// ★ 신호를 낸 쪽이 기준가를 실어 보냈으면 그걸 쓴다. 여기서 다시 조회하면
 	// 신호를 낸 가격과 사이징한 가격이 갈리고, 종목 수만큼 왕복이 늘어난다.
 	var price float64
@@ -420,11 +446,11 @@ func buildEnter(t protocol.Target, opt Options, remaining float64) (EnterOrder, 
 		price = t.Entry.RefPrice
 	} else {
 		if opt.Price == nil {
-			return EnterOrder{}, []protocol.RejectCode{protocol.CodeSymbol}
+			return EnterOrder{}, []protocol.RejectCode{protocol.CodeSymbol}, ""
 		}
 		p, ok := opt.Price(t.Symbol)
 		if !ok || p <= 0 {
-			return EnterOrder{}, []protocol.RejectCode{protocol.CodeSymbol}
+			return EnterOrder{}, []protocol.RejectCode{protocol.CodeSymbol}, ""
 		}
 		price = p
 	}
@@ -435,11 +461,15 @@ func buildEnter(t protocol.Target, opt Options, remaining float64) (EnterOrder, 
 	m := opt.market(t.Symbol)
 	res := sizing.Cap(sizing.Shares(t.Weight, opt.Budget, price, m), opt.MaxQty, opt.Budget, price, m)
 	if len(res.Codes) > 0 {
-		return EnterOrder{}, res.Codes
+		why := ""
+		if len(res.Codes) == 1 && res.Codes[0] == protocol.CodeCapital {
+			why = alloc.ReasonTooSmall
+		}
+		return EnterOrder{Notional: t.Weight * opt.Budget}, res.Codes, why
 	}
 	// 부동소수 오차로 마지막 한 건이 억울하게 잘리지 않도록 아주 작은 여유만 둔다.
 	if res.Notional-remaining > 1e-6 {
-		return EnterOrder{}, []protocol.RejectCode{protocol.CodeCapital}
+		return EnterOrder{Notional: res.Notional}, []protocol.RejectCode{protocol.CodeCapital}, alloc.ReasonBookCap
 	}
 	return EnterOrder{
 		Target:         t,
@@ -447,7 +477,7 @@ func buildEnter(t protocol.Target, opt Options, remaining float64) (EnterOrder, 
 		Price:          price,
 		Notional:       res.Notional,
 		RealizedWeight: res.RealizedWeight,
-	}, nil
+	}, nil, ""
 }
 
 func ack(id, status string, codes []protocol.RejectCode) protocol.AckIntent {
