@@ -31,6 +31,7 @@
 #
 # ★ start 는 그 인스턴스의 키움 키가 reflex 의 키와 같으면 거부한다 — 키당 토큰 1 이라 서로를 끊는다.
 #   reflex 는 국내봇(kiwoom)과 미장봇(us)이 **같은 키**를 쓴다 (2026-10-15 실측) → 둘 다 내려야 한다.
+#   flat6 설정(~/flat6/.env* — 피드 주 키·추가 키·캐시 키)에 같은 키가 있어도 거부한다 (켜져 있든 아니든).
 # ★ live 는 install·start·restart 때 COCKPIT_LIVE_OK=1 을 명시해야 한다 (실주문).
 # ★ 옛 단일 인스턴스(라벨 com.yovel.cockpit · ~/cockpit/install.env)는 같은 모드의 restart·stop 이 넘겨받는다.
 # ★ 기계를 옮길 땐 옛 기계의 자동 시작부터 끈다 (docs/ops.md).
@@ -286,6 +287,19 @@ if [ -n "$ck" ] && [ "$ck" = "$rk" ] && loaded com.reflex.supervisor && echo ",$
   echo "  국내봇(kiwoom)·미장봇(us)을 supervisor 에서 빼고 다시. 키당 토큰 1 이라 서로를 끊는다."
   exit 1
 fi
+# ★ flat6 설정(~/flat6/.env*)에 같은 키가 있어도 거부 — 피드가 그 키의 WS·토큰을 쥔다. 지금 꺼져 있어도
+#   다시 뜨면 서로를 끊으니 설정에서 빠져야 한다. 추가 키(EXTRA_KEYS = 앱키:시크릿,…)는 앱키만 본다.
+for f in "$HOME"/flat6/.env*; do
+  [ -n "$ck" ] && [ -f "$f" ] || continue
+  for k in FLAT6_KIWOOM_APP_KEY FLAT6_CACHE_KIWOOM_APP_KEY FLAT6_KIWOOM_EXTRA_KEYS; do
+    envval "$k" "$f" | tr , '\n' | cut -d: -f1 | tr -d " \t\r" | while IFS= read -r v; do
+      [ -n "$v" ] && [ "$(printf %s "$v" | fp)" = "$ck" ] && echo x
+    done | grep -q x || continue
+    echo "★ 거부 — flat6 이 같은 키움 키를 쓴다 ($(basename "$f") $k)."
+    echo "  flat6 을 다른 키로 옮기고(그 키의 옛 토큰 파일도 정리) 다시. 키당 토큰 1 이라 서로를 끊는다."
+    exit 1
+  done
+done
 
 sha=$(basename "$(readlink "$C/bin")")
 [ -x "$C/releases/$sha/cockpitd" ] || { echo "★ bin 이 가리키는 release 가 없다 — push"; exit 1; }
