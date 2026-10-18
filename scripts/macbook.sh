@@ -31,6 +31,8 @@
 #
 # ★ start 는 그 인스턴스의 키움 키가 reflex 의 키와 같으면 거부한다 — 키당 토큰 1 이라 서로를 끊는다.
 #   reflex 는 국내봇(kiwoom)과 미장봇(us)이 **같은 키**를 쓴다 (2026-10-15 실측) → 둘 다 내려야 한다.
+#   flat6 설정(~/flat6/.env* — 피드 주 키·추가 키·캐시 키)에 같은 키가 있어도 거부한다 (켜져 있든 아니든).
+#   이 PC 의 flat6 설정(LOCAL_KIWOOM_ENVS, 기본 /c/flat6/app/.env* /c/flat6/feed/*.env)도 지문으로 본다 — 키는 기계를 안 가린다.
 # ★ live 는 install·start·restart 때 COCKPIT_LIVE_OK=1 을 명시해야 한다 (실주문).
 # ★ 옛 단일 인스턴스(라벨 com.yovel.cockpit · ~/cockpit/install.env)는 같은 모드의 restart·stop 이 넘겨받는다.
 # ★ 기계를 옮길 땐 옛 기계의 자동 시작부터 끈다 (docs/ops.md).
@@ -69,6 +71,24 @@ live_ok() {
   fi
 }
 default_port() { if [ "$1" = live ]; then echo 7738; else echo 7737; fi; }
+
+# 이 PC 의 flat6 설정 속 키움 앱키 지문 (지문@파일,…) — start 가 맥 인스턴스의 키와 비교한다 (값은 안 보낸다).
+# 키는 기계를 가리지 않는다 — PC 수집기와 맥 콕핏이 같은 키면 서로의 토큰을 끊는다. .env.macbook 에서 바꿀 수 있다.
+LOCAL_KIWOOM_ENVS=${LOCAL_KIWOOM_ENVS:-/c/flat6/app/.env* /c/flat6/feed/*.env}
+local_key_fps() {
+  local f k v out=""
+  # shellcheck disable=SC2086
+  for f in $LOCAL_KIWOOM_ENVS; do
+    case "$f" in *.example) continue ;; esac
+    [ -f "$f" ] || continue
+    for k in FLAT6_KIWOOM_APP_KEY FLAT6_CACHE_KIWOOM_APP_KEY FLAT6_KIWOOM_EXTRA_KEYS; do
+      while IFS= read -r v; do
+        [ -n "$v" ] && out="$out$(printf %s "$v" | sha256sum | cut -c1-16)@$(basename "$f"),"
+      done < <(grep -E "^$k=" "$f" | tail -1 | cut -d= -f2- | tr -d "\"'" | tr , '\n' | cut -d: -f1 | tr -d " \t\r")
+    done
+  done
+  echo "$out"
+}
 
 # 맥 쪽 스크립트 머리에 붙는 공통 함수.
 # shellcheck disable=SC2016
@@ -261,7 +281,7 @@ EOF
 # $1 = start | restart · $2 = 모드
 remote_start() {
   { printf '%s\n' "$REMOTE_LIB"; cat <<'EOF'
-op=$1; m=$2; D="$C/$m"; L=$(label "$m"); P="$LA/$L.plist"
+op=$1; m=$2; lk=${3:-}; D="$C/$m"; L=$(label "$m"); P="$LA/$L.plist"
 [ -f "$D/launchd.plist" ] || { echo "★ 먼저 install $m"; exit 1; }
 . "$D/install.env"
 if loaded "$L" || { [ "$(old_mode)" = "$m" ] && loaded "$OLD"; }; then
@@ -286,6 +306,26 @@ if [ -n "$ck" ] && [ "$ck" = "$rk" ] && loaded com.reflex.supervisor && echo ",$
   echo "  국내봇(kiwoom)·미장봇(us)을 supervisor 에서 빼고 다시. 키당 토큰 1 이라 서로를 끊는다."
   exit 1
 fi
+# ★ flat6 설정(~/flat6/.env*)에 같은 키가 있어도 거부 — 피드가 그 키의 WS·토큰을 쥔다. 지금 꺼져 있어도
+#   다시 뜨면 서로를 끊으니 설정에서 빠져야 한다. 추가 키(EXTRA_KEYS = 앱키:시크릿,…)는 앱키만 본다.
+for f in "$HOME"/flat6/.env*; do
+  [ -n "$ck" ] && [ -f "$f" ] || continue
+  for k in FLAT6_KIWOOM_APP_KEY FLAT6_CACHE_KIWOOM_APP_KEY FLAT6_KIWOOM_EXTRA_KEYS; do
+    envval "$k" "$f" | tr , '\n' | cut -d: -f1 | tr -d " \t\r" | while IFS= read -r v; do
+      [ -n "$v" ] && [ "$(printf %s "$v" | fp)" = "$ck" ] && echo x
+    done | grep -q x || continue
+    echo "★ 거부 — flat6 이 같은 키움 키를 쓴다 ($(basename "$f") $k)."
+    echo "  flat6 을 다른 키로 옮기고(그 키의 옛 토큰 파일도 정리) 다시. 키당 토큰 1 이라 서로를 끊는다."
+    exit 1
+  done
+done
+# 이 PC 의 flat6 설정도 (local_key_fps 가 지문만 넘긴다)
+for pair in $(printf %s "$lk" | tr , ' '); do
+  [ -n "$ck" ] && [ "${pair%%@*}" = "$ck" ] || continue
+  echo "★ 거부 — PC 의 flat6 설정(${pair#*@})에 같은 키움 키가 있다. 키는 기계를 가리지 않는다."
+  echo "  그쪽을 다른 키로 옮기고(옛 토큰 파일도 정리) 다시."
+  exit 1
+done
 
 sha=$(basename "$(readlink "$C/bin")")
 [ -x "$C/releases/$sha/cockpitd" ] || { echo "★ bin 이 가리키는 release 가 없다 — push"; exit 1; }
@@ -301,7 +341,7 @@ done
 if ! echo "$h" | grep -q '"ok":true'; then echo "★ 40초 안에 안 떴다 — 로그:"; tail -5 "$C/logs/cockpit-$m.log"; exit 1; fi
 echo "켜짐 ($m · $L · 포트 $PORT · releases/$sha) — $h"
 EOF
-  } | rsh "bash -s -- $1 $2"
+  } | rsh "bash -s -- $1 $2 ${3:-}"
 }
 
 cmd_stop() {
@@ -400,7 +440,7 @@ case "${1:-}" in
   smoke) cmd_smoke ;;
   push) cmd_push ;;
   install) shift; cmd_install "$@" ;;
-  start|restart) need_mode "${2:-}"; live_ok "$2"; pick_host; remote_start "$1" "$2" ;;
+  start|restart) need_mode "${2:-}"; live_ok "$2"; pick_host; remote_start "$1" "$2" "$(local_key_fps)" ;;
   stop) need_mode "${2:-}"; cmd_stop "$2" ;;
   status) [ -z "${2:-}" ] || need_mode "$2"; cmd_status "${2:-}" ;;
   tunnel) cmd_tunnel "${2:-paper}" ;;
