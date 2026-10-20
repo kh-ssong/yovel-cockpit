@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/kh-ssong/yovel-cockpit/internal/broker"
@@ -82,6 +83,25 @@ type Executor struct {
 	// expired — 진입 마감이 지나 원장에 «안 냄» 을 남긴 intent. 목표가 스냅샷에 남아 있는 동안
 	// 매 틱 같은 판정이 반복되므로 기록·경고는 한 번만 (원장 행 id 도 고정이라 재시작해도 한 행).
 	expired map[string]struct{}
+	// placed — 이번 틱에 내고 아직 한 번도 체결을 안 물어본 주문번호. 주문을 **다 낸 뒤** 한꺼번에 묻는다
+	// (pollPlaced) — 장부 여럿이 같은 틱에 사면 둘째 장부가 첫째의 체결 확인을 기다리지 않게 (2026-10-20 실측 +0.25초).
+	placed []string
+	// tickStart — 이번 틱이 시작된 벽시계 (주문 시간 로그의 기준점).
+	tickStart time.Time
+	// timings — 이번 틱에 낸 주문의 단계별 시간. 틱 끝에 몰아서 남긴다 (로그 쓰기가 주문 사이에 끼지 않게).
+	timings []orderTiming
+
+	// holdings — 마지막으로 성공한 잔고 대조의 보유 (Holdings). /v1/state 의 계좌 값이 키움을 또 부르지 않게.
+	holdMu     sync.Mutex
+	holdings   []broker.Holding
+	holdingsAt time.Time
+}
+
+// Holdings — 마지막 잔고 대조가 받은 보유와 그 시각 (없으면 zero time). HTTP 고루틴에서 불러도 된다.
+func (x *Executor) Holdings() ([]broker.Holding, time.Time) {
+	x.holdMu.Lock()
+	defer x.holdMu.Unlock()
+	return append([]broker.Holding(nil), x.holdings...), x.holdingsAt
 }
 
 // syncBackoff — 잔고 조회가 실패한 뒤 대조를 쉬는 시간.
@@ -141,10 +161,24 @@ type limitSettler interface {
 // Tick 은 한 번 돌린다. ★ 한 종목이 실패해도 나머지는 계속 간다 —
 // 09:00 에 한 종목의 거부가 전체 집행을 막으면 그날 매매가 통째로 증발한다.
 func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
+	return x.tick(ctx, now, true)
+}
+
+// TickWoken — 목표가 도착해 깨운 틱. 잔고 대조(syncPositions)만 건너뛰고 나머지는 Tick 과 같다.
+//
+// ★ 왜 (2026-10-20 실측): 목표는 발행자 여럿이 초당 몇 번씩 보내고 그때마다 틱이 돈다. 그 틱마다
+// 잔고(kt00005)를 물으면 API 별 간격(250ms)에 걸려 주문이 그 뒤로 밀린다 — 진입이 1초만 늦어도
+// 우위가 사라지는 전략이 있다. 대조는 TP 체결·수동 매도를 찾는 일이라 주기 틱(ReconcileInterval)이면 된다.
+func (x *Executor) TickWoken(ctx context.Context, now time.Time) Result {
+	return x.tick(ctx, now, false)
+}
+
+func (x *Executor) tick(ctx context.Context, now time.Time, withSync bool) Result {
 	var res Result
 	// ★ 틱 안에서 시간이 흐른다 — 잔고 대조·stop 감시가 몇 초를 먹으면 now 는 이미 과거다.
 	//   계획과 진입은 그때그때 시각으로 한다. now 는 호출자의 시계(테스트는 가상 시계)라 벽시계 경과만 더한다.
 	wall := time.Now()
+	x.tickStart = wall
 	cur := func() time.Time { return now.Add(time.Since(wall)) }
 
 	// 장 밖 처리 — 점검 시간엔 브로커를 아예 부르지 않고(토큰 발급이 엉뚱한 페이지로 간다),
@@ -177,7 +211,9 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 	// 장이 끝났으면 KRX 당일 TP 를 정산하고 지운다 (날 넘겨 드는 로트 — tp_day.go).
 	x.expireDayTPs(ctx, now, &res)
 
-	x.syncPositions(ctx, now, &res)
+	if withSync {
+		x.syncPositions(ctx, now, &res)
+	}
 
 	// ⓪ 로컬 청산 층 — 신호원이 죽어도 도는 데드맨 (protocol.md §8 의 2층).
 	//   ★ 계획보다 먼저 본다. 여기서 판 포지션은 이번 틱의 계획에서 다시 팔지 않는다.
@@ -195,9 +231,11 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 		if sold[e.Position.IntentID] {
 			continue
 		}
-		x.doSell(ctx, now, e.Position, e.Qty, e.Reason, &res)
+		x.doSell(ctx, now, e.Position, e.Qty, e.Reason, e.RecvAt, &res)
 		sold[e.Position.IntentID] = true
 	}
+	// 청산을 다 낸 뒤에 체결을 묻는다 — 진입 계획 전에 확정해 둔다 (예전처럼 같은 틱 안).
+	x.pollPlaced(ctx, cur(), &res)
 
 	// ② stop 갱신 — 브로커에 낼 주문이 아니라 우리가 기억할 숫자다.
 	// ★ 이번 틱에 팔았거나 줄인 로트는 건너뛴다 — 계획의 포지션은 **매도 전 수량**이라, 그걸로
@@ -242,8 +280,9 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 
 	// ④ 진입은 마지막. 시각은 건마다 다시 잰다 (앞선 진입도 시간을 먹는다).
 	for _, e := range plan.Enters {
-		x.doEnter(ctx, cur(), plan.AsOfBar, e.Target, e.Qty, e.Price, e.Kid, e.Scope, &res)
+		x.doEnter(ctx, cur(), plan.AsOfBar, e.Target, e.Qty, e.Price, e.Kid, e.Scope, e.RecvAt, &res)
 	}
+	x.pollPlaced(ctx, cur(), &res)
 
 	if plan.DroppedEnters > 0 {
 		// ★ 조용한 절단 금지.
@@ -251,6 +290,7 @@ func (x *Executor) Tick(ctx context.Context, now time.Time) Result {
 	}
 	// 자동 배분 계기판 — 지금 보유(가동률)와 이번 계획에서 한도에 걸린 진입 (docs/allocation.md §4).
 	x.d.Engine.RecordAlloc(cur(), plan.Alloc)
+	x.logTimings()
 	return res
 }
 
@@ -269,6 +309,9 @@ func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result
 		res.fail("브로커 포지션 조회: %v (대조를 %v 쉰다)", err, syncBackoff)
 		return // ★ 조회 실패를 "포지션 없음" 으로 읽지 않는다. 그러면 전부 종결시켜 버린다.
 	}
+	x.holdMu.Lock()
+	x.holdings, x.holdingsAt = append(x.holdings[:0:0], holdings...), time.Now()
+	x.holdMu.Unlock()
 	byCode := map[string]broker.Holding{}
 	for _, h := range holdings {
 		byCode[h.Symbol.Code] = h
@@ -348,7 +391,62 @@ func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result
 }
 
 func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Position, reason string, res *Result) {
-	x.doSell(ctx, now, pos, pos.Qty, reason, res)
+	x.doSell(ctx, now, pos, pos.Qty, reason, time.Time{}, res)
+}
+
+// pollPlaced — 이번 틱에 낸 주문들의 체결을 한 번씩 묻는다 (대개 바로 체결된다 — 같은 틱에 확정).
+func (x *Executor) pollPlaced(ctx context.Context, now time.Time, res *Result) {
+	for _, id := range x.placed {
+		x.pollOne(ctx, now, x.work[id], res)
+	}
+	x.placed = x.placed[:0]
+}
+
+// orderTiming — 주문 하나의 단계별 시각 (logTimings 가 ms 로 남긴다).
+type orderTiming struct {
+	side, intentID, scope, orderID string
+	sym                            protocol.Symbol
+	recvAt, tickStart, start, call time.Time
+	submitted, acked               time.Time
+}
+
+func (x *Executor) noteTiming(side, intentID, scope string, sym protocol.Symbol, orderID string,
+	recvAt, start, call time.Time, s broker.Submitted, acked time.Time) {
+	x.timings = append(x.timings, orderTiming{side: side, intentID: intentID, scope: scope, orderID: orderID,
+		sym: sym, recvAt: recvAt, tickStart: x.tickStart, start: start, call: call,
+		submitted: s.SubmittedAt, acked: acked})
+}
+
+// timingMaxSpan — 이보다 긴 구간은 «모름»(−1)으로 남긴다. 시계가 섞였을 때(테스트의 가상 시계 등)
+// 터무니없는 숫자가 진짜처럼 보이지 않게. 장중 한 번의 대기로는 넘을 수 없는 길이다.
+const timingMaxSpan = 6 * time.Hour
+
+// logTimings — 이번 틱에 낸 주문마다 단계별 소요 시간 (ms, 모르면 −1). 지연이 어디서 생기는지 가르는 계측.
+//
+//	recv_to_tick  목표 도착 → 그 목표를 집행한 틱 시작 (앞 틱이 안 끝나 기다린 시간)
+//	tick_to_order 틱 시작 → 이 주문 처리 시작 (진행 중 주문 확인·잔고 대조·계획·앞선 주문)
+//	pre           주문 처리 시작 → 브로커 호출 직전 (종목 상태·TP 취소·원장 기록)
+//	buyable       브로커 호출 → 주문 REST 직전 (매수: 주문가능수량 조회)
+//	rtt           주문 REST 왕복 (주문번호 받기까지)
+func (x *Executor) logTimings() {
+	ms := func(a, b time.Time) int64 {
+		if a.IsZero() || b.IsZero() || b.Before(a) || b.Sub(a) > timingMaxSpan {
+			return -1
+		}
+		return b.Sub(a).Milliseconds()
+	}
+	for _, o := range x.timings {
+		buyable, rtt := int64(-1), int64(-1)
+		// SubmittedAt 은 브로커 시계다 (테스트는 가상 시계) — 벽시계 구간 안에 있을 때만 쪼갠다.
+		if sub := o.submitted; !sub.Before(o.call) && !sub.After(o.acked) {
+			buyable, rtt = ms(o.call, sub), ms(sub, o.acked)
+		}
+		x.d.Log.Info("주문 시간", "side", o.side, "scope", o.scope, "code", o.sym.Code, "intent", o.intentID,
+			"order", o.orderID, "recv_to_tick", ms(o.recvAt, o.tickStart), "tick_to_order", ms(o.tickStart, o.start),
+			"pre", ms(o.start, o.call), "buyable", buyable, "rtt", rtt,
+			"submit", ms(o.call, o.acked), "recv_to_ack", ms(o.recvAt, o.acked))
+	}
+	x.timings = x.timings[:0]
 }
 
 // doSell — 로트에서 qty 만큼 판다. qty 가 로트 전량이면 청산, 아니면 분할매도(hold_frac).
@@ -356,7 +454,8 @@ func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Posit
 // ★ 실브로커(Submitter)는 **내고 바로 돌아온다** — 체결은 진행 중 주문으로 추적한다(orders.go).
 // 동시호가·VI 중엔 체결이 늦게 오는 게 정상이라, 기다리느라 루프를 막거나 시간으로 취소하지 않는다.
 func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Position, qty float64,
-	reason string, res *Result) {
+	reason string, recvAt time.Time, res *Result) {
+	start := time.Now()
 	if qty <= 0 || qty > pos.Qty {
 		qty = pos.Qty
 	}
@@ -392,7 +491,9 @@ func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Posit
 		}
 		// 청산은 기록이 실패해도 낸다 — 청산 실패는 손실 노출이다 (journal 이 크게 알린다).
 		temp, _ := x.journal(ctx, w, res)
+		call := time.Now()
 		s, err := sub.SubmitSell(ctx, req)
+		acked := time.Now()
 		if err != nil {
 			x.unjournal(ctx, temp, now, res)
 			x.sellFailed(ctx, now, pos, reason, err, res)
@@ -400,7 +501,8 @@ func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Posit
 		}
 		w.OrderID, w.Qty, w.RefPrice, w.SubmittedAt = s.OrderID, s.Qty, s.RefPrice, s.SubmittedAt
 		x.track(ctx, temp, w, res)
-		x.pollOne(ctx, now, x.work[w.OrderID], res) // 대개 바로 체결된다 — 같은 틱에 확정
+		x.noteTiming("sell", pos.IntentID, pos.Scope, pos.Symbol, s.OrderID, recvAt, start, call, s, acked)
+		x.placed = append(x.placed, w.OrderID) // 체결 확인은 이번 틱 주문을 다 낸 뒤 (pollPlaced)
 		return
 	}
 
@@ -482,7 +584,8 @@ func (x *Executor) finishSell(ctx context.Context, now time.Time, pos protocol.P
 }
 
 func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protocol.Target,
-	qty, ref float64, kid, scope string, res *Result) {
+	qty, ref float64, kid, scope string, recvAt time.Time, res *Result) {
+	start := time.Now()
 	if x.isWorking(t.IntentID) {
 		return // 이미 낸 진입이 진행 중
 	}
@@ -529,7 +632,9 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 		if !ok {
 			return // ★ 기록 없이는 사지 않는다 — 보내는 도중 죽으면 재시작 뒤 같은 목표로 또 산다
 		}
+		call := time.Now()
 		s, err := sub.SubmitBuy(ctx, req)
+		acked := time.Now()
 		if err != nil {
 			x.unjournal(ctx, temp, now, res)
 			x.buyFailed(ctx, now, t, qty, kid, scope, s.OrderID, err, res)
@@ -538,7 +643,9 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 		w.OrderID, w.Qty, w.RefPrice, w.SubmittedAt = s.OrderID, s.Qty, s.RefPrice, s.SubmittedAt
 		x.track(ctx, temp, w, res)
 		x.pendingLot(w)
-		x.pollOne(ctx, now, x.work[w.OrderID], res) // 대개 바로 체결된다 — 같은 틱에 확정
+		x.noteTiming("buy", t.IntentID, scope, t.Symbol, s.OrderID, recvAt, start, call, s, acked)
+		// ★ 체결 확인은 이번 틱 진입을 **다 낸 뒤** (pollPlaced) — 장부 여럿이 같이 사면 둘째가 첫째를 기다리지 않게.
+		x.placed = append(x.placed, w.OrderID)
 		return
 	}
 

@@ -27,6 +27,8 @@ type EnterOrder struct {
 	Notional float64         `json:"notional"`
 	// RealizedWeight — whole-share 내림 후 실제 비중 (의도와 다를 수 있다).
 	RealizedWeight float64 `json:"realized_weight"`
+	// RecvAt — 이 진입 목표가 콕핏에 처음 도착한 시각 (엔진이 채운다, 없으면 0). 지연 계측용.
+	RecvAt time.Time `json:"recv_at,omitempty"`
 }
 
 type ExitOrder struct {
@@ -34,6 +36,8 @@ type ExitOrder struct {
 	Reason   string            `json:"reason"` // flat | derisk | reduce
 	// Qty — 팔 수량. 0 이면 로트 전량. 분할매도(hold_frac)만 0 이 아니다.
 	Qty float64 `json:"qty,omitempty"`
+	// RecvAt — flat 목표가 콕핏에 처음 도착한 시각 (엔진이 채운다, flat 이 아닌 청산은 0). 지연 계측용.
+	RecvAt time.Time `json:"recv_at,omitempty"`
 }
 
 type StopUpdate struct {
