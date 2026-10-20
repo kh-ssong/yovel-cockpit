@@ -128,7 +128,12 @@ type sourceTarget struct {
 	seq uint64
 	// entryOK — 마지막 봉투가 진입까지 허용했는가 (만료 여부).
 	entryOK bool
+	// seen — 목표(intent·want)가 **처음** 도착한 시각. 같은 목표가 mark 갱신으로 5초마다 다시 와도
+	// 처음 시각을 유지한다 — 집행 지연(도착 → 주문)을 재는 기준점이다. 스냅샷에서 빠지면 같이 지워진다.
+	seen map[string]time.Time
 }
+
+func seenKey(intentID string, want protocol.Want) string { return intentID + "|" + string(want) }
 
 func sourceOf(p protocol.Position) source { return source{p.Kid, p.Scope} }
 
@@ -223,7 +228,20 @@ func (e *Engine) Apply(raw []byte, now time.Time) protocol.Ack {
 		if adm.Env.Sig != nil {
 			src.kid = adm.Env.Sig.Kid
 		}
-		e.targets[src] = &sourceTarget{it: it, seq: ack.RefSeq, entryOK: adm.EntryAllowed}
+		seen := make(map[string]time.Time, len(it.Targets))
+		var prev map[string]time.Time
+		if old := e.targets[src]; old != nil {
+			prev = old.seen
+		}
+		for _, t := range it.Targets {
+			k := seenKey(t.IntentID, t.Want)
+			if at, ok := prev[k]; ok {
+				seen[k] = at
+			} else {
+				seen[k] = now
+			}
+		}
+		e.targets[src] = &sourceTarget{it: it, seq: ack.RefSeq, entryOK: adm.EntryAllowed, seen: seen}
 		if e.cfg.Store != nil {
 			// ★ 재시작 뒤에도 이 seq 아래는 받지 않는다 (protocol.Guard.Restore).
 			_ = e.cfg.Store.SaveSeq(context.Background(),
@@ -597,6 +615,10 @@ func (e *Engine) planSourceLocked(src source, now time.Time, gate *alloc.Gate) r
 	})
 	for i := range plan.Enters {
 		plan.Enters[i].Kid, plan.Enters[i].Scope = src.kid, src.scope
+		plan.Enters[i].RecvAt = st.seen[seenKey(plan.Enters[i].Target.IntentID, protocol.WantOpen)]
+	}
+	for i := range plan.Exits {
+		plan.Exits[i].RecvAt = st.seen[seenKey(plan.Exits[i].Position.IntentID, protocol.WantFlat)]
 	}
 	return plan
 }

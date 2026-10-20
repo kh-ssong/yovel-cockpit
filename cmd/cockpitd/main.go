@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -236,6 +237,15 @@ func run() error {
 		ui = webui.Handler(webui.Boot{Token: token, Mode: string(cfg.Mode)})
 	}
 
+	// held — 집행기의 마지막 잔고 대조 보유 (/v1/state 계좌 값용). 서버가 집행기보다 먼저 뜨므로 나중에 채운다.
+	var execRef atomic.Pointer[executor.Executor]
+	held := func() ([]broker.Holding, time.Time) {
+		if x := execRef.Load(); x != nil {
+			return x.Holdings()
+		}
+		return nil, time.Time{}
+	}
+
 	srv := httpapi.New(httpapi.Options{
 		Port:      cfg.Port,
 		Token:     token,
@@ -249,7 +259,7 @@ func run() error {
 			}
 		},
 		UI:      ui,
-		Account: accountProvider(br, qs.Price, log),
+		Account: accountProvider(br, qs.Price, held, log),
 		Lots: func(ctx context.Context) (any, error) {
 			ls, gs, err := lotsOf(ctx, eng, qs.Price, cfg.Mode)
 			if err != nil {
@@ -372,6 +382,7 @@ func run() error {
 		RefMaxDev:        cfg.RefMaxDev,
 		Observe:          qs.Put,
 	})
+	execRef.Store(exec)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -526,10 +537,12 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 	var lastBlind time.Time
 
 	for {
+		woken := false
 		select {
 		case <-ctx.Done():
 			return
-		case <-wake: // 목표 도착 — 틱을 기다리지 않는다
+		case <-wake: // 목표 도착 — 틱을 기다리지 않는다 (잔고 대조는 주기 틱이 한다)
+			woken = true
 		case <-t.C:
 		case <-fast.C:
 			if !exec.HasWorking() {
@@ -551,7 +564,12 @@ func runLoop(ctx context.Context, exec *executor.Executor, interval time.Duratio
 			continue
 		}
 
-		res := exec.Tick(ctx, time.Now().UTC())
+		var res executor.Result
+		if woken {
+			res = exec.TickWoken(ctx, time.Now().UTC())
+		} else {
+			res = exec.Tick(ctx, time.Now().UTC())
+		}
 		live.mark(exec)
 
 		// ★ stop 을 못 지키는 상태(Blind)는 조용히 두지 않되, 5초마다 찍지도 않는다 — 1분에 한 번.
@@ -654,41 +672,85 @@ func lotsOf(ctx context.Context, eng *engine.Engine, price func(protocol.Symbol)
 // ★ 평가금액에 현재가를 못 구하면 **평단으로 대신 채우고 그 사실을 센다**(`stale_holdings`).
 // 그러면 Equity 가 실제와 다른데, 그걸 조용히 두면 손익 그래프가 조용히 틀린다.
 func accountProvider(br broker.Broker, price func(protocol.Symbol) (float64, bool),
-	log *slog.Logger) func(context.Context) *protocol.Account {
-	// ★ 짧게 기억한다 — 발행자(Desk)마다 2초에 한 번 /v1/state 를 부르고, 한 번에 잔고를 두 번 묻는다.
-	//   몰림 중엔 그 조회가 진입 주문과 같은 한도를 먹는다 (몰림 재생 2026-10-15).
+	held func() ([]broker.Holding, time.Time), log *slog.Logger) func(context.Context) *protocol.Account {
+	return newAccountProvider(br, price, held, log, accountCacheTTL)
+}
+
+func newAccountProvider(br broker.Broker, price func(protocol.Symbol) (float64, bool),
+	held func() ([]broker.Holding, time.Time), log *slog.Logger, ttl time.Duration) func(context.Context) *protocol.Account {
+	// ★ 요청이 브로커를 기다리지 않는다 (2026-10-20 실측). 예전엔 캐시가 만료된 뒤 첫 요청이 잔고를
+	//   두 번(kt00005 ×2, API 간격 250ms) 물어 ~300ms 를 붙잡았고, 다른 요청도 같은 잠금에서 기다렸다 —
+	//   발행자(Desk)는 그 응답을 기다리느라 목표를 0.1~0.5초 늦게 냈다. 이제는 직전 값을 바로 주고,
+	//   늙었으면 뒤에서 한 번만 갱신한다. 맨 처음 한 번만 기다린다 (그사이 다른 요청엔 account 없이 답한다).
+	// ★ 갱신은 ttl 에 한 번까지 — 실패가 이어져도 요청마다 브로커를 두드리지 않는다.
 	var mu sync.Mutex
 	var last *protocol.Account
-	var lastAt time.Time
+	var lastTry time.Time
+	inflight := false // 갱신은 한 번에 하나 — 키움이 매달려도 갱신 고루틴이 쌓이지 않게
+	refresh := func(ctx context.Context) *protocol.Account {
+		acc := readAccount(ctx, br, price, held, log)
+		mu.Lock()
+		if acc != nil {
+			last = acc
+		}
+		inflight = false
+		mu.Unlock()
+		return acc
+	}
 	return func(ctx context.Context) *protocol.Account {
 		mu.Lock()
-		defer mu.Unlock()
-		if last != nil && time.Since(lastAt) < accountCacheTTL {
-			c := *last
-			return &c
+		due := !inflight && time.Since(lastTry) >= ttl
+		if due {
+			inflight, lastTry = true, time.Now()
 		}
-		acc := readAccount(ctx, br, price, log)
-		if acc != nil {
-			last, lastAt = acc, time.Now()
+		if last == nil {
+			mu.Unlock()
+			if !due {
+				return nil // 첫 조회가 진행 중이거나 방금 실패했다
+			}
+			return refresh(ctx)
 		}
-		return acc
+		c := *last
+		mu.Unlock()
+		if due {
+			go func() {
+				bg, cancel := context.WithTimeout(context.Background(), accountRefreshTimeout)
+				defer cancel()
+				refresh(bg)
+			}()
+		}
+		return &c
 	}
 }
 
 // accountCacheTTL — /v1/state 의 계좌 값을 다시 묻기까지. 표시용이라 몇 초 늙어도 된다.
 const accountCacheTTL = 3 * time.Second
 
+// accountRefreshTimeout — 뒤에서 하는 계좌 갱신 한 번의 상한 (요청 맥락이 없어 따로 둔다).
+const accountRefreshTimeout = 15 * time.Second
+
+// heldMaxAge — 집행기의 잔고 대조 보유를 계좌 값에 쓸 수 있는 나이. 이보다 늙었으면 직접 묻는다.
+const heldMaxAge = 15 * time.Second
+
 func readAccount(ctx context.Context, br broker.Broker, price func(protocol.Symbol) (float64, bool),
-	log *slog.Logger) *protocol.Account {
+	held func() ([]broker.Holding, time.Time), log *slog.Logger) *protocol.Account {
 	cash, err := br.Cash(ctx)
 	if err != nil {
 		log.Warn("잔고 조회 실패 — account 를 싣지 않는다", "err", err)
 		return nil
 	}
-	holdings, err := br.Positions(ctx)
-	if err != nil {
-		log.Warn("보유 조회 실패 — account 를 싣지 않는다", "err", err)
-		return nil
+	// 보유는 집행기가 잔고 대조 때 받아 둔 것을 쓴다 (같은 조회를 또 하지 않는다). 늙었을 때만 직접 묻는다.
+	var holdings []broker.Holding
+	if held != nil {
+		if h, at := held(); !at.IsZero() && time.Since(at) < heldMaxAge {
+			holdings = h
+		}
+	}
+	if holdings == nil {
+		if holdings, err = br.Positions(ctx); err != nil {
+			log.Warn("보유 조회 실패 — account 를 싣지 않는다", "err", err)
+			return nil
+		}
 	}
 	acc := &protocol.Account{
 		Deposit: cash.Deposit, Orderable: cash.Orderable, Currency: cash.Currency,

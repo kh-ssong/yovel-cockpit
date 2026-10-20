@@ -348,7 +348,7 @@ func TestSellRejectedAndNotHeldCloses(t *testing.T) {
 		t.Fatal(err)
 	}
 	var res Result
-	h.x.doSell(ctx, t0.Add(5*time.Second), lot, lot.Qty, "flat", &res)
+	h.x.doSell(ctx, t0.Add(5*time.Second), lot, lot.Qty, "flat", time.Time{}, &res)
 	if res.ClosedByBroker != 1 || len(h.eng.Positions()) != 0 {
 		t.Fatalf("%+v", res)
 	}
