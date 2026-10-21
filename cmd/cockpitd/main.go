@@ -172,6 +172,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if _, isPaper := br.(*paper.Broker); isPaper && books.Alloc().FromAccount && cfg.PaperSeed <= 0 {
+		// paper 시드 기본값은 장부 합(맡길 돈)인데, "account" 는 그 맡길 돈을 paper 계좌에서 읽는다 — 순환이다.
+		return fmt.Errorf("books.json \"capital\": %q 인 paper 는 --paper-seed 로 시작 현금을 줄 것", book.CapitalAccount)
+	}
 	// ★ 시세원이 없으면 참조가를 모르고, 그러면 진입 계획이 E_SYMBOL 로 거절된다.
 	// 그게 맞는 동작이다 — 가짜 가격을 채워 "계획이 나오는 것처럼" 보이게 두면
 	// 배선이 빠진 상태와 정상 상태가 같아 보인다.
@@ -213,8 +217,6 @@ func run() error {
 	if err := eng.Restore(context.Background()); err != nil {
 		return fmt.Errorf("상태 복구 실패: %w", err)
 	}
-	// 자동 배분 — 첫 목표를 받기 전에 오늘 몫을 건다 (그 뒤엔 매일 08:50 점검이 다시 건다).
-	applyAlloc(eng, books, time.Now(), log)
 	// ★ paper 계좌는 메모리라 원장에서 다시 세운다 — 안 하면 재시작마다 열린 로트가 '사라짐' 으로 닫히고
 	//   예수금이 시드로 돌아간다. 모드 대조(엔진 복구)를 통과한 **뒤에** 한다.
 	if pb, ok := br.(*paper.Broker); ok {
@@ -225,6 +227,13 @@ func run() error {
 		pb.Restore(ps)
 		log.Info("paper 계좌를 원장에서 복원", "cash", ps.Cash, "holdings", len(ps.Holdings), "tp_orders", len(ps.TPs))
 	}
+	// 자동 배분 — 첫 목표를 받기 전에 오늘 몫을 건다 (그 뒤엔 매일 08:50 점검이 다시 건다).
+	// "capital": "account" 면 맡길 돈을 계좌에서 읽으므로 paper 계좌 복원 **뒤에** 한다.
+	// 못 읽으면 08:50 점검의 기동 회차가 다시 해 보고, 그래도 안 되면 30초마다 (몫이 없는 동안 진입은 E_CAPITAL).
+	alc := &allocator{eng: eng, books: books, br: br, path: filepath.Join(cfg.DataDir, "capital.json"), log: log}
+	bctx, bcancel := context.WithTimeout(context.Background(), bootAllocWait)
+	alc.apply(bctx, time.Now())
+	bcancel()
 
 	// wake — 목표가 도착하면 다음 틱을 기다리지 않고 즉시 집행한다.
 	// 버퍼 1 + 논블로킹 송신이라 연달아 와도 쌓이지 않는다 (한 번 돌면 최신 목표가 반영된다).
@@ -403,9 +412,21 @@ func run() error {
 		log.Info("일일 손실 한도", "krw", cfg.DailyLossLimit)
 	}
 	go watchLoss(ctx, st, eng, cfg.Mode, cfg.DailyLossLimit, log, alert)
-	go watchBudget(ctx, br, books.Total(), books.Overbook(), // 장부 시드 합 + 엔진 예산 (자동 배분이면 capital)
+	alc.setAlert(alert)
+	// 예산 = 장부 시드 합 + 엔진 예산 (자동 배분이면 그날 몫의 capital — "account" 면 계좌에서 읽은 값)
+	budget := func() float64 {
+		if p := eng.AllocPlan(); p != nil {
+			return p.Capital
+		}
+		return books.Total()
+	}
+	go watchBudget(ctx, br, budget, books.Overbook(),
 		func() []protocol.Position { return eng.Snapshot().Positions }, log, alert,
-		func() { applyAlloc(eng, books, time.Now(), log) }) // 08:50 — 날이 바뀌었으면 오늘 몫을 다시 건다
+		func() { // 08:50 — 날이 바뀌었으면 오늘 몫을 다시 건다
+			if !alc.apply(ctx, time.Now()) {
+				alc.retry(ctx)
+			}
+		})
 	if books.Alloc().On() {
 		go watchAllocReport(ctx, eng, log, notifier.Send)
 	}
