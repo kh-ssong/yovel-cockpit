@@ -35,7 +35,8 @@ func budgetVerdict(budget, open float64, c broker.Cash, overbook bool) (ok bool,
 		return true, "브로커가 현금 한도(L1)를 주지 않는다 — 예산 점검 불가"
 	}
 	need := budget - open
-	if need <= c.Seed {
+	// 1원 여유 — "capital": "account" 의 맡길 돈은 바로 이 현금 한도 + 보유로 만든 값이라 소수점 오차로 넘으면 안 된다.
+	if need <= c.Seed+1 {
 		return true, ""
 	}
 	if overbook {
@@ -62,13 +63,15 @@ func nextBudgetCheck(now time.Time) time.Time {
 // 깎으면 "왜 이 크기로 샀는지" 를 원장에서 재현할 수 없게 된다.
 //
 // onCheck — 점검마다 먼저 부른다 (자동 배분의 오늘 몫 재계산). nil 이면 없음.
-func watchBudget(ctx context.Context, br broker.Broker, budget float64, overbook bool,
+// budgetOf — 점검 때의 예산 (onCheck 뒤에 묻는다 — "capital": "account" 면 방금 계좌에서 읽은 맡길 돈).
+func watchBudget(ctx context.Context, br broker.Broker, budgetOf func() float64, overbook bool,
 	positions func() []protocol.Position, log *slog.Logger, alert func(key, text string), onCheck func()) {
 
 	check := func() {
 		if onCheck != nil {
 			onCheck()
 		}
+		budget := budgetOf()
 		c, err := br.Cash(ctx)
 		if err != nil {
 			log.Warn("예산 점검: 잔고 조회 실패", "err", err)

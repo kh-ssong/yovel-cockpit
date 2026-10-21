@@ -103,6 +103,18 @@ func (e *Engine) heldLocked(now time.Time) []alloc.Held {
 	return out
 }
 
+// HeldCost — 콕핏이 든 로트 원가 합 ("capital": "account" 의 맡길 돈 = 계좌 현금 한도 + 이것).
+// 맡긴 돈 층(Gate.free = capital − 이 합)과 같은 잣대라, 계좌에서 읽은 날 아침의 free 가 곧 현금이다.
+func (e *Engine) HeldCost(now time.Time) float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var sum float64
+	for _, h := range e.heldLocked(now) {
+		sum += h.Value
+	}
+	return sum
+}
+
 // observeAllocLocked — 목표에서 배울 것: 장부별 최근 weight (예비분의 건당 추정), hold 가 어긋난 장부 (알림).
 func (e *Engine) observeAllocLocked(now time.Time) {
 	if e.alloc == nil {
