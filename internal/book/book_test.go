@@ -113,6 +113,35 @@ func TestLoadMaxQty(t *testing.T) {
 	}
 }
 
+// weight — 장부의 진입 비중 덮어쓰기 (user 2026-10-22 «flat6 기본값 + 콕핏 오버라이드»). 없으면 0, 0~1 밖은 기동 거부.
+func TestLoadWeight(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "books.json")
+	os.WriteFile(p, []byte(`{"capital":"account","books":[
+	  {"name":"cf3","kid":"flat6-1","scope":"kiwoom/surge_chase_cf3","hold":"day","pct":50,"weight":0.1},
+	  {"name":"brkout","kid":"flat6-1","scope":"kiwoom/brkout","hold":"day","pct":25}]}`), 0o600)
+	s, err := Load(p, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := s.Weight("flat6-1", "kiwoom/surge_chase_cf3"); w != 0.1 {
+		t.Fatalf("weight=%v", w)
+	}
+	if w := s.Weight("flat6-1", "kiwoom/brkout"); w != 0 {
+		t.Fatalf("없는데 %v", w)
+	}
+	if w := s.Weight("otto-1", "kiwoom/surge_chase_cf3"); w != 0 {
+		t.Fatalf("다른 kid 인데 %v", w)
+	}
+	if w := (*Set)(nil).Weight("flat6-1", "x"); w != 0 {
+		t.Fatalf("nil 장부 %v", w)
+	}
+	for _, w := range []float64{-0.1, 1.5} {
+		if _, err := New([]Book{{Name: "x", Scope: "a", Seed: 1, Weight: w}}, 0); err == nil {
+			t.Fatalf("weight %v 를 받았다", w)
+		}
+	}
+}
+
 // paper_fee_bp — 장부별 paper 비용. 생략 = ok false (거래소·기본 요율), 음수는 기동 거부.
 func TestLoadPaperFee(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "books.json")

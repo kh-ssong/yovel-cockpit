@@ -82,7 +82,8 @@ type Gate struct {
 	events    []Event
 }
 
-// NewGate — weightOf: 밤 장부의 최근 목표 weight (모르면 0 → 1/20 로 본다). 건당 추정(예비분)에만 쓴다.
+// NewGate — weightOf: 밤 장부의 최근 목표 weight (모르면 0 → 1/20 로 본다. 장부 weight 가 있으면 그게 먼저).
+// 건당 추정(예비분)에만 쓴다.
 func NewGate(p *Plan, now time.Time, held []Held, weightOf func(book string) float64) *Gate {
 	g := &Gate{p: p, now: now}
 	if p == nil {
@@ -107,7 +108,10 @@ func NewGate(p *Plan, now time.Time, held []Held, weightOf func(book string) flo
 			continue
 		}
 		w := defaultCarryWeight
-		if weightOf != nil {
+		switch {
+		case b.Weight > 0:
+			w = b.Weight // 장부 weight — 건당은 목표의 weight 가 아니라 이 값이다
+		case weightOf != nil:
 			if v := weightOf(b.Name); v > 0 {
 				w = v
 			}

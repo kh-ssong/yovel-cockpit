@@ -176,6 +176,29 @@ func TestBookMaxQtyCapsEntry(t *testing.T) {
 	}
 }
 
+// 장부 weight — 그 장부의 진입만 목표의 weight 대신 장부 값으로 산다 (user 2026-10-22). 다른 장부는 목표 그대로.
+func TestBookWeightOverridesEntry(t *testing.T) {
+	books, err := book.New([]book.Book{
+		{Name: "cf3", Kid: "flat6-1", Scope: "kiwoom/surge_chase_cf3", Seed: 1_000_000, Weight: 0.1},
+		{Name: "d205", Kid: "flat6-1", Scope: "intraday/d205", Seed: 1_000_000},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat6 := mkSigner("flat6-1", 3)
+	e := multiEngine(t, books, flat6)
+	applied(t, e, flat6.snap(t, 1, "kiwoom/surge_chase_cf3", tgt("01J9Z8QK3M7X2ABCDEFGHJKMF1", "122630", "open")))
+	applied(t, e, flat6.snap(t, 1, "intraday/d205", tgt("01J9Z8QK3M7X2ABCDEFGHJKMF2", "005930", "open")))
+	qty := map[string]float64{}
+	for _, en := range e.Plan(base.Add(time.Second)).Enters {
+		qty[en.Target.Symbol.Code] = en.Qty
+	}
+	// 시드 100만 ÷ 1000원: cf3 는 장부 0.1 → 100주, d205 는 목표 0.5 → 500주.
+	if qty["122630"] != 100 || qty["005930"] != 500 {
+		t.Fatalf("수량: %v", qty)
+	}
+}
+
 // 전략마다 예산이 따로다 — 한 전략이 다 써도 다른 전략은 산다.
 func TestBudgetIsPerSource(t *testing.T) {
 	books, _ := book.New([]book.Book{

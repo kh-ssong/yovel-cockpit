@@ -55,6 +55,13 @@ type Book struct {
 	// «1주씩» 검증하는 용도 (user 2026-10-16). 시드 부족 축소(E_CAPITAL)와는 다른 층이다: 이건
 	// 사용자가 미리 정한 크기라 조용한 축소가 아니다. 사이징이 0주면(시드 부족) 여전히 E_CAPITAL.
 	MaxQty float64 `json:"max_qty,omitempty"`
+	// Weight — 진입 한 건의 비중 덮어쓰기 (0 = 생략 = 목표의 weight 그대로). 건당 = 몫(seed) × 이 값.
+	//
+	// ★ 목표의 weight 는 flat6 이 정한 «전략 자신의 동시 보유» 라 모든 콕핏에 같다. 계좌가 작으면 그 크기로는
+	// 1주도 못 사는 종목이 많다 (cf3 1/60 → 로트 ≈1.6만, 2026-10-22 진입 6건 중 5건 too_small). 여기 적으면
+	// **이 콕핏만** 자리를 덜 나눠 크게 산다 — 그 대신 동시 보유는 borrow_x ÷ weight 건으로 준다
+	// (user 2026-10-22 «flat6 기본값 + 콕핏 오버라이드»). 같은 종목 조각을 여럿 내는 묶음 발행이면 조각마다 이 값이다.
+	Weight float64 `json:"weight,omitempty"`
 	// PaperFeeBp — paper 체결의 편도 비용 (bp). 생략하면 거래소·기본 요율 (--paper-fee-bp-*).
 	// ★ ETF 는 거래세가 없어 주식 요율을 물리면 안 된다 — ETF 장부에 {"buy":0,"sell":0} 처럼 준다
 	// (user 2026-10-16 «주식/ETF 구분»). live 에선 쓰지 않는다 — 진짜 비용은 체결 통지가 준다.
@@ -192,6 +199,9 @@ func NewAlloc(books []Book, defaultBudget float64, a Alloc) (*Set, error) {
 		if b.MaxQty < 0 {
 			return nil, fmt.Errorf("장부 %s: max_qty 가 음수", b.Name)
 		}
+		if b.Weight < 0 || b.Weight > 1 {
+			return nil, fmt.Errorf("장부 %s: weight %.4g — 0 초과 1 이하 (생략 = 목표의 weight)", b.Name, b.Weight)
+		}
 		if f := b.PaperFeeBp; f != nil && (f.Buy < 0 || f.Sell < 0) {
 			return nil, fmt.Errorf("장부 %s: paper_fee_bp 가 음수", b.Name)
 		}
@@ -260,7 +270,8 @@ func checkPct(books []Book, a Alloc) error {
 //	{"capital": "account", "capital_pct": 100, "overnight_pct": 70,
 //	 "books": [
 //	  {"name": "swing_60m", "kid": "flat6-1", "scope": "kiwoom/swing_60m", "hold": "carry", "pct": 23},
-//	  {"name": "push10",    "kid": "flat6-1", "scope": "kiwoom/push10",    "hold": "day",   "pct": 16}
+//	  {"name": "push10",    "kid": "flat6-1", "scope": "kiwoom/push10",    "hold": "day",   "pct": 16},
+//	  {"name": "cf3",       "kid": "flat6-1", "scope": "kiwoom/cf3",       "hold": "day",   "pct": 50, "weight": 0.1}
 //	]}
 func Load(path string, defaultBudget float64) (*Set, error) {
 	raw, err := os.ReadFile(path)
@@ -395,6 +406,19 @@ func (s *Set) MaxQty(kid, scope string) float64 {
 	for _, b := range s.books {
 		if b.Scope == scope && (b.Kid == "" || b.Kid == kid) {
 			return b.MaxQty
+		}
+	}
+	return 0
+}
+
+// Weight — 소스의 진입 비중 덮어쓰기 (0 = 목표의 weight 그대로). 장부가 없거나 그 소스가 장부에 없으면 0.
+func (s *Set) Weight(kid, scope string) float64 {
+	if s == nil {
+		return 0
+	}
+	for _, b := range s.books {
+		if b.Scope == scope && (b.Kid == "" || b.Kid == kid) {
+			return b.Weight
 		}
 	}
 	return 0

@@ -481,3 +481,27 @@ func TestMaxQtyCapsEnter(t *testing.T) {
 		t.Fatalf("enters=%+v", p.Enters)
 	}
 }
+
+// Weight — 장부 weight 가 목표의 weight 를 대신한다. 진입 주문의 목표에도 그 값이 남는다 (화면의 실현 비중 대조).
+func TestBookWeightOverridesTarget(t *testing.T) {
+	o := opts()
+	o.Weight = 0.1
+	p := Build(book(openTargetW("a", "005930", 0.5)), nil, o)
+	if len(p.Enters) != 1 || p.Enters[0].Qty != 100 || p.Enters[0].Target.Weight != 0.1 || p.Enters[0].RealizedWeight != 0.1 {
+		t.Fatalf("enters=%+v", p.Enters)
+	}
+}
+
+// 목표의 weight 로는 1주도 못 사는 신호(too_small)를 장부 weight 가 사게 한다 — 그게 덮어쓰기를 두는 이유다.
+func TestBookWeightLiftsTooSmall(t *testing.T) {
+	o := opts()
+	p := Build(book(openTargetW("a", "005930", 1.0/2000)), nil, o) // 100만 × 1/2000 = 500원 < 1000원
+	if a, _ := ackFor(p, "a"); len(p.Enters) != 0 || len(a.Codes) != 1 || a.Codes[0] != protocol.CodeCapital {
+		t.Fatalf("too_small 이어야 한다: enters=%+v ack=%+v", p.Enters, a)
+	}
+	o.Weight = 0.002
+	p = Build(book(openTargetW("a", "005930", 1.0/2000)), nil, o)
+	if len(p.Enters) != 1 || p.Enters[0].Qty != 2 {
+		t.Fatalf("enters=%+v", p.Enters)
+	}
+}

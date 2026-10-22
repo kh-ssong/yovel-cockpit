@@ -122,6 +122,8 @@ type Options struct {
 	Book string
 	// MaxQty — 이 소스(장부)의 진입 한 건 수량 상한 (books.json max_qty, 0 = 없음).
 	MaxQty float64
+	// Weight — 이 소스(장부)의 진입 비중 덮어쓰기 (books.json weight, 0 = 목표의 weight 그대로).
+	Weight float64
 	// Inactive — 이 소스는 이 콕핏에서 활성화되지 않았다 → 진입은 E_INACTIVE, 청산은 그대로.
 	Inactive bool
 	// RefCheckPrice · RefMaxDev — ★ 신호가(entry.ref_price) 검증 (2026-09-30).
@@ -443,6 +445,9 @@ func committed(actual []protocol.Position, opt Options) float64 {
 // why — 장부 층에서 돈 때문에 걸렸으면 그 사유 (자동 배분 계측용): alloc.ReasonTooSmall(건당이 1단위 값보다 작다)
 // · alloc.ReasonBookCap(장부 상한). 그때 돌려주는 EnterOrder.Notional 은 원래 사려던 금액이다.
 func buildEnter(t protocol.Target, opt Options, remaining float64) (EnterOrder, []protocol.RejectCode, string) {
+	if opt.Weight > 0 {
+		t.Weight = opt.Weight // 장부 weight — 진입 주문의 목표에도 이 값이 «의도한 비중» 으로 남는다 (화면의 실현 비중 대조)
+	}
 	// ★ 신호를 낸 쪽이 기준가를 실어 보냈으면 그걸 쓴다. 여기서 다시 조회하면
 	// 신호를 낸 가격과 사이징한 가격이 갈리고, 종목 수만큼 왕복이 늘어난다.
 	var price float64
