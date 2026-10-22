@@ -152,6 +152,20 @@ func TestGateReserveUsesSeenWeight(t *testing.T) {
 	}
 }
 
+// 장부 weight 가 있으면 예비분 건당 추정이 목표의 weight 보다 그걸 먼저 쓴다 (몫에도 실려 API 에 보인다).
+func TestGateReserveUsesBookWeight(t *testing.T) {
+	p := Compute(set(t, book.Alloc{Capital: 1_000_000, OvernightPct: 50, BorrowX: 2, ReserveTrades: 10},
+		book.Book{Name: "swing", Scope: "kiwoom/swing", Weight: 0.04},
+	), kst("08:50:00"))
+	if b, _ := p.Book("swing"); b.Weight != 0.04 {
+		t.Fatalf("몫에 장부 weight 가 없다: %+v", b)
+	}
+	g := NewGate(p, kst("10:00:00"), nil, func(string) float64 { return 0.02 })
+	if !near(g.Reserve(), 200_000) { // 50만 × 0.04 × 10 (목표의 0.02 가 아니다)
+		t.Fatalf("예비분 %v", g.Reserve())
+	}
+}
+
 // ④ 맡긴 돈이 모자라면 줄여 사고, 0 이면 거절.
 func TestGateCapitalShrinkThenReject(t *testing.T) {
 	p := gatePlan(t)

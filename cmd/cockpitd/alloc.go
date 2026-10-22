@@ -237,16 +237,23 @@ func logPlan(log *slog.Logger, p *alloc.Plan) {
 		case !b.Enabled:
 			log.Info("  꺼진 장부 (몫 없음)", "name", b.Name)
 		case b.Pct > 0:
-			log.Info("  장부 몫", "name", b.Name, "hold", b.Hold, "pct", b.Pct,
-				"base", round0(b.Base), "cap", round0(b.Cap), "per_trade_at_w0.05", round0(b.Base*0.05))
+			log.Info("  장부 몫", append([]any{"name", b.Name, "hold", b.Hold, "pct", b.Pct}, sizeAttrs(b)...)...)
 		default:
-			log.Info("  장부 몫", "name", b.Name, "hold", b.Hold, "share", b.Share,
-				"base", round0(b.Base), "cap", round0(b.Cap), "per_trade_at_w0.05", round0(b.Base*0.05))
+			log.Info("  장부 몫", append([]any{"name", b.Name, "hold", b.Hold, "share", b.Share}, sizeAttrs(b)...)...)
 		}
 	}
 	if p.DayPct > 100.05 {
 		log.Info(fmt.Sprintf("  낮 장부 몫 합이 맡긴 돈의 %.0f%% — 장부끼리 계좌를 선착순으로 나눠 쓴다 (맡긴 돈 층이 넘지 않게 막는다)", p.DayPct))
 	}
+}
+
+// sizeAttrs — 몫·상한·건당. 장부 weight 가 있으면 건당 = 몫 × 그 값, 없으면 flat6 weight 를 모르니 0.05 기준 참고값.
+func sizeAttrs(b alloc.Book) []any {
+	out := []any{"base", round0(b.Base), "cap", round0(b.Cap)}
+	if b.Weight > 0 {
+		return append(out, "weight", b.Weight, "per_trade", round0(b.Base*b.Weight))
+	}
+	return append(out, "per_trade_at_w0.05", round0(b.Base*0.05))
 }
 
 func round0(v float64) float64 { return float64(int64(v + 0.5)) }

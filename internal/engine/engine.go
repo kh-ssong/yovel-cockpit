@@ -601,6 +601,7 @@ func (e *Engine) planSourceLocked(src source, now time.Time, gate *alloc.Gate) r
 		MaxOrders:       e.cfg.MaxOrders,
 		Budget:          budget,
 		MaxQty:          e.cfg.Books.MaxQty(src.kid, src.scope),
+		Weight:          e.cfg.Books.Weight(src.kid, src.scope),
 		Inactive:        !active,
 		RefCheckPrice:   e.cfg.RefCheckPrice,
 		RefMaxDev:       e.cfg.RefMaxDev,

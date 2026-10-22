@@ -32,6 +32,8 @@ type Book struct {
 	Base float64 `json:"base"`
 	// Cap — 장부 상한 = 몫 × borrow_x. 고정 장부는 seed.
 	Cap float64 `json:"cap"`
+	// Weight — 장부 weight (books.json). 0 이면 목표의 weight (flat6) 를 그대로 쓴다.
+	Weight float64 `json:"weight,omitempty"`
 }
 
 // Plan — 그날의 배분. 계산한 뒤엔 바꾸지 않는다 (엔진이 통째로 갈아 끼운다).
@@ -94,7 +96,7 @@ func ComputeWith(set *book.Set, capital float64, from string, now time.Time) *Pl
 	}
 	var dayBase, nightBase float64
 	for _, b := range books {
-		ab := Book{Name: b.Name, Hold: b.HoldOrCarry(), Fixed: b.Fixed(), Enabled: b.On()}
+		ab := Book{Name: b.Name, Hold: b.HoldOrCarry(), Fixed: b.Fixed(), Enabled: b.On(), Weight: b.Weight}
 		switch {
 		case b.Fixed():
 			ab.Base, ab.Cap = b.Seed, b.Seed
