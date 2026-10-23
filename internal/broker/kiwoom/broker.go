@@ -62,6 +62,9 @@ type Config struct {
 	// (예: ../yovel-flat6/data/kiwoom_token.json). 각자 발급하면 1계정 1토큰이라
 	// 서로의 토큰을 죽이고, 증상은 "가끔 8005" 가 아니라 "상대 세션 통째 유실" 이다.
 	TokenFile string
+	// NoTokenIssue — 토큰을 **발급하지 않는다**. 키 주인(데몬)이 도는 동안 옆에서 조회만 하는 도구용
+	// (brokerctl ledger). 파일의 토큰이 만료 전이면 쓰고, 없거나 무효면 ErrTokenIssueOff 로 멈춘다.
+	NoTokenIssue bool
 	// Mock — 모의투자 도메인 사용 (KRX 만 지원).
 	Mock bool
 	// APIURL — 비면 Mock 에 따라 기본값.
@@ -138,6 +141,7 @@ func New(cfg Config) (*Broker, error) {
 		tokenPath = filepath.Join(cfg.DataDir, "kiwoom_token.json")
 	}
 	b.tokens = newTokenStore(tokenPath, cfg.AppKey, cfg.SecretKey, url, cfg.HTTP, cfg.Now)
+	b.tokens.noIssue = cfg.NoTokenIssue
 	return b, nil
 }
 

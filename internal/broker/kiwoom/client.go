@@ -18,13 +18,19 @@ import (
 
 // postJSON 은 한 번 쏘고 JSON 으로 받는다 (재시도 없음 — 재시도는 호출자가 판단).
 func postJSON(ctx context.Context, hc *http.Client, url string, headers map[string]string, body, out any) error {
+	_, err := postJSONHdr(ctx, hc, url, headers, body, out)
+	return err
+}
+
+// postJSONHdr — postJSON 에 응답 헤더를 더 준다 (연속조회 cont-yn·next-key 가 헤더로 온다).
+func postJSONHdr(ctx context.Context, hc *http.Client, url string, headers map[string]string, body, out any) (http.Header, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json;charset=UTF-8")
 	for k, v := range headers {
@@ -33,21 +39,21 @@ func postJSON(ctx context.Context, hc *http.Client, url string, headers map[stri
 
 	resp, err := hc.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return httpError{Status: resp.StatusCode, Body: string(raw)}
+		return nil, httpError{Status: resp.StatusCode, Body: string(raw)}
 	}
 	if out == nil {
-		return nil
+		return resp.Header, nil
 	}
-	return json.Unmarshal(raw, out)
+	return resp.Header, json.Unmarshal(raw, out)
 }
 
 type httpError struct {
@@ -85,6 +91,13 @@ type envelope struct {
 //
 // ★ 토큰 재발급은 **요청당 한 번만**. 무한 재발급이 곧 1계정 1토큰 사고의 형태다.
 func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any) error {
+	_, err := b.callPage(ctx, apiID, path, body, "", out)
+	return err
+}
+
+// callPage — call 의 연속조회판. next 가 있으면 그 키로 다음 쪽을 묻고(cont-yn·next-key 헤더),
+// 키움이 쪽이 더 있다고 하면(응답 cont-yn=Y) 그 next-key 를 돌려준다. 끝이면 "".
+func (b *Broker) callPage(ctx context.Context, apiID, path string, body any, next string, out any) (string, error) {
 	var lastErr error
 	tokenRetried := false
 
@@ -92,7 +105,7 @@ func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any
 		b.pace.wait(apiID, b.now, b.sleep)
 		tok, err := b.tokens.get(ctx, false)
 		if err != nil {
-			return fmt.Errorf("토큰: %w", err)
+			return "", fmt.Errorf("토큰: %w", err)
 		}
 
 		var probe struct {
@@ -103,10 +116,14 @@ func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any
 		if !isOrderAPI(apiID) && apiID != apiCancel && b.cfg.QueryTimeout > 0 {
 			cctx, cancel = context.WithTimeout(ctx, b.cfg.QueryTimeout)
 		}
-		err = postJSON(cctx, b.http, b.apiURL+path, map[string]string{
+		headers := map[string]string{
 			"api-id":        apiID,
 			"authorization": "Bearer " + tok,
-		}, body, &raw)
+		}
+		if next != "" {
+			headers["cont-yn"], headers["next-key"] = "Y", next
+		}
+		hdr, err := postJSONHdr(cctx, b.http, b.apiURL+path, headers, body, &raw)
 		cancel()
 
 		if err != nil {
@@ -119,9 +136,9 @@ func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any
 				switch {
 				case !isHTTP, he.Status >= 500:
 					// 네트워크 오류·5xx — 서버가 받았는지 모른다.
-					return fmt.Errorf("%s: %w — %w", apiID, err, ErrMaybeSent)
+					return "", fmt.Errorf("%s: %w — %w", apiID, err, ErrMaybeSent)
 				case he.Status != http.StatusTooManyRequests:
-					return fmt.Errorf("%s: %w", apiID, err) // 4xx = 거부. 나가지 않았다
+					return "", fmt.Errorf("%s: %w", apiID, err) // 4xx = 거부. 나가지 않았다
 				}
 			}
 			if isHTTP && he.retryable() && attempt < 2 {
@@ -129,16 +146,16 @@ func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any
 				b.sleep(backoff(attempt))
 				continue
 			}
-			return fmt.Errorf("%s: %w", apiID, err)
+			return "", fmt.Errorf("%s: %w", apiID, err)
 		}
 		if err := json.Unmarshal(raw, &probe); err != nil {
-			return fmt.Errorf("%s: 응답 파싱: %w", apiID, err)
+			return "", fmt.Errorf("%s: 응답 파싱: %w", apiID, err)
 		}
 
 		if isTokenInvalid(probe.ReturnCode, probe.ReturnMsg) && !tokenRetried {
 			tokenRetried = true
 			if _, err := b.tokens.get(ctx, true); err != nil {
-				return fmt.Errorf("%s: 토큰 갱신: %w", apiID, err)
+				return "", fmt.Errorf("%s: 토큰 갱신: %w", apiID, err)
 			}
 			continue
 		}
@@ -150,17 +167,21 @@ func (b *Broker) call(ctx context.Context, apiID, path string, body any, out any
 			continue
 		}
 		if probe.ReturnCode != 0 {
-			return rejectError{APIID: apiID, Code: probe.ReturnCode, Msg: probe.ReturnMsg}
+			return "", rejectError{APIID: apiID, Code: probe.ReturnCode, Msg: probe.ReturnMsg}
+		}
+		more := ""
+		if strings.EqualFold(hdr.Get("cont-yn"), "Y") {
+			more = hdr.Get("next-key")
 		}
 		if out == nil {
-			return nil
+			return more, nil
 		}
-		return json.Unmarshal(raw, out)
+		return more, json.Unmarshal(raw, out)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("%s: 재시도 소진", apiID)
 	}
-	return lastErr
+	return "", lastErr
 }
 
 // rejectError — 키움이 요청을 **받고 거부했다**(return_code ≠ 0). 주문이면 나가지 않은 것이다.
