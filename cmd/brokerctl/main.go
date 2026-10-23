@@ -9,7 +9,10 @@
 //	brokerctl -broker upbit  buy  KRW-BTC -krw 6000 -yes
 //	brokerctl -broker kiwoom buy  005930  -qty 1 -yes
 //	brokerctl -broker upbit  sell KRW-BTC -all -yes
+//	brokerctl -broker kiwoom ledger 20261023 -out broker_ledger_20261023.json
 //
+// ★ ledger 는 조회만 하고 토큰을 **발급하지 않는다** — 도는 데몬의 토큰 파일을 빌려 쓴다
+// (만료·무효면 멈춘다). 키움 응답을 그대로 담는다 (kiwoom.Ledger).
 // ★ 이건 **원장 밖** 주문이다. 데몬이 보유 중인 종목을 여기서 팔면, 데몬은 다음 틱에
 // 그 포지션을 "사후 감지 manual" 로 종결한다. 데몬이 쥔 종목은 건드리지 말 것.
 // ★ 자격증명은 데몬과 같은 환경변수에서만 읽는다 (플래그로 받으면 ps 에 찍힌다).
@@ -51,6 +54,8 @@ type opts struct {
 	limit     float64
 	all       bool
 	yes       bool
+	out       string
+	noIssue   bool
 }
 
 func run(args []string) error {
@@ -69,6 +74,7 @@ func run(args []string) error {
 	fs.Float64Var(&o.limit, "limit", 0, "지정가 (0 = 시장가)")
 	fs.BoolVar(&o.all, "all", false, "sell: 보유 전량(매도 가능 수량)")
 	fs.BoolVar(&o.yes, "yes", false, "★ 실주문을 낸다. 없으면 무엇을 낼지 보여주기만 한다")
+	fs.StringVar(&o.out, "out", "", "ledger: 저장할 파일 (비면 화면)")
 
 	// 플래그가 서브커맨드·종목 뒤에 와도 받는다 (`buy KRW-BTC -krw 6000 -yes`).
 	var pos []string
@@ -84,8 +90,9 @@ func run(args []string) error {
 		rest = fs.Args()[1:]
 	}
 	if len(pos) == 0 {
-		return errors.New("명령이 없다: cash | positions | quote SYM | buy SYM | sell SYM")
+		return errors.New("명령이 없다: cash | positions | quote SYM | buy SYM | sell SYM | ledger [YYYYMMDD]")
 	}
+	o.noIssue = pos[0] == "ledger"
 
 	// 업비트 시세는 공개 API — 키 없이도 quote 는 된다.
 	if o.broker == "upbit" && pos[0] == "quote" {
@@ -127,6 +134,8 @@ func run(args []string) error {
 			return err
 		}
 		return order(ctx, br, pos[0], s, o)
+	case "ledger":
+		return ledger(ctx, br, pos[1:], o.out)
 	}
 	return fmt.Errorf("모르는 명령 %q", pos[0])
 }
@@ -147,12 +156,13 @@ func build(o opts) (broker.Broker, string, error) {
 		if ak == "" || sk == "" {
 			return nil, "", errors.New("COCKPIT_KIWOOM_APPKEY / COCKPIT_KIWOOM_SECRET 가 없다")
 		}
-		if o.tokenFile == "" {
+		if o.tokenFile == "" && !o.noIssue { // 발급 금지면 data-dir 의 데몬 토큰을 빌려 쓸 뿐이다
 			fmt.Fprintln(os.Stderr, "★ 경고: 키움 토큰 파일 미지정 — data-dir 에 따로 발급한다. "+
 				"flat6·데몬과 같은 앱키면 그쪽 세션이 죽는다 (-kiwoom-token-file)")
 		}
 		b, err := kiwoom.New(kiwoom.Config{
 			AppKey: ak, SecretKey: sk, DataDir: o.dataDir, TokenFile: o.tokenFile, Mock: o.mock,
+			NoTokenIssue: o.noIssue,
 		})
 		return b, "KRX", err
 	}
@@ -219,6 +229,53 @@ func order(ctx context.Context, br broker.Broker, side string, s protocol.Symbol
 		return err
 	}
 	return show(fill, nil)
+}
+
+// ledger — 그날 증권사 원장을 파일(또는 화면)로. 날짜를 안 주면 오늘(한국 날짜).
+func ledger(ctx context.Context, br broker.Broker, args []string, out string) error {
+	kb, ok := br.(*kiwoom.Broker)
+	if !ok {
+		return fmt.Errorf("ledger 는 키움만 (%s)", br.Name())
+	}
+	kst := time.FixedZone("KST", 9*3600)
+	day := time.Now().In(kst)
+	if len(args) > 0 {
+		d, err := time.ParseInLocation("20060102", args[0], kst)
+		if err != nil {
+			return fmt.Errorf("날짜는 YYYYMMDD: %w", err)
+		}
+		day = d
+	}
+	l := kb.Ledger(ctx, day)
+	for _, s := range l.Sections {
+		state := fmt.Sprintf("%d쪽", len(s.Pages))
+		if s.Error != "" {
+			state += " · 오류 " + s.Error
+		}
+		fmt.Fprintf(os.Stderr, "%s %s — %s\n", s.API, s.Name, state)
+	}
+	b, err := json.MarshalIndent(l, "", "  ")
+	if err != nil {
+		return err
+	}
+	if out == "" {
+		fmt.Println(string(b))
+	} else if err := writeAtomic(out, append(b, '\n')); err != nil {
+		return err
+	}
+	if !l.OK() {
+		return errors.New("조회가 전부 실패했다")
+	}
+	return nil
+}
+
+// writeAtomic — 읽는 쪽(mac-sync)이 반쯤 쓴 파일을 집어 가지 않게 임시 파일에 쓰고 바꿔 끼운다.
+func writeAtomic(path string, b []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func show(v any, err error) error {

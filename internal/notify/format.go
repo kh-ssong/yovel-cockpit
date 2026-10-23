@@ -81,6 +81,9 @@ func won(p float64) string {
 	return fmt.Sprintf("%.4g", p)
 }
 
+// KRW — 원 단위 반올림에 천 단위 쉼표 ("-4,641").
+func KRW(v float64) string { return commas(int64(math.Round(v))) }
+
 func qty(q float64) string {
 	if q == math.Trunc(q) {
 		return commas(int64(q)) + "주"

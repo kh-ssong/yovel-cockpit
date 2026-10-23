@@ -412,6 +412,12 @@ func run() error {
 		log.Info("일일 손실 한도", "krw", cfg.DailyLossLimit)
 	}
 	go watchLoss(ctx, st, eng, cfg.Mode, cfg.DailyLossLimit, log, alert)
+	// 장 뒤 증권사 원장 대조 — live 키움만 (docs/ops.md «증권사 원장»).
+	if kb, ok := br.(*kiwoom.Broker); ok && cfg.Mode == protocol.ModeLive {
+		dir := filepath.Join(cfg.DataDir, "broker")
+		log.Info("증권사 원장 대조 켜짐", "at", "15:50 KST", "dir", dir)
+		go watchBrokerLedger(ctx, kb, st, cal, dir, log, notifier.Send)
+	}
 	alc.setAlert(alert)
 	// 예산 = 장부 시드 합 + 엔진 예산 (자동 배분이면 그날 몫의 capital — "account" 면 계좌에서 읽은 값)
 	budget := func() float64 {

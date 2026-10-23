@@ -3,6 +3,7 @@ package kiwoom
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -31,7 +32,12 @@ type tokenStore struct {
 	now     func() time.Time
 	token   string
 	expires time.Time
+	// noIssue — 발급하지 않는다 (Config.NoTokenIssue). 파일의 토큰이 만료 전이면 쓰고, 아니면 오류.
+	noIssue bool
 }
+
+// ErrTokenIssueOff — 발급 금지 모드에서 쓸 토큰이 없다. 발급은 키 주인(데몬)이 한다.
+var ErrTokenIssueOff = errors.New("토큰 발급 금지 모드 — 파일에 쓸 수 있는 토큰이 없다 (발급은 데몬이 한다)")
 
 // expiryBuffer — 만료 이만큼 전이면 갱신 대상. 서버측 조기 무효화 사례가 있어 넉넉히 잡는다.
 const expiryBuffer = time.Hour
@@ -95,9 +101,16 @@ func (t *tokenStore) get(ctx context.Context, force bool) (string, error) {
 		case !force && ok && t.now().Add(expiryBuffer).Before(exp):
 			t.token, t.expires = f.Token, exp
 			return t.token, nil
+		case t.noIssue && !force && ok && t.now().Before(exp):
+			// 발급 금지면 갱신 여유(expiryBuffer) 안이어도 아직 살아 있는 토큰을 쓴다.
+			t.token, t.expires = f.Token, exp
+			return t.token, nil
 		}
 	}
 
+	if t.noIssue {
+		return "", ErrTokenIssueOff
+	}
 	return t.issue(ctx)
 }
 
