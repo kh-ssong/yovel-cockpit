@@ -3,11 +3,11 @@
 #
 #   scripts/macbook.sh smoke        맥에서 도는지만 — 키·.env 없이 paper 로 잠깐 띄웠다 지운다 (계좌·reflex·~/cockpit 무접촉)
 #   scripts/macbook.sh push         빌드 → ~/cockpit/releases/<sha> → ~/cockpit/bin 이 그걸 가리킨다. 재시작은 안 한다
-#   scripts/macbook.sh install paper|live [-- cockpitd 플래그…]
+#   scripts/macbook.sh install paper|live|live-upbit [-- cockpitd 플래그…]
 #                                   launchd 설정을 ~/cockpit/<모드> 에 만들어만 둔다 (켜는 건 start) · 플래그에 공백 금지
-#   scripts/macbook.sh start|stop|restart paper|live
-#   scripts/macbook.sh status [paper|live]
-#   scripts/macbook.sh tunnel [paper|live]   이 PC 127.0.0.1:<포트> → 맥 콕핏 (끊기면 다시 붙는다) + API 토큰 사본
+#   scripts/macbook.sh start|stop|restart paper|live|live-upbit
+#   scripts/macbook.sh status [paper|live|live-upbit]
+#   scripts/macbook.sh tunnel [paper|live|live-upbit]   이 PC 127.0.0.1:<포트> → 맥 콕핏 (끊기면 다시 붙는다) + API 토큰 사본
 #
 # 접속 정보는 저장소 루트 .env.macbook (gitignore — ★ 공개 저장소에 주소·계정을 올리지 않는다):
 #   MAC_SSH=user@host.local                  # 먼저 시도
@@ -16,7 +16,9 @@
 # ★ paper 와 live 는 따로 도는 두 인스턴스다 (2026-10-17) — launchd 라벨·포트·data-dir·.env·로그가 다 다르다:
 #     paper   com.yovel.cockpit.paper   7737   ~/cockpit/paper   logs/cockpit-paper.log
 #     live    com.yovel.cockpit.live    7738   ~/cockpit/live    logs/cockpit-live.log
+#     live-upbit  com.yovel.cockpit.live-upbit  7739  ~/cockpit/live-upbit  logs/cockpit-live-upbit.log  (2026-10-26)
 #   인스턴스 폴더(= data-dir)가 실행 폴더다 → 콕핏·감시자는 **그 폴더의 .env 만** 읽는다. paper 는 live 의 키움 키를 못 본다.
+#   콕핏 하나 = 실브로커 하나라서 업비트 실매매는 세 번째 인스턴스다 (live = 키움 · live-upbit = 업비트).
 #
 # 맥 배치 (~/cockpit):
 #   releases/<sha>/{cockpitd,cockpitsup}   push 가 올린다 (최근 5개 + 도는 것만 남긴다)
@@ -33,7 +35,9 @@
 #   reflex 는 국내봇(kiwoom)과 미장봇(us)이 **같은 키**를 쓴다 (2026-10-15 실측) → 둘 다 내려야 한다.
 #   flat6 설정(~/flat6/.env* — 피드 주 키·추가 키·캐시 키)에 같은 키가 있어도 거부한다 (켜져 있든 아니든).
 #   이 PC 의 flat6 설정(LOCAL_KIWOOM_ENVS, 기본 /c/flat6/app/.env* /c/flat6/feed/*.env)도 지문으로 본다 — 키는 기계를 안 가린다.
-# ★ live 는 install·start·restart 때 COCKPIT_LIVE_OK=1 을 명시해야 한다 (실주문).
+# ★ live-upbit 의 start 는 reflex supervisor 에 upbit 가 있으면 거부한다 — 키는 달라도 **같은 업비트 계정**이라
+#   잔고·보유가 섞인다.
+# ★ live·live-upbit 은 install·start·restart 때 COCKPIT_LIVE_OK=1 을 명시해야 한다 (실주문).
 # ★ 옛 단일 인스턴스(라벨 com.yovel.cockpit · ~/cockpit/install.env)는 같은 모드의 restart·stop 이 넘겨받는다.
 # ★ 기계를 옮길 땐 옛 기계의 자동 시작부터 끈다 (docs/ops.md).
 set -euo pipefail
@@ -73,13 +77,14 @@ build_mac() {
 usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # 모드는 늘 명시한다 — 기본값을 두면 paper 를 만지려다 live 를 건드린다.
-need_mode() { case "${1:-}" in paper|live) ;; *) usage ;; esac; }
+MODES="paper live live-upbit"
+need_mode() { case "${1:-}" in paper|live|live-upbit) ;; *) usage ;; esac; }
 live_ok() {
-  if [ "$1" = live ] && [ "${COCKPIT_LIVE_OK:-}" != 1 ]; then
-    echo "★ live 는 실주문이다 — 확인했으면 COCKPIT_LIVE_OK=1 을 붙여 다시" >&2; exit 1
+  if [ "$1" != paper ] && [ "${COCKPIT_LIVE_OK:-}" != 1 ]; then
+    echo "★ $1 는 실주문이다 — 확인했으면 COCKPIT_LIVE_OK=1 을 붙여 다시" >&2; exit 1
   fi
 }
-default_port() { if [ "$1" = live ]; then echo 7738; else echo 7737; fi; }
+default_port() { case "$1" in live) echo 7738 ;; live-upbit) echo 7739 ;; *) echo 7737 ;; esac; }
 
 # 이 PC 의 flat6 설정 속 키움 앱키 지문 (지문@파일,…) — start 가 맥 인스턴스의 키와 비교한다 (값은 안 보낸다).
 # 키는 기계를 가리지 않는다 — PC 수집기와 맥 콕핏이 같은 키면 서로의 토큰을 끊는다. .env.macbook 에서 바꿀 수 있다.
@@ -212,13 +217,14 @@ cmd_install() {
   case "$mode" in
     paper) args=(--mode paper) ;;
     live) args=(--broker kiwoom --mode live) ;;
+    live-upbit) args=(--broker upbit --mode live) ;;
   esac
   pick_host
   { printf '%s\n' "$REMOTE_LIB"; cat <<'EOF'
 mode=$1; port=$2; shift 2
 D="$C/$mode"; L=$(label "$mode")
 [ -x "$C/bin/cockpitd" ] || { echo "★ 먼저 push"; exit 1; }
-for o in paper live; do
+for o in paper live live-upbit; do
   [ "$o" != "$mode" ] && [ -f "$C/$o/install.env" ] && [ "$(. "$C/$o/install.env"; echo "$PORT")" = "$port" ] &&
     { echo "★ 포트 $port 는 $o 가 쓴다 — COCKPIT_PORT 로 다른 포트"; exit 1; }
 done
@@ -265,6 +271,16 @@ if [ ! -f "$D/.env" ] && [ ! -f "$D/.env.example" ]; then
 # COCKPIT_TELEGRAM_CHAT_ID=...
 # 계정 핸들은 install 플래그 --acct 로 준다 (flat6 가 목표에 싣는 값과 다르면 E_ACCT).
 # 키움 토큰 파일은 비워 둔다 → data-dir 안 kiwoom_token.json (키당 토큰 1 — 다른 프로그램과 같은 파일을 쓰지 않는다)
+ENV
+  elif [ "$mode" = live-upbit ]; then
+    cat > "$D/.env.example" <<'ENV'
+# 콕핏 업비트 live 설정 — cp .env.example .env 후 채운다. ★ 키 값은 여기 쓰지 말고 *_FILE 로 파일 경로만 (chmod 600).
+# 한 파일에 라벨(access / secret)로 둘 다 있으면 `경로#라벨` 로 가리킨다 (라벨 다음 줄이 값).
+# COCKPIT_UPBIT_ACCESS_KEY_FILE=/Users/<나>/cockpit/secrets/upbit_key#access
+# COCKPIT_UPBIT_SECRET_KEY_FILE=/Users/<나>/cockpit/secrets/upbit_key#secret
+# COCKPIT_TELEGRAM_BOT_TOKEN_FILE=/Users/<나>/cockpit/secrets/telegram_bot_token
+# COCKPIT_TELEGRAM_CHAT_ID=...
+# 계정 핸들은 install 플래그 --acct 로 준다 (flat6 가 목표에 싣는 값과 다르면 E_ACCT).
 ENV
   else
     cat > "$D/.env.example" <<'ENV'
@@ -313,6 +329,12 @@ ex=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:REFLEX_SUPERVISOR_E
 if [ -n "$ck" ] && [ "$ck" = "$rk" ] && loaded com.reflex.supervisor && echo ",$ex," | grep -q -E ',(kiwoom|us),'; then
   echo "★ 거부 — reflex 가 같은 키움 키를 쓴다 (supervisor 켜짐 · 거래소 $ex)."
   echo "  국내봇(kiwoom)·미장봇(us)을 supervisor 에서 빼고 다시. 키당 토큰 1 이라 서로를 끊는다."
+  exit 1
+fi
+# ★ 업비트는 키가 달라도 reflex 와 같은 계정이다 — reflex 업비트 봇이 돌면 잔고·보유가 섞인다.
+if [ "$m" = live-upbit ] && loaded com.reflex.supervisor && echo ",$ex," | grep -q ',upbit,'; then
+  echo "★ 거부 — reflex supervisor 가 업비트를 돌린다 (거래소 $ex). 같은 업비트 계정이라 잔고·보유가 섞인다."
+  echo "  supervisor 에서 upbit 를 빼고 다시."
   exit 1
 fi
 # ★ flat6 설정(~/flat6/.env*)에 같은 키가 있어도 거부 — 피드가 그 키의 WS·토큰을 쥔다. 지금 꺼져 있어도
@@ -369,7 +391,7 @@ EOF
 
 # ── status ───────────────────────────────────────────────────────────────────
 cmd_status() {
-  local modes=${1:-"paper live"}
+  local modes=${1:-$MODES}
   echo "이 PC HEAD $(git -C "$ROOT" rev-parse --short HEAD)"
   pick_host
   echo "맥 = $HOST"

@@ -24,27 +24,32 @@ schtasks /Create /TN "cockpit" /SC ONLOGON /RL LIMITED /TR "C:\cockpit\cockpitsu
 빌드하는 PC 에서 SSH 로 맥을 부린다. 접속 정보는 저장소 루트 `.env.macbook` (gitignore — `MAC_SSH=user@host.local`,
 mDNS 가 안 풀릴 때 `MAC_SSH_FALLBACK="user@192.168.x.y"`). 맥에 Go 는 필요 없다 (PC 에서 darwin/amd64 로 빌드).
 
-★ **paper 와 live 는 따로 도는 두 인스턴스다** (2026-10-17). 모드를 늘 명시한다 — 기본값이 있으면 paper 를 만지려다 live 를 건드린다.
+★ **paper 와 live 는 따로 도는 인스턴스다** (2026-10-17). 모드를 늘 명시한다 — 기본값이 있으면 paper 를 만지려다 live 를 건드린다.
+콕핏 하나 = 실브로커 하나라서 업비트 실매매는 세 번째 인스턴스 `live-upbit` 다 (2026-10-26).
 
-| | paper | live |
-|---|---|---|
-| launchd 라벨 | `com.yovel.cockpit.paper` | `com.yovel.cockpit.live` |
-| 포트 | 7737 | 7738 |
-| data-dir = 실행 폴더 | `~/cockpit/paper` | `~/cockpit/live` |
-| 로그 | `~/cockpit/logs/cockpit-paper.log` | `~/cockpit/logs/cockpit-live.log` |
+| | paper | live (키움) | live-upbit |
+|---|---|---|---|
+| launchd 라벨 | `com.yovel.cockpit.paper` | `com.yovel.cockpit.live` | `com.yovel.cockpit.live-upbit` |
+| 포트 | 7737 | 7738 | 7739 |
+| data-dir = 실행 폴더 | `~/cockpit/paper` | `~/cockpit/live` | `~/cockpit/live-upbit` |
+| 로그 | `~/cockpit/logs/cockpit-paper.log` | `~/cockpit/logs/cockpit-live.log` | `~/cockpit/logs/cockpit-live-upbit.log` |
+| 콕핏 플래그 | `--mode paper` | `--broker kiwoom --mode live` | `--broker upbit --mode live` |
 
 | 명령 | 하는 일 |
 |---|---|
 | `smoke` | 맥 임시 폴더에서 키·`.env` 없이 paper 로 띄워 health·집행 루프·SIGTERM 정지를 보고 지운다 |
 | `push` | 빌드 → `~/cockpit/releases/<sha>` → `~/cockpit/bin` 이 가리킨다 (재시작 안 함 · 커밋 안 한 변경이 있으면 거부) · 도는 release 는 안 지운다 |
-| `install paper\|live [-- 플래그]` | launchd 설정을 `~/cockpit/<모드>` 에 만들어만 둔다 · live 는 `COCKPIT_LIVE_OK=1` 필요 |
-| `start` / `stop` / `restart` `paper\|live` | start = 설정에 **지금 release 를 박아** `~/Library/LaunchAgents` 에 넣고 켠다 (재부팅 뒤에도 뜬다) · stop = 끄고 뺀다 · live 의 start·restart 는 `COCKPIT_LIVE_OK=1` 필요 |
-| `status [paper\|live]` | 모드마다 launchd·도는 release·health·하트비트·`.env`·장부 수·로그 끝 + reflex supervisor·잠자기·메모리·시계 |
-| `tunnel [paper\|live]` | 이 PC `127.0.0.1:<그 모드 포트>` → 맥 콕핏 (끊기면 5초 뒤 다시) + API 토큰 사본 (paper `data/macbook/api-token` · live `data/macbook/live.api-token`) |
+| `install paper\|live\|live-upbit [-- 플래그]` | launchd 설정을 `~/cockpit/<모드>` 에 만들어만 둔다 · live·live-upbit 은 `COCKPIT_LIVE_OK=1` 필요 |
+| `start` / `stop` / `restart` `<모드>` | start = 설정에 **지금 release 를 박아** `~/Library/LaunchAgents` 에 넣고 켠다 (재부팅 뒤에도 뜬다) · stop = 끄고 뺀다 · live·live-upbit 의 start·restart 는 `COCKPIT_LIVE_OK=1` 필요 |
+| `status [<모드>]` | 모드마다 launchd·도는 release·health·하트비트·`.env`·장부 수·로그 끝 + reflex supervisor·잠자기·메모리·시계 |
+| `tunnel [<모드>]` | 이 PC `127.0.0.1:<그 모드 포트>` → 맥 콕핏 (끊기면 5초 뒤 다시) + API 토큰 사본 (paper `data/macbook/api-token` · 그 밖 `data/macbook/<모드>.api-token`) |
 
 - 콕핏·감시자는 실행 폴더의 `.env` 를 읽는다 → 인스턴스마다 `~/cockpit/<모드>/.env` (키 `*_FILE` 경로·텔레그램 · install 이
   `.env.example` 을 남긴다). ★ **paper 는 live 의 키움 키를 못 본다** — 키당 토큰 1 이라 paper 가 키를 쥐면 live 의 토큰을 끊는다.
-  계정 핸들은 install 플래그 `--acct` 로 준다 (paper `acc_macpaper` · live `acc_maclive` — 다르면 잘못 보낸 목표가 `E_ACCT` 로 튕긴다).
+  계정 핸들은 install 플래그 `--acct` 로 준다 (paper `acc_macpaper` · live `acc_maclive` · live-upbit `acc_macupbit` —
+  다르면 잘못 보낸 목표가 `E_ACCT` 로 튕긴다).
+- ★ **업비트 계정은 reflex 와 같다** (콕핏 키는 따로 받은 두 번째 키). `start live-upbit` 은 reflex supervisor 에 `upbit` 가
+  있으면 거부한다 — 잔고·보유가 섞인다. 계좌에 원래 있던 코인(에어드랍·먼지)은 콕핏 로트가 아니라서 건드리지 않는다.
 - 옛 단일 인스턴스(라벨 `com.yovel.cockpit` · `~/cockpit/install.env`)는 같은 모드의 `restart`·`stop` 이 넘겨받는다 —
   끄고 자동 시작을 빼고 옛 설정을 `~/cockpit/old/` 로 치운다. 옛 로그 `logs/cockpit.log` 는 그 모드 로그로 이름을 바꾸고
   옛 경로는 링크로 남긴다 (다른 세션·도구가 그 경로를 읽는다).
