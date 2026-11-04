@@ -11,6 +11,7 @@
 //	brokerctl -broker upbit  sell KRW-BTC -all -yes
 //	brokerctl -broker kiwoom ledger 20261023 -out broker_ledger_20261023.json
 //	brokerctl -broker kiwoom book 069500
+//	brokerctl -broker kiwoom status 069500 0094019
 //	brokerctl -broker kiwoom buy  069500 -qty 1 -limit 60850 -ioc -yes
 //
 // ★ ledger · book 은 조회만 하고 토큰을 **발급하지 않는다** — 도는 데몬의 토큰 파일을 빌려 쓴다
@@ -95,9 +96,9 @@ func run(args []string) error {
 		rest = fs.Args()[1:]
 	}
 	if len(pos) == 0 {
-		return errors.New("명령이 없다: cash | positions | quote SYM | book SYM | buy SYM | sell SYM | ledger [YYYYMMDD]")
+		return errors.New("명령이 없다: cash | positions | quote SYM | book SYM | status SYM ORDNO | buy SYM | sell SYM | ledger [YYYYMMDD]")
 	}
-	o.noIssue = pos[0] == "ledger" || pos[0] == "book"
+	o.noIssue = pos[0] == "ledger" || pos[0] == "book" || pos[0] == "status"
 
 	// 업비트 시세는 공개 API — 키 없이도 quote 는 된다.
 	if o.broker == "upbit" && pos[0] == "quote" {
@@ -144,6 +145,21 @@ func run(args []string) error {
 		}
 		b, err := bk.Book(ctx, s)
 		return show(b, err)
+	case "status":
+		// 주문 하나의 체결 현황 (집행기가 보는 값 그대로 — Known · Open · FilledQty).
+		s, err := sym()
+		if err != nil {
+			return err
+		}
+		if len(pos) < 3 {
+			return errors.New("status: 주문번호가 없다")
+		}
+		lc, ok := br.(broker.LimitChecker)
+		if !ok {
+			return fmt.Errorf("%s 는 주문번호로 체결을 못 묻는다", br.Name())
+		}
+		st, err := lc.LimitStatus(ctx, s, pos[2])
+		return show(st, err)
 	case "buy", "sell":
 		s, err := sym()
 		if err != nil {
