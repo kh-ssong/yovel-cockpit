@@ -12,7 +12,7 @@
 //	brokerctl -broker kiwoom ledger 20261023 -out broker_ledger_20261023.json
 //	brokerctl -broker kiwoom book 069500
 //	brokerctl -broker kiwoom status 069500 0094019
-//	brokerctl -broker kiwoom buy  069500 -qty 1 -limit 60850 -ioc -yes
+//	brokerctl -broker kiwoom buy  069500 -qty 1 -limit 60850 -ioc -borrow -yes
 //
 // ★ ledger · book 은 조회만 하고 토큰을 **발급하지 않는다** — 도는 데몬의 토큰 파일을 빌려 쓴다
 // (만료·무효면 멈춘다). 키움 응답을 그대로 담는다 (kiwoom.Ledger).
@@ -61,6 +61,7 @@ type opts struct {
 	out       string
 	noIssue   bool
 	ioc       bool
+	borrow    bool
 }
 
 func run(args []string) error {
@@ -80,6 +81,7 @@ func run(args []string) error {
 	fs.BoolVar(&o.all, "all", false, "sell: 보유 전량(매도 가능 수량)")
 	fs.BoolVar(&o.yes, "yes", false, "★ 실주문을 낸다. 없으면 무엇을 낼지 보여주기만 한다")
 	fs.StringVar(&o.out, "out", "", "ledger: 저장할 파일 (비면 화면)")
+	fs.BoolVar(&o.borrow, "borrow", false, "키움: 어떤 명령이든 토큰을 발급하지 않고 data-dir 의 데몬 토큰만 빌려 쓴다 (도는 데몬 옆에서 주문할 때)")
 	fs.BoolVar(&o.ioc, "ioc", false, "buy·sell: -limit 지정가를 IOC 로 (바로 체결되는 만큼만 · 나머지는 거래소가 취소)")
 
 	// 플래그가 서브커맨드·종목 뒤에 와도 받는다 (`buy KRW-BTC -krw 6000 -yes`).
@@ -98,7 +100,7 @@ func run(args []string) error {
 	if len(pos) == 0 {
 		return errors.New("명령이 없다: cash | positions | quote SYM | book SYM | status SYM ORDNO | buy SYM | sell SYM | ledger [YYYYMMDD]")
 	}
-	o.noIssue = pos[0] == "ledger" || pos[0] == "book" || pos[0] == "status"
+	o.noIssue = o.borrow || pos[0] == "ledger" || pos[0] == "book" || pos[0] == "status"
 
 	// 업비트 시세는 공개 API — 키 없이도 quote 는 된다.
 	if o.broker == "upbit" && pos[0] == "quote" {
