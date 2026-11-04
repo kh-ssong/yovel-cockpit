@@ -78,14 +78,24 @@ func checkLedger(day string, orders []store.Order, l kiwoom.Ledger) ledgerCheck 
 		if at.In(session.KST).Format("20060102") != day {
 			continue
 		}
-		a := mine[o.BrokerOrderID]
-		if a == nil {
-			a = &agg{code: o.Symbol.Code, side: o.Side}
-			mine[o.BrokerOrderID] = a
+		add := func(id string, qty, px, fee float64) {
+			a := mine[id]
+			if a == nil {
+				a = &agg{code: o.Symbol.Code, side: o.Side}
+				mine[id] = a
+			}
+			a.qty += qty
+			a.amt += qty * px
+			a.fee += fee
 		}
-		a.qty += o.Qty
-		a.amt += o.Qty * o.Price
-		a.fee += o.FeeKRW
+		// ★ sweep 은 원장 한 줄에 증권사 주문이 여럿이다 — 조각(exec.fills) 단위로 맞댄다.
+		if o.Exec != nil && len(o.Exec.Fills) > 0 {
+			for _, f := range o.Exec.Fills {
+				add(f.OrderID, f.Qty, f.Price, f.FeeKRW)
+			}
+			continue
+		}
+		add(o.BrokerOrderID, o.Qty, o.Price, o.FeeKRW)
 	}
 
 	var c ledgerCheck

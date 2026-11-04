@@ -460,6 +460,16 @@ func (e *Engine) recentClosesLocked(now time.Time) []protocol.ClosedLot {
 	return out
 }
 
+// DropPending — 대기 로트(Pending)를 지운다. ★ 종결이 아니다 — 같은 목표로 다시 살 수 있다
+// (sweep 진입이 계좌 돈이 모자라 한 주도 못 산 경우 · 진행 중 주문 없이 대기 로트만 남지 않게).
+func (e *Engine) DropPending(intentID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if p, ok := e.positions[intentID]; ok && p.Pending {
+		delete(e.positions, intentID)
+	}
+}
+
 // MarkClosed 는 목표를 종결 처리한다 (청산 체결 후 호출).
 func (e *Engine) MarkClosed(intentID string) {
 	e.mu.Lock()

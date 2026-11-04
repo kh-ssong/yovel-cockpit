@@ -73,7 +73,9 @@ CREATE TABLE IF NOT EXISTS orders (
   -- ★ 사용자가 HTS 로 직접 판 것을 봇 청산으로 오인하면 형제 레그까지 잘못 청산된다.
   source          TEXT NOT NULL CHECK (source IN ('bot', 'manual')),
   daemon_sha      TEXT,
-  created_at      TEXT NOT NULL
+  created_at      TEXT NOT NULL,
+  -- 집행 방식 sweep 의 조각 체결 (protocol.ExecReport JSON). NULL = 단일 주문. v6
+  exec            TEXT
 );
 
 CREATE INDEX IF NOT EXISTS orders_intent ON orders (intent_id);

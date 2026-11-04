@@ -1,0 +1,56 @@
+{
+  "v": 1,
+  "typ": "intent.target",
+  "id": "01J9Z8QK3M7X2ABCDEFGHJKMNP",
+  "acct": "acc_7f3a",
+  "ts": "2026-11-05T00:12:00.000Z",
+  "exp": "2026-11-05T00:13:00.000Z",
+  "nonce": "b7d1e2f1",
+  "seq": 10433,
+  "sig": {
+    "alg": "ed25519",
+    "kid": "pw-2026-08",
+    "val": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/ABCDEFGHIJKLMNOPQRSTUV=="
+  },
+  "body": {
+    "scope": "kiwoom/etf_oldhigh_t2_069500_c23",
+    "as_of_bar": "2026-11-05T09:12:00+09:00",
+    "book_state": "normal",
+    "targets": [
+      {
+        "intent_id": "01J9Z8QK3M7X2ABCDEFGHJKMNQ",
+        "slot": "a",
+        "symbol": { "exchange": "KRX", "code": "069500" },
+        "side": "long",
+        "want": "open",
+        "weight": 1,
+        "entry": {
+          "mode": "sweep",
+          "not_after": "2026-11-05T09:12:40+09:00",
+          "ref_price": 60855,
+          "cap_price": 60850,
+          "sweep_until": "2026-11-05T09:12:30+09:00",
+          "max_slip_bp": 80
+        },
+        "exit": {
+          "stop_price": 51725,
+          "time_exit_at": "2026-11-05T09:17:30+09:00"
+        }
+      },
+      {
+        "intent_id": "01J9Z8QK3M7X2ABCDEFGHJKMNR",
+        "slot": "a",
+        "symbol": { "exchange": "KRX", "code": "069500" },
+        "side": "long",
+        "want": "flat",
+        "mark_price": 60895,
+        "mark_at": "2026-11-05T09:11:59+09:00",
+        "exit_exec": {
+          "mode": "sweep",
+          "floor_price": 60900,
+          "sweep_until": "2026-11-05T09:12:29+09:00"
+        }
+      }
+    ]
+  }
+}

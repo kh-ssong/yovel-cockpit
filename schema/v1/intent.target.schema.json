@@ -66,7 +66,8 @@
           "type": "string",
           "format": "date-time",
           "description": "mark_price 의 시각. 없으면 as_of_bar. 목표 최대 나이보다 늙은 mark 는 버린다."
-        }
+        },
+        "exit_exec": { "$ref": "#/$defs/ExitExec" }
       },
       "allOf": [
         {
@@ -81,8 +82,20 @@
       "additionalProperties": true,
       "required": ["mode", "not_after"],
       "properties": {
-        "mode": { "enum": ["market", "limit"] },
+        "mode": {
+          "enum": ["market", "limit", "sweep"],
+          "description": "★ 모르는 값은 E_SCHEMA 로 거절한다 (2026-11-04 전엔 시장가로 냈다). sweep = 창 안 IOC 조각 + 창 끝 잔량 시장가 (protocol.md §4.1.3)."
+        },
         "limit_price": { "type": "number", "exclusiveMinimum": 0 },
+        "cap_price": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "sweep 상한. 창 안에서는 매도1 ≤ cap_price 일 때만 이 값으로 IOC 를 낸다. 값은 신호원이 정한다."
+        },
+        "sweep_until": {
+          "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
+          "description": "sweep 창 끝 (≤ not_after). 넘으면 잔량을 시장가로 산다 (max_slip_bp 를 넘으면 포기). 콕핏이 2분으로 당길 수 있다."
+        },
         "not_after": {
           "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
           "description": "★ 필수. 이 시각을 넘으면 진입만 포기한다 — 청산·stop 은 계속 유효."
@@ -96,15 +109,37 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 1000,
-          "description": "허용 슬리피지(bp). 넘으면 진입 포기 + ack{E_BROKER}."
+          "description": "허용 슬리피지(bp). 넘으면 진입 포기 + ack{E_BROKER}. sweep 이면 창 끝 잔량 시장가의 상한 (cap_price 대비 · 넘으면 잔량 포기)."
         }
       },
       "allOf": [
         {
           "if": { "properties": { "mode": { "const": "limit" } }, "required": ["mode"] },
           "then": { "required": ["limit_price"] }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "sweep" } }, "required": ["mode"] },
+          "then": { "required": ["cap_price", "sweep_until"] }
         }
       ]
+    },
+    "ExitExec": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["mode", "floor_price", "sweep_until"],
+      "description": "want=flat 청산의 집행 방식 (선택 · 없으면 시장가). ★ stop·시간청산(콕핏 로컬 층)엔 쓰지 않는다 — 안전망은 기다리지 않는다.",
+      "properties": {
+        "mode": { "enum": ["sweep"] },
+        "floor_price": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "sweep 바닥. 창 안에서는 매수1 ≥ floor_price 일 때만 이 값으로 IOC 매도."
+        },
+        "sweep_until": {
+          "$ref": "urn:yovel:v1:common#/$defs/Timestamp",
+          "description": "창 끝. 넘으면 잔량 시장가 매도. 콕핏이 2분으로 당길 수 있다."
+        }
+      }
     },
     "Exit": {
       "type": "object",

@@ -10,9 +10,12 @@
 //	brokerctl -broker kiwoom buy  005930  -qty 1 -yes
 //	brokerctl -broker upbit  sell KRW-BTC -all -yes
 //	brokerctl -broker kiwoom ledger 20261023 -out broker_ledger_20261023.json
+//	brokerctl -broker kiwoom book 069500
+//	brokerctl -broker kiwoom buy  069500 -qty 1 -limit 60850 -ioc -yes
 //
-// ★ ledger 는 조회만 하고 토큰을 **발급하지 않는다** — 도는 데몬의 토큰 파일을 빌려 쓴다
+// ★ ledger · book 은 조회만 하고 토큰을 **발급하지 않는다** — 도는 데몬의 토큰 파일을 빌려 쓴다
 // (만료·무효면 멈춘다). 키움 응답을 그대로 담는다 (kiwoom.Ledger).
+// book = 최우선 호가 (집행 방식 sweep 이 보는 값 — ka10004). -ioc = 지정가를 IOC 로 (sweep 조각과 같은 주문).
 // ★ 이건 **원장 밖** 주문이다. 데몬이 보유 중인 종목을 여기서 팔면, 데몬은 다음 틱에
 // 그 포지션을 "사후 감지 manual" 로 종결한다. 데몬이 쥔 종목은 건드리지 말 것.
 // ★ 자격증명은 데몬과 같은 환경변수에서만 읽는다 (플래그로 받으면 ps 에 찍힌다).
@@ -56,6 +59,7 @@ type opts struct {
 	yes       bool
 	out       string
 	noIssue   bool
+	ioc       bool
 }
 
 func run(args []string) error {
@@ -75,6 +79,7 @@ func run(args []string) error {
 	fs.BoolVar(&o.all, "all", false, "sell: 보유 전량(매도 가능 수량)")
 	fs.BoolVar(&o.yes, "yes", false, "★ 실주문을 낸다. 없으면 무엇을 낼지 보여주기만 한다")
 	fs.StringVar(&o.out, "out", "", "ledger: 저장할 파일 (비면 화면)")
+	fs.BoolVar(&o.ioc, "ioc", false, "buy·sell: -limit 지정가를 IOC 로 (바로 체결되는 만큼만 · 나머지는 거래소가 취소)")
 
 	// 플래그가 서브커맨드·종목 뒤에 와도 받는다 (`buy KRW-BTC -krw 6000 -yes`).
 	var pos []string
@@ -90,9 +95,9 @@ func run(args []string) error {
 		rest = fs.Args()[1:]
 	}
 	if len(pos) == 0 {
-		return errors.New("명령이 없다: cash | positions | quote SYM | buy SYM | sell SYM | ledger [YYYYMMDD]")
+		return errors.New("명령이 없다: cash | positions | quote SYM | book SYM | buy SYM | sell SYM | ledger [YYYYMMDD]")
 	}
-	o.noIssue = pos[0] == "ledger"
+	o.noIssue = pos[0] == "ledger" || pos[0] == "book"
 
 	// 업비트 시세는 공개 API — 키 없이도 quote 는 된다.
 	if o.broker == "upbit" && pos[0] == "quote" {
@@ -128,6 +133,17 @@ func run(args []string) error {
 		}
 		q, err := br.Quote(ctx, s)
 		return show(q, err)
+	case "book":
+		s, err := sym()
+		if err != nil {
+			return err
+		}
+		bk, ok := br.(broker.BookReader)
+		if !ok {
+			return fmt.Errorf("%s 는 호가를 모른다", br.Name())
+		}
+		b, err := bk.Book(ctx, s)
+		return show(b, err)
 	case "buy", "sell":
 		s, err := sym()
 		if err != nil {
@@ -202,11 +218,17 @@ func order(ctx context.Context, br broker.Broker, side string, s protocol.Symbol
 
 	req := broker.OrderRequest{
 		IntentID: "manual-" + time.Now().Format("150405"),
-		Symbol:   s, Qty: qty, LimitPrice: o.limit, RefPrice: q.Price,
+		Symbol:   s, Qty: qty, LimitPrice: o.limit, RefPrice: q.Price, IOC: o.ioc,
+	}
+	if o.ioc && o.limit <= 0 {
+		return errors.New("-ioc 는 -limit 지정가와 같이 (시장가 IOC 는 내지 않는다)")
 	}
 	kind := "시장가"
 	if o.limit > 0 {
 		kind = fmt.Sprintf("지정가 %v", o.limit)
+		if o.ioc {
+			kind += " IOC"
+		}
 	}
 	fmt.Printf("%s %s %s %v (기준가 %v · 약 %.0f원) via %s\n",
 		br.Name(), side, s.Code, qty, q.Price, qty*q.Price, kind)

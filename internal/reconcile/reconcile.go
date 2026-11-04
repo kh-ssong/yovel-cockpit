@@ -38,6 +38,8 @@ type ExitOrder struct {
 	Qty float64 `json:"qty,omitempty"`
 	// RecvAt — flat 목표가 콕핏에 처음 도착한 시각 (엔진이 채운다, flat 이 아닌 청산은 0). 지연 계측용.
 	RecvAt time.Time `json:"recv_at,omitempty"`
+	// Exec — flat 목표가 실은 청산 집행 방식 (target.exit_exec). nil = 시장가. flat 이 아닌 청산엔 없다.
+	Exec *protocol.ExitExec `json:"exec,omitempty"`
 }
 
 type StopUpdate struct {
@@ -221,7 +223,7 @@ func Build(target protocol.IntentTarget, actual []protocol.Position, opt Options
 		switch {
 		case action == protocol.ActionExit:
 			if held {
-				plan.Exits = append(plan.Exits, ExitOrder{Position: pos, Reason: "flat"})
+				plan.Exits = append(plan.Exits, ExitOrder{Position: pos, Reason: "flat", Exec: t.ExitExec})
 				plan.Acks = append(plan.Acks, ack(t.IntentID, "applied", nil))
 			} else {
 				plan.Acks = append(plan.Acks, ack(t.IntentID, "noop", nil))
@@ -466,6 +468,8 @@ func buildEnter(t protocol.Target, opt Options, remaining float64) (EnterOrder, 
 	if t.Entry != nil && t.Entry.Mode == "limit" && t.Entry.LimitPrice > 0 {
 		price = t.Entry.LimitPrice
 	}
+	// ★ sweep 은 사이징을 cap 이 아니라 ref(신호가)로 한다 — cap 은 ref 보다 낮게 오고, 창 끝 잔량은 시장가라
+	//   cap 으로 사이징하면 예산을 넘겨 산다.
 
 	m := opt.market(t.Symbol)
 	res := sizing.Cap(sizing.Shares(t.Weight, opt.Budget, price, m), opt.MaxQty, opt.Budget, price, m)

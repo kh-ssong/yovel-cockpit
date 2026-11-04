@@ -14,6 +14,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -27,7 +28,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 5
+const schemaVersion = 6
 
 type Store struct{ db *sql.DB }
 
@@ -124,6 +125,18 @@ func (s *Store) migrate(ctx context.Context) error {
 			}
 		}
 		v.Int64 = 5
+	}
+	if v.Int64 < 6 {
+		// v5 → v6: 원장 집행 내역 (orders.exec — sweep 조각 체결 JSON). 옛 행은 NULL = 단일 주문.
+		for _, q := range []string{
+			`ALTER TABLE orders ADD COLUMN exec TEXT`,
+			`INSERT INTO schema_version(version) VALUES (6)`,
+		} {
+			if _, err := s.db.ExecContext(ctx, q); err != nil {
+				return fmt.Errorf("v5→v6: %w", err)
+			}
+		}
+		v.Int64 = 6
 	}
 	if v.Int64 > schemaVersion {
 		// 옛 바이너리가 새 DB 를 열면 모르는 컬럼을 조용히 무시하며 돈다. 그게 최악이다.
@@ -336,6 +349,8 @@ type Order struct {
 	Source    Source        `json:"source"` // bot | manual
 	DaemonSHA string        `json:"daemon_sha,omitempty"`
 	CreatedAt time.Time     `json:"created_at"`
+	// Exec — 집행 방식 sweep 의 조각 내역 (v6). 없으면 단일 주문이다.
+	Exec *protocol.ExecReport `json:"exec,omitempty"`
 }
 
 // Source — 이 주문을 누가 냈는가.
@@ -360,16 +375,24 @@ func (s *Store) RecordOrder(ctx context.Context, o Order) error {
 	if o.CreatedAt.IsZero() {
 		o.CreatedAt = time.Now().UTC()
 	}
+	var exec any
+	if o.Exec != nil {
+		raw, err := json.Marshal(o.Exec)
+		if err != nil {
+			return err
+		}
+		exec = string(raw)
+	}
 	_, err := s.db.ExecContext(ctx, `
 INSERT OR IGNORE INTO orders (id, intent_id, phase, exchange, code, side, qty, price,
   broker_order_id, signal_ts, submitted_at, filled_at, slippage_bp, fee_krw,
-  exit_reason, realized_pct, broker_code, detail, mode, source, daemon_sha, created_at, kid, scope)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  exit_reason, realized_pct, broker_code, detail, mode, source, daemon_sha, created_at, kid, scope, exec)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		o.ID, o.IntentID, o.Phase, o.Symbol.Exchange, o.Symbol.Code, o.Side, o.Qty, o.Price,
 		nullStr(o.BrokerOrderID), nullTime(o.SignalTS), nullTime(o.SubmittedAt), nullTime(o.FilledAt),
 		o.SlippageBp, o.FeeKRW, nullStr(o.ExitReason), o.RealizedPct, nullStr(o.BrokerCode),
 		nullStr(o.Detail), string(o.Mode), string(o.Source), nullStr(o.DaemonSHA), ts(o.CreatedAt),
-		o.Kid, o.Scope)
+		o.Kid, o.Scope, exec)
 	return err
 }
 
@@ -398,7 +421,7 @@ func (s *Store) Ledger(ctx context.Context, q LedgerQuery) ([]Order, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, intent_id, phase, exchange, code, side, qty, price, broker_order_id,
        signal_ts, submitted_at, filled_at, slippage_bp, fee_krw, exit_reason,
-       realized_pct, broker_code, detail, mode, source, daemon_sha, created_at, kid, scope
+       realized_pct, broker_code, detail, mode, source, daemon_sha, created_at, kid, scope, exec
 FROM orders WHERE mode = ? AND created_at >= ?
 ORDER BY created_at DESC, id DESC LIMIT ?`, string(q.Mode), since, q.Limit)
 	if err != nil {
@@ -409,13 +432,19 @@ ORDER BY created_at DESC, id DESC LIMIT ?`, string(q.Mode), since, q.Limit)
 	var out []Order
 	for rows.Next() {
 		var o Order
-		var brokerOrder, signalTS, submitted, filled, exitReason, brokerCode, detail, sha sql.NullString
+		var brokerOrder, signalTS, submitted, filled, exitReason, brokerCode, detail, sha, exec sql.NullString
 		var created string
 		if err := rows.Scan(&o.ID, &o.IntentID, &o.Phase, &o.Symbol.Exchange, &o.Symbol.Code,
 			&o.Side, &o.Qty, &o.Price, &brokerOrder, &signalTS, &submitted, &filled,
 			&o.SlippageBp, &o.FeeKRW, &exitReason, &o.RealizedPct, &brokerCode, &detail,
-			&o.Mode, &o.Source, &sha, &created, &o.Kid, &o.Scope); err != nil {
+			&o.Mode, &o.Source, &sha, &created, &o.Kid, &o.Scope, &exec); err != nil {
 			return nil, err
+		}
+		if exec.Valid && exec.String != "" {
+			var r protocol.ExecReport
+			if json.Unmarshal([]byte(exec.String), &r) == nil {
+				o.Exec = &r
+			}
 		}
 		o.BrokerOrderID, o.ExitReason, o.BrokerCode, o.Detail, o.DaemonSHA =
 			brokerOrder.String, exitReason.String, brokerCode.String, detail.String, sha.String

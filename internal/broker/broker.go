@@ -66,6 +66,21 @@ type OrderRequest struct {
 	// Kid · Scope — 이 주문을 낸 소스(장부). paper 가 장부별 비용(books.json paper_fee_bp)을
 	// 고르는 데만 쓴다 — 실브로커는 무시한다 (진짜 비용은 체결 통지가 준다).
 	Kid, Scope string
+	// IOC — 지정가(LimitPrice)를 IOC 로 낸다: 바로 체결되는 만큼만 체결되고 나머지는 거래소가 취소한다.
+	// ★ 호가에 남지 않는다 (집행 방식 sweep 의 조각). LimitPrice 없이 켜면 드라이버가 거부한다.
+	IOC bool
+}
+
+// Book — 최우선 호가 한 장. 잔량 0 = 모름.
+type Book struct {
+	Ask1, Ask1Qty float64 // 매도1 (내가 살 수 있는 값)
+	Bid1, Bid1Qty float64 // 매수1 (내가 팔 수 있는 값)
+	AsOf          time.Time
+}
+
+// BookReader — 최우선 호가를 알려주고 IOC 지정가를 받는 브로커 (집행 방식 sweep 을 할 수 있다).
+type BookReader interface {
+	Book(ctx context.Context, s protocol.Symbol) (Book, error)
 }
 
 // Fill — 체결 결과.
@@ -86,6 +101,8 @@ type Fill struct {
 	// 액면 그대로 믿으면 안 된다**는 뜻이다 (예: 시세원 없이 평단으로 근사 체결).
 	// 원장에 그대로 실려서 나중에 "왜 이 건만 이상한가" 를 사람이 되짚을 수 있게 한다.
 	Detail string
+	// Exec — 여러 조각을 합친 체결이면 그 내역 (집행 방식 sweep). 원장 orders.exec 로 간다.
+	Exec *protocol.ExecReport
 }
 
 // Broker 는 데몬이 증권사에 요구하는 전부.

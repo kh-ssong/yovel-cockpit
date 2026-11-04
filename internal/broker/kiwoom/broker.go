@@ -44,11 +44,13 @@ const (
 	apiBuyableQt = "kt00011" // 증거금율별 주문가능수량
 	apiFills     = "ka10076" // 체결요청
 	apiQuote     = "ka10007" // 시세표성정보요청
+	apiBook      = "ka10004" // 주식호가요청
 
-	// trde_tp — 거래구분. ★ 3=시장가 / 0=보통(지정가).
+	// trde_tp — 거래구분. ★ 3=시장가 / 0=보통(지정가) / 10=보통(IOC).
 	// 진단 스크립트에 1 을 지정가로 쓴 흔적이 있으나 라이브 경로는 0 이다.
-	tradeMarket = "3"
-	tradeLimit  = "0"
+	tradeMarket   = "3"
+	tradeLimit    = "0"
+	tradeLimitIOC = "10"
 )
 
 type Config struct {
@@ -247,6 +249,36 @@ func (b *Broker) Quote(ctx context.Context, s protocol.Symbol) (broker.Quote, er
 	return broker.Quote{Symbol: s, Price: p, AsOf: asOf}, nil
 }
 
+// Book — 최우선 호가 (ka10004 주식호가요청).
+//
+// ★ 가격은 부호가 붙어 온다("+60850" = 상승 · "-60850" = 하락) — 절대값이 가격이다 (Quote 와 같다).
+// ★ 한쪽이 비면(상·하한가·호가 공백) 그쪽은 0 이다 — 0 을 «그 값에 살 수 있다» 로 읽지 말 것.
+// 시각 = 호가잔량기준시간(bid_req_base_tm, HHMMSS · 오늘). 못 읽으면 조회 시각.
+func (b *Broker) Book(ctx context.Context, s protocol.Symbol) (broker.Book, error) {
+	var out struct {
+		BaseTm  string `json:"bid_req_base_tm"`
+		Ask1    string `json:"sel_fpr_bid"` // 매도최우선호가
+		Ask1Qty string `json:"sel_fpr_req"` // 매도최우선잔량
+		Bid1    string `json:"buy_fpr_bid"` // 매수최우선호가
+		Bid1Qty string `json:"buy_fpr_req"` // 매수최우선잔량
+	}
+	if err := b.call(ctx, apiBook, pathCond, map[string]string{"stk_cd": s.Code}, &out); err != nil {
+		return broker.Book{}, err
+	}
+	bk := broker.Book{
+		Ask1: math.Abs(num(out.Ask1)), Ask1Qty: math.Abs(num(out.Ask1Qty)),
+		Bid1: math.Abs(num(out.Bid1)), Bid1Qty: math.Abs(num(out.Bid1Qty)),
+		AsOf: b.now().UTC(),
+	}
+	if bk.Ask1 <= 0 && bk.Bid1 <= 0 {
+		return broker.Book{}, fmt.Errorf("%w: %s 호가가 비었다 (매도1 %q · 매수1 %q)", broker.ErrUnknownSymbol, s.Code, out.Ask1, out.Bid1)
+	}
+	if t, ok := parseOrdTime(strings.TrimSpace(out.BaseTm), b.now()); ok {
+		bk.AsOf = t
+	}
+	return bk, nil
+}
+
 func (b *Broker) LotSize(protocol.Symbol) float64       { return 1 }
 func (b *Broker) MinOrderValue(protocol.Symbol) float64 { return 0 }
 
@@ -312,8 +344,14 @@ func (b *Broker) SubmitBuy(ctx context.Context, req broker.OrderRequest) (broker
 		"trde_tp":      tradeMarket,
 		"cond_uv":      "",
 	}
+	if req.IOC && req.LimitPrice <= 0 {
+		return broker.Submitted{}, fmt.Errorf("IOC 인데 지정가가 없다 — 시장가 IOC 는 내지 않는다")
+	}
 	if req.LimitPrice > 0 {
 		body["trde_tp"] = tradeLimit
+		if req.IOC {
+			body["trde_tp"] = tradeLimitIOC
+		}
 		body["ord_uv"] = strconv.Itoa(int(FloorToTick(req.LimitPrice, b.etp(req.Symbol))))
 	}
 
@@ -369,8 +407,14 @@ func (b *Broker) SubmitSell(ctx context.Context, req broker.OrderRequest) (broke
 		"trde_tp":      tradeMarket,
 		"cond_uv":      "",
 	}
+	if req.IOC && req.LimitPrice <= 0 {
+		return broker.Submitted{}, fmt.Errorf("IOC 인데 지정가가 없다 — 시장가 IOC 는 내지 않는다")
+	}
 	if req.LimitPrice > 0 {
 		body["trde_tp"] = tradeLimit
+		if req.IOC {
+			body["trde_tp"] = tradeLimitIOC
+		}
 		body["ord_uv"] = strconv.Itoa(int(CeilToTick(req.LimitPrice, b.etp(req.Symbol))))
 	}
 

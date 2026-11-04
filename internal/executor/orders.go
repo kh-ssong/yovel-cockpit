@@ -188,6 +188,10 @@ func (x *Executor) pollOne(ctx context.Context, now time.Time, w *store.WorkingO
 	if w == nil {
 		return
 	}
+	if w.Sweep != nil {
+		x.stepSweep(ctx, now, w, res) // 집행 방식 sweep 의 부모 주문 — 조각은 sweep.go 가 낸다
+		return
+	}
 	lc, ok := x.d.Broker.(broker.LimitChecker)
 	if !ok {
 		return
