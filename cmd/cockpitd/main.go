@@ -131,6 +131,10 @@ func run() error {
 	}
 	for _, b := range books.Books() {
 		log.Info("활성 전략(장부)", "name", b.Name, "kid", b.Kid, "scope", b.Scope, "seed", b.Seed, "max_qty", b.MaxQty, "weight", b.Weight, "paper_fee_bp", b.PaperFeeBp, "enabled", b.On())
+		if b.HandsOff() {
+			log.Warn("  청산도 손 뗀 장부 — 남은 로트를 콕핏이 팔지 않는다 (stop·시간청산·flat·derisk 전부). HTS 로 팔면 «수동 매도» 로 닫힌다",
+				"name", b.Name)
+		}
 	}
 	if books.Configured() {
 		log.Info("장부에 없는 (kid, scope) 의 진입은 E_INACTIVE 로 거절된다 — 청산은 계속")
