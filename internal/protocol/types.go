@@ -366,6 +366,40 @@ type ExecReport struct {
 	// unknown(조각 결과 미상) · error.
 	Ended  string `json:"ended,omitempty"`
 	Detail string `json:"detail,omitempty"`
+	// Tries — 낸 조각마다 그때 콕핏이 본 호가와 시각 (0 체결·거부 포함 · 관측 기록 — 집행 판단엔 안 쓴다).
+	// IOC 가 왜 안 닿았는지(호가가 낡았나 · 보내는 사이에 사라졌나)를 실전 체결로 재려고 남긴다 (2026-11-05).
+	Tries []SweepTry `json:"tries,omitempty"`
+}
+
+// SweepTry — 조각 주문 하나를 낸 기록.
+type SweepTry struct {
+	Kind    string  `json:"kind"`               // ioc | rest
+	OrderID string  `json:"order_id,omitempty"` // 거부면 비었다
+	Price   float64 `json:"price,omitempty"`    // IOC 지정가 (= cap · floor) · rest 는 0 (시장가)
+	Qty     float64 `json:"qty"`                // 낸 수량
+	// Book — 내기 전 마지막으로 본 최우선 호가. IOC 는 이 호가가 닿아서 냈다. rest 는 창 끝 직전 호가
+	// (매수 max_slip_bp 확인이면 그때 새로 읽은 것 · 아니면 창 안 마지막 조회 — 나이는 sent_at − book.recv_at).
+	Book *SweepBook `json:"book,omitempty"`
+	// SentAt — 주문 API 를 부르기 직전 (키움 매수는 kt00011 매수가능 확인 뒤). AckAt — 주문번호를 받은 시각.
+	SentAt time.Time  `json:"sent_at"`
+	AckAt  *time.Time `json:"ack_at,omitempty"`
+	// FilledQty · FillPrice — 이 조각의 체결 (0 체결 IOC 는 0). FilledAt — 증권사 체결 시각 (키움 = 초 단위) · 모르면 없다.
+	FilledQty float64    `json:"filled_qty"`
+	FillPrice float64    `json:"fill_price,omitempty"`
+	FilledAt  *time.Time `json:"filled_at,omitempty"`
+	Error     string     `json:"error,omitempty"` // 거부·결과 미상 사유
+}
+
+// SweepBook — 콕핏이 읽은 최우선 호가 한 번.
+type SweepBook struct {
+	Ask1    float64 `json:"ask1"`
+	Ask1Qty float64 `json:"ask1_qty"`
+	Bid1    float64 `json:"bid1"`
+	Bid1Qty float64 `json:"bid1_qty"`
+	// AsOf — 증권사가 준 호가 시각 (키움 ka10004 호가잔량기준시간 · 초 단위). ReqAt · RecvAt — 콕핏이 조회를 부른·받은 시각.
+	AsOf   time.Time `json:"as_of"`
+	ReqAt  time.Time `json:"req_at"`
+	RecvAt time.Time `json:"recv_at"`
 }
 
 // SweepFill — 조각 하나의 체결 (주문번호 단위 합).

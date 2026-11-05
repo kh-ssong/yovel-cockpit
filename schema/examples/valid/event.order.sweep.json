@@ -33,7 +33,23 @@
       "ioc_orders": 2,
       "rest_qty": 2,
       "rest_price": 60855,
-      "ended": "window"
+      "ended": "window",
+      "tries": [
+        { "kind": "ioc", "order_id": "0094019", "price": 60850, "qty": 3,
+          "book": { "ask1": 60850, "ask1_qty": 3, "bid1": 60845, "bid1_qty": 40, "as_of": "2026-11-05T00:12:07Z",
+                    "req_at": "2026-11-05T00:12:07.012Z", "recv_at": "2026-11-05T00:12:07.041Z" },
+          "sent_at": "2026-11-05T00:12:07.069Z", "ack_at": "2026-11-05T00:12:07.093Z",
+          "filled_qty": 3, "fill_price": 60850, "filled_at": "2026-11-05T00:12:07Z" },
+        { "kind": "ioc", "order_id": "0094025", "price": 60850, "qty": 2,
+          "book": { "ask1": 60850, "ask1_qty": 9, "bid1": 60845, "bid1_qty": 12, "as_of": "2026-11-05T00:12:15Z",
+                    "req_at": "2026-11-05T00:12:15.508Z", "recv_at": "2026-11-05T00:12:15.536Z" },
+          "sent_at": "2026-11-05T00:12:15.561Z", "ack_at": "2026-11-05T00:12:15.585Z", "filled_qty": 0 },
+        { "kind": "rest", "order_id": "0094033", "qty": 2,
+          "book": { "ask1": 60855, "ask1_qty": 30, "bid1": 60850, "bid1_qty": 7, "as_of": "2026-11-05T00:12:30Z",
+                    "req_at": "2026-11-05T00:12:30.301Z", "recv_at": "2026-11-05T00:12:30.329Z" },
+          "sent_at": "2026-11-05T00:12:30.355Z", "ack_at": "2026-11-05T00:12:30.380Z",
+          "filled_qty": 2, "fill_price": 60855, "filled_at": "2026-11-05T00:12:30Z" }
+      ]
     }
   }
 }

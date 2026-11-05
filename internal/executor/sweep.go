@@ -167,8 +167,7 @@ func (x *Executor) stepSweep(ctx context.Context, now time.Time, w *store.Workin
 		return
 	}
 	sw.NextBook = now.Add(sweepBookEvery)
-	br, _ := x.bookReader()
-	bk, err := br.Book(ctx, w.Symbol)
+	bk, err := x.readSweepBook(ctx, w)
 	if err != nil {
 		return // 호가를 모르면 이번엔 쉰다 — 창 끝에 잔량 시장가 (모름을 체결 사유로 쓰지 않는다)
 	}
@@ -239,9 +238,8 @@ func (x *Executor) placeRest(ctx context.Context, now time.Time, w *store.Workin
 	}
 	if w.Side == "buy" && sw.MaxSlipBp > 0 {
 		capPx := sw.Limit * (1 + float64(sw.MaxSlipBp)/10000)
-		br, _ := x.bookReader()
 		// 호가를 모르면 낸다 — 잔량 시장가는 필수다 (모름을 포기 사유로 쓰지 않는다).
-		if bk, err := br.Book(ctx, w.Symbol); err == nil && bk.Ask1 > capPx+1e-9 {
+		if bk, err := x.readSweepBook(ctx, w); err == nil && bk.Ask1 > capPx+1e-9 {
 			sw.Ended, sw.RestDone = "slip", true
 			sw.Detail = joinDetail(fmt.Sprintf("slip — 창 끝 매도1 %.0f 가 상한 %.0f (cap %.0f + %dbp) 를 넘어 잔량 %v 포기",
 				bk.Ask1, capPx, sw.Limit, sw.MaxSlipBp, remaining), sw.Detail)
@@ -265,6 +263,13 @@ func (x *Executor) placeChild(ctx context.Context, now time.Time, w *store.Worki
 		req.MaxSlipBp = sw.MaxSlipBp
 	}
 
+	// 관측 기록 — 이 조각을 내게 한 호가 (집행 판단엔 안 쓴다).
+	try := protocol.SweepTry{Kind: kind, Price: price, Qty: qty}
+	if b := sw.LastBook; b != nil {
+		bb := *b
+		try.Book = &bb
+	}
+
 	if sub, ok := x.d.Broker.(broker.Submitter); ok {
 		sw.Child = &store.SweepChild{Kind: kind, Qty: qty, Price: price, PlacedAt: now, Unconfirmed: true}
 		if err := x.d.Store.PutWorking(ctx, *w); err != nil {
@@ -282,8 +287,16 @@ func (x *Executor) placeChild(ctx context.Context, now time.Time, w *store.Worki
 		} else {
 			s, err = sub.SubmitSell(ctx, req)
 		}
+		ack := time.Now().UTC()
+		try.SentAt = s.SubmittedAt
+		if try.SentAt.IsZero() {
+			try.SentAt = ack // 보내기 전 확인(kt00011)에서 멈췄다
+		}
 		if err != nil {
 			sw.Child = nil
+			try.OrderID, try.Error = s.OrderID, err.Error()
+			x.addTry(w, try)
+			x.logTry(w, try)
 			x.childFailed(ctx, now, w, kind, err, res)
 			return
 		}
@@ -291,6 +304,8 @@ func (x *Executor) placeChild(ctx context.Context, now time.Time, w *store.Worki
 		if s.Qty > 0 {
 			sw.Child.Qty = s.Qty
 		}
+		try.OrderID, try.Qty, try.AckAt = s.OrderID, sw.Child.Qty, &ack
+		x.addTry(w, try) // 체결은 settleChild 가 채운다
 		sw.OrderIDs = append(sw.OrderIDs, s.OrderID)
 		if kind == "ioc" {
 			sw.IOCs++
@@ -303,15 +318,22 @@ func (x *Executor) placeChild(ctx context.Context, now time.Time, w *store.Worki
 	// 동기 브로커 (paper) — 체결이 바로 돌아온다.
 	var f broker.Fill
 	var err error
+	try.SentAt = time.Now().UTC()
 	if w.Side == "buy" {
 		f, err = x.d.Broker.Buy(ctx, req)
 	} else {
 		f, err = x.d.Broker.Sell(ctx, req)
 	}
+	ack := time.Now().UTC()
+	try.OrderID = f.BrokerOrderID
 	if err != nil {
+		try.Error = err.Error()
+		x.addTry(w, try)
+		x.logTry(w, try)
 		x.childFailed(ctx, now, w, kind, err, res)
 		return
 	}
+	try.AckAt = &ack
 	if f.BrokerOrderID != "" {
 		sw.OrderIDs = append(sw.OrderIDs, f.BrokerOrderID)
 	}
@@ -326,7 +348,10 @@ func (x *Executor) placeChild(ctx context.Context, now time.Time, w *store.Worki
 		}
 		sw.Fills = append(sw.Fills, protocol.SweepFill{OrderID: f.BrokerOrderID, Kind: kind, At: at,
 			Price: f.Price, Qty: f.Qty, FeeKRW: f.FeeKRW})
+		try.FilledQty, try.FillPrice, try.FilledAt = f.Qty, f.Price, &at
 	}
+	x.addTry(w, try)
+	x.logTry(w, try)
 	if kind == "rest" {
 		sw.RestDone = true
 		sw.Detail = joinDetail(f.Detail, sw.Detail)
@@ -397,6 +422,14 @@ func (x *Executor) settleChild(ctx context.Context, now time.Time, w *store.Work
 		}
 		sw.Fills = append(sw.Fills, protocol.SweepFill{OrderID: c.OrderID, Kind: c.Kind, At: at,
 			Price: st.AvgPrice, Qty: st.FilledQty, FeeKRW: st.FeeKRW})
+	}
+	if t := tryOf(sw, c.OrderID); t != nil {
+		t.FilledQty, t.FillPrice = st.FilledQty, st.AvgPrice
+		if !st.FilledAt.IsZero() {
+			at := st.FilledAt
+			t.FilledAt = &at // 증권사 시각만 — 모르면 비운다 (확인 시각을 체결 시각으로 쓰지 않는다)
+		}
+		x.logTry(w, *t)
 	}
 	if c.Kind == "rest" {
 		sw.RestDone = true
@@ -537,7 +570,8 @@ func sweepFill(w store.WorkingOrder) broker.Fill {
 	qty, amt, fee := sw.Filled()
 	rep := &protocol.ExecReport{Mode: protocol.ExecSweep, RefAsk1: sw.RefAsk1, RefBid1: sw.RefBid1,
 		Fills: append([]protocol.SweepFill(nil), sw.Fills...), OrderIDs: append([]string(nil), sw.OrderIDs...),
-		IOCOrders: sw.IOCs, Ended: sw.Ended, Detail: sw.Detail}
+		IOCOrders: sw.IOCs, Ended: sw.Ended, Detail: sw.Detail,
+		Tries: append([]protocol.SweepTry(nil), sw.Tries...)}
 	until := sw.Until
 	rep.SweepUntil = &until
 	if !sw.RefAt.IsZero() {
@@ -572,6 +606,67 @@ func sweepFill(w store.WorkingOrder) broker.Fill {
 	}
 	f.Partial = qty < w.Qty-1e-9
 	return f
+}
+
+// ── 관측 기록 (2026-11-05 · dojo-etf «IOC 가 왜 안 닿나») — 집행 판단엔 안 쓴다 ─────────────────
+//
+// 조각마다 «그때 본 호가 · 그 호가의 증권사 시각 · 콕핏이 조회를 부른·받은 시각 · 보낸 시각 · 주문번호 받은 시각 · 체결»
+// 을 exec.tries 와 로그 «sweep 조각» 에 남긴다. 시각은 벽시계(time.Now) — 틱 시각(now)은 한 틱 안에서 안 움직인다.
+
+// sweepMaxTries — 기록할 조각 수 상한 (창 30초 · 1초에 한 번이라 보통 넘지 않는다 · 원장 한 줄이 커지지 않게).
+const sweepMaxTries = 60
+
+// readSweepBook — 최우선 호가를 읽고 LastBook 에 남긴다.
+func (x *Executor) readSweepBook(ctx context.Context, w *store.WorkingOrder) (broker.Book, error) {
+	br, _ := x.bookReader()
+	req := time.Now().UTC()
+	bk, err := br.Book(ctx, w.Symbol)
+	if err != nil {
+		return bk, err
+	}
+	w.Sweep.LastBook = &protocol.SweepBook{Ask1: bk.Ask1, Ask1Qty: bk.Ask1Qty, Bid1: bk.Bid1, Bid1Qty: bk.Bid1Qty,
+		AsOf: bk.AsOf.UTC(), ReqAt: req, RecvAt: time.Now().UTC()}
+	return bk, nil
+}
+
+func (x *Executor) addTry(w *store.WorkingOrder, t protocol.SweepTry) {
+	if len(w.Sweep.Tries) < sweepMaxTries {
+		w.Sweep.Tries = append(w.Sweep.Tries, t)
+	}
+}
+
+// tryOf — 주문번호로 기록을 찾는다 (뒤에서부터 — 같은 번호가 둘일 일은 없다).
+func tryOf(sw *store.Sweep, orderID string) *protocol.SweepTry {
+	if orderID == "" {
+		return nil
+	}
+	for i := len(sw.Tries) - 1; i >= 0; i-- {
+		if sw.Tries[i].OrderID == orderID {
+			return &sw.Tries[i]
+		}
+	}
+	return nil
+}
+
+// logTry — 조각 하나가 끝났을 때 (체결 확인·거부) 한 줄. ms 는 벽시계 차이.
+func (x *Executor) logTry(w *store.WorkingOrder, t protocol.SweepTry) {
+	args := []any{"intent_id", w.IntentID, "code", w.Symbol.Code, "side", w.Side, "kind", t.Kind,
+		"order", t.OrderID, "price", t.Price, "qty", t.Qty, "filled", t.FilledQty, "fill_price", t.FillPrice}
+	if t.FilledAt != nil {
+		args = append(args, "filled_at", *t.FilledAt)
+	}
+	if b := t.Book; b != nil {
+		args = append(args, "ask1", b.Ask1, "ask1_qty", b.Ask1Qty, "bid1", b.Bid1, "bid1_qty", b.Bid1Qty,
+			"book_as_of", b.AsOf, "book_rtt_ms", b.RecvAt.Sub(b.ReqAt).Milliseconds(),
+			"book_to_send_ms", t.SentAt.Sub(b.RecvAt).Milliseconds())
+	}
+	if t.AckAt != nil {
+		args = append(args, "send_to_ack_ms", t.AckAt.Sub(t.SentAt).Milliseconds())
+	}
+	if t.Error != "" {
+		args = append(args, "error", t.Error)
+	}
+	x.d.Log.Info("sweep 조각", args...)
 }
 
 func (x *Executor) saveSweep(ctx context.Context, w *store.WorkingOrder, res *Result) {

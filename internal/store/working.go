@@ -71,6 +71,10 @@ type Sweep struct {
 	// IOCErrors — 연달아 거부된 IOC 수. 넘치면 창을 일찍 닫고 잔량 시장가로 간다 (거부만 반복하지 않게).
 	IOCErrors int    `json:"ioc_errors,omitempty"`
 	Detail    string `json:"detail,omitempty"`
+
+	// LastBook — 마지막으로 읽은 최우선 호가. Tries — 낸 조각마다의 관측 기록 (원장 exec.tries · 집행 판단엔 안 쓴다).
+	LastBook *protocol.SweepBook `json:"last_book,omitempty"`
+	Tries    []protocol.SweepTry `json:"tries,omitempty"`
 }
 
 // SweepChild — 나가 있는 조각 주문 하나.

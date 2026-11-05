@@ -359,8 +359,9 @@ IOC 매도, 창 끝 잔량 시장가 (청산은 포기하지 않는다).
 | `order_ids[]` · `ioc_orders` | 낸 증권사 주문번호 전부(0 체결 IOC 포함) · IOC 수 |
 | `rest_qty` · `rest_price` | 창 끝 시장가로 산/판 수량·평단 |
 | `ended` | 창을 닫은 사유 `all` · `window` · `stop` · `time` · `session` · `slip` · `short` · `unknown` · `error` |
+| `tries[]` | (2026-11-05 · 관측 기록 — 집행 판단엔 안 쓴다) 낸 조각마다 하나, 0 체결·거부 포함: `{kind, order_id, price, qty, book, sent_at, ack_at, filled_qty, fill_price, filled_at, error}` — `book` = 내기 전 마지막으로 본 최우선 호가 `{ask1, ask1_qty, bid1, bid1_qty, as_of, req_at, recv_at}` (`as_of` = 증권사 호가 시각 · 키움은 초 단위, `req_at`·`recv_at` = 콕핏이 조회를 부른·받은 벽시계). `sent_at` = 주문 API 직전 (키움 매수는 kt00011 확인 뒤) · `ack_at` = 주문번호 받은 시각 · `filled_at` = 증권사 체결 시각 (모르면 없음). IOC 의 `book` 은 그 IOC 를 내게 한 호가, `rest` 의 `book` 은 창 끝 직전 호가 (매수 `max_slip_bp` 확인이면 그때 새로 읽은 것, 아니면 창 안 마지막 조회 — 나이 = `sent_at − book.recv_at`). 60개까지 |
 
-장 뒤 증권사 원장 대조(`docs/ops.md`)는 `exec.fills` 의 조각 주문번호로 맞댄다.
+장 뒤 증권사 원장 대조(`docs/ops.md`)는 `exec.fills` 의 조각 주문번호로 맞댄다. 로그엔 조각이 끝날 때마다 «sweep 조각» 한 줄 (같은 값 + `book_rtt_ms` · `book_to_send_ms` · `send_to_ack_ms`).
 
 ### 4.2 `cmd.derisk` — 나가는 방향만
 
