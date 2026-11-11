@@ -82,7 +82,8 @@ type Config struct {
 	// FillPoll — 체결 조회 간격.
 	FillPoll time.Duration
 
-	// IsETP — ETF/ETN 여부. 호가단위가 다르다.
+	// IsETP — ETF/ETN 이라고 미리 아는 종목 (선택). 비워 두면 호가로 판정한다 (etp.go).
+	// ★ 2026-11-11 까지 이 칸만 있고 아무도 안 채워서 ETF 지정가가 주식 단위로 깎였다.
 	IsETP func(protocol.Symbol) bool
 
 	// QueryTimeout — 조회(주문·취소 아닌 것) 한 번의 상한. 기본 4초.
@@ -101,6 +102,7 @@ type Broker struct {
 	tokens *tokenStore
 	pace   pacer
 	status statusCache
+	etps   etpCache
 }
 
 func New(cfg Config) (*Broker, error) {
@@ -137,7 +139,7 @@ func New(cfg Config) (*Broker, error) {
 		}
 	}
 
-	b := &Broker{cfg: cfg, apiURL: url, http: cfg.HTTP, now: cfg.Now, sleep: cfg.Sleep}
+	b := &Broker{cfg: cfg, apiURL: url, http: cfg.HTTP, now: cfg.Now, sleep: cfg.Sleep, etps: newETPCache()}
 	tokenPath := cfg.TokenFile
 	if tokenPath == "" {
 		tokenPath = filepath.Join(cfg.DataDir, "kiwoom_token.json")
@@ -151,10 +153,6 @@ func New(cfg Config) (*Broker, error) {
 var kst = time.FixedZone("KST", 9*3600)
 
 func (b *Broker) Name() string { return "kiwoom" }
-
-func (b *Broker) etp(s protocol.Symbol) bool {
-	return b.cfg.IsETP != nil && b.cfg.IsETP(s)
-}
 
 // ── 잔고 ────────────────────────────────────────────────────────────────────
 
@@ -276,6 +274,7 @@ func (b *Broker) Book(ctx context.Context, s protocol.Symbol) (broker.Book, erro
 	if t, ok := parseOrdTime(strings.TrimSpace(out.BaseTm), b.now()); ok {
 		bk.AsOf = t
 	}
+	b.noteBook(s.Code, bk) // ★ ETF/ETN 판정 — 주식 단위 밖 호가 (etp.go)
 	return bk, nil
 }
 
@@ -352,7 +351,7 @@ func (b *Broker) SubmitBuy(ctx context.Context, req broker.OrderRequest) (broker
 		if req.IOC {
 			body["trde_tp"] = tradeLimitIOC
 		}
-		body["ord_uv"] = strconv.Itoa(int(FloorToTick(req.LimitPrice, b.etp(req.Symbol))))
+		body["ord_uv"] = strconv.Itoa(int(FloorToTick(req.LimitPrice, b.etp(ctx, req.Symbol, req.LimitPrice))))
 	}
 
 	submitted := b.now().UTC()
@@ -415,7 +414,7 @@ func (b *Broker) SubmitSell(ctx context.Context, req broker.OrderRequest) (broke
 		if req.IOC {
 			body["trde_tp"] = tradeLimitIOC
 		}
-		body["ord_uv"] = strconv.Itoa(int(CeilToTick(req.LimitPrice, b.etp(req.Symbol))))
+		body["ord_uv"] = strconv.Itoa(int(CeilToTick(req.LimitPrice, b.etp(ctx, req.Symbol, req.LimitPrice))))
 	}
 
 	submitted := b.now().UTC()
@@ -444,7 +443,7 @@ func (b *Broker) PlaceTP(ctx context.Context, s protocol.Symbol, qty, price floa
 		"stk_cd":       s.Code,
 		"ord_qty":      strconv.FormatFloat(math.Floor(qty), 'f', -1, 64),
 		// ★ 매도 지정가는 호가단위로 **올린다**. 내리면 의도보다 싸게 팔린다.
-		"ord_uv":  strconv.Itoa(int(CeilToTick(price, b.etp(s)))),
+		"ord_uv":  strconv.Itoa(int(CeilToTick(price, b.etp(ctx, s, price)))),
 		"trde_tp": tradeLimit,
 		"cond_uv": "",
 	}
