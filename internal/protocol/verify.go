@@ -376,6 +376,9 @@ func validateBody(env *Envelope) []RejectCode {
 			if t.Exit != nil && t.Exit.HoldFrac != nil && (*t.Exit.HoldFrac < 0 || *t.Exit.HoldFrac > 1) {
 				return []RejectCode{CodeSchema}
 			}
+			if t.ExitExec != nil && !validExitExec(*t.ExitExec) {
+				return []RejectCode{CodeSchema}
+			}
 			switch t.Want {
 			case WantFlat:
 			case WantOpen:
@@ -389,7 +392,7 @@ func validateBody(env *Envelope) []RejectCode {
 				if t.Weight <= 0 || t.Weight > 1 {
 					return []RejectCode{CodeSchema}
 				}
-				if t.Entry.Mode == "limit" && t.Entry.LimitPrice <= 0 {
+				if !validEntryMode(*t.Entry) {
 					return []RejectCode{CodeSchema}
 				}
 			default:
@@ -467,4 +470,27 @@ func AdmitTarget(t Target, now time.Time, entryAllowed bool) (TargetAction, []Re
 // ★ 이게 "연결이 끊긴 순간 무엇이 남는가" 의 직접적 구현이다 — 진입은 죽고 exit 은 산다.
 func Stale(asOf time.Time, now time.Time, maxAge time.Duration) bool {
 	return maxAge > 0 && now.Sub(asOf) > maxAge
+}
+
+// SweepMaxWindow — sweep 창의 상한. 이보다 긴 sweep_until 은 콕핏이 이 길이로 당긴다 (executor).
+// ★ 청산은 기다리게 둘 수 없다 — 잘못 실린 창 하나가 매도를 몇 시간 붙잡으면 안 된다.
+const SweepMaxWindow = 2 * time.Minute
+
+// validEntryMode — 모르는 집행 방식은 거절한다 (2026-11-04).
+// ★ 예전엔 market·limit 이 아닌 값을 조용히 시장가로 냈다 — 새 집행을 모르는 콕핏이 그걸 시장가로 집행하면
+// 발행자는 «새 집행의 체결» 로 읽는다. 빈 값은 옛 발행자 호환으로 시장가다.
+func validEntryMode(e Entry) bool {
+	switch e.Mode {
+	case "", ExecMarket:
+		return true
+	case ExecLimit:
+		return e.LimitPrice > 0
+	case ExecSweep:
+		return e.CapPrice > 0 && e.SweepUntil != nil && !e.SweepUntil.IsZero() && !e.SweepUntil.After(e.NotAfter)
+	}
+	return false
+}
+
+func validExitExec(x ExitExec) bool {
+	return x.Mode == ExecSweep && x.FloorPrice > 0 && !x.SweepUntil.IsZero()
 }

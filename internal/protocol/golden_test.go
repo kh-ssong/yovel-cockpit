@@ -187,6 +187,7 @@ func TestInvalidExamplesAreRejected(t *testing.T) {
 		"intent.target-unsigned.json":                CodeSig,
 		"intent.target-entry-without-not-after.json": CodeSchema,
 		"intent.target-open-without-exit.json":       CodeSchema,
+		"intent.target-unknown-entry-mode.json":      CodeSchema, // ★ 모르는 집행 방식을 시장가로 내지 않는다
 		"cmd.derisk-buy.json":                        CodeSchema,
 		"cmd.derisk-slot-scope-without-slot.json":    CodeSchema,
 		"envelope-wrong-major.json":                  CodeSchema,

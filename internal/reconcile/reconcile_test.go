@@ -81,6 +81,16 @@ func TestFlatMeansExit(t *testing.T) {
 	}
 }
 
+// flat 목표가 실은 청산 집행 방식(exit_exec)이 청산 주문에 실린다 (sweep — executor 가 쓴다).
+func TestFlatCarriesExitExec(t *testing.T) {
+	tg := flatTarget("a", "005930")
+	tg.ExitExec = &protocol.ExitExec{Mode: protocol.ExecSweep, FloorPrice: 910, SweepUntil: now.Add(30 * time.Second)}
+	p := Build(book(tg), []protocol.Position{held("a", "005930", 900)}, opts())
+	if len(p.Exits) != 1 || p.Exits[0].Exec == nil || p.Exits[0].Exec.FloorPrice != 910 {
+		t.Fatalf("%+v", p.Exits)
+	}
+}
+
 func TestFlatWithoutPositionIsNoop(t *testing.T) {
 	p := Build(book(flatTarget("a", "005930")), nil, opts())
 	if len(p.Exits) != 0 {

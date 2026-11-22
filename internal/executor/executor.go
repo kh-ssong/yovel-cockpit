@@ -231,7 +231,7 @@ func (x *Executor) tick(ctx context.Context, now time.Time, withSync bool) Resul
 		if sold[e.Position.IntentID] {
 			continue
 		}
-		x.doSell(ctx, now, e.Position, e.Qty, e.Reason, e.RecvAt, &res)
+		x.doSell(ctx, now, e.Position, e.Qty, e.Reason, e.RecvAt, e.Exec, &res)
 		sold[e.Position.IntentID] = true
 	}
 	// 청산을 다 낸 뒤에 체결을 묻는다 — 진입 계획 전에 확정해 둔다 (예전처럼 같은 틱 안).
@@ -391,7 +391,7 @@ func (x *Executor) syncPositions(ctx context.Context, now time.Time, res *Result
 }
 
 func (x *Executor) doExit(ctx context.Context, now time.Time, pos protocol.Position, reason string, res *Result) {
-	x.doSell(ctx, now, pos, pos.Qty, reason, time.Time{}, res)
+	x.doSell(ctx, now, pos, pos.Qty, reason, time.Time{}, nil, res)
 }
 
 // pollPlaced — 이번 틱에 낸 주문들의 체결을 한 번씩 묻는다 (대개 바로 체결된다 — 같은 틱에 확정).
@@ -453,8 +453,10 @@ func (x *Executor) logTimings() {
 //
 // ★ 실브로커(Submitter)는 **내고 바로 돌아온다** — 체결은 진행 중 주문으로 추적한다(orders.go).
 // 동시호가·VI 중엔 체결이 늦게 오는 게 정상이라, 기다리느라 루프를 막거나 시간으로 취소하지 않는다.
+//
+// ex — flat 목표가 실은 청산 집행 방식 (nil = 시장가). sweep 이면 창 안에서 IOC 로 나눠 판다 (sweep.go).
 func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Position, qty float64,
-	reason string, recvAt time.Time, res *Result) {
+	reason string, recvAt time.Time, ex *protocol.ExitExec, res *Result) {
 	start := time.Now()
 	if qty <= 0 || qty > pos.Qty {
 		qty = pos.Qty
@@ -481,6 +483,10 @@ func (x *Executor) doSell(ctx context.Context, now time.Time, pos protocol.Posit
 		}
 		pos.TpOrderID, pos.TpArmed = "", 0
 		x.d.Engine.UpsertPosition(pos)
+	}
+
+	if x.wantsExitSweep(now, pos, qty, reason, ex) && x.startExitSweep(ctx, now, pos, qty, reason, *ex, res) {
+		return
 	}
 
 	req := broker.OrderRequest{IntentID: pos.IntentID, Symbol: pos.Symbol, Qty: qty, Kid: pos.Kid, Scope: pos.Scope}
@@ -553,6 +559,7 @@ func (x *Executor) finishSell(ctx context.Context, now time.Time, pos protocol.P
 		Source:      store.SourceBot,
 		// ★ 드라이버가 붙인 단서를 삼키지 않는다 — 값이 있으면 그 건의 숫자가 근사라는 뜻이다.
 		Detail: detail,
+		Exec:   fill.Exec,
 	}, res)
 
 	if partial {
@@ -609,6 +616,10 @@ func (x *Executor) doEnter(ctx context.Context, now, asOfBar time.Time, t protoc
 	// 조회 두 번(상태·시세)이 시간을 먹었다 — 내기 직전에 마감을 한 번 더 본다.
 	now = now.Add(time.Since(wall))
 	if x.entryExpired(ctx, t, kid, scope, now, res) {
+		return
+	}
+	if t.Entry != nil && t.Entry.Mode == protocol.ExecSweep &&
+		x.startEntrySweep(ctx, now, asOfBar, t, qty, ref, kid, scope, res) {
 		return
 	}
 	req := broker.OrderRequest{
@@ -755,6 +766,7 @@ func (x *Executor) finishEnter(ctx context.Context, now, asOfBar time.Time, t pr
 		BrokerOrderID: fill.BrokerOrderID, SignalTS: signalTS,
 		SubmittedAt: &fill.SubmittedAt, FilledAt: &fill.FilledAt,
 		SlippageBp: fill.SlippageBp, FeeKRW: fill.FeeKRW, Source: store.SourceBot,
+		Detail: fill.Detail, Exec: fill.Exec,
 	}, res)
 
 	in := store.Intent{
@@ -871,7 +883,7 @@ func (x *Executor) recordOrder(ctx context.Context, o store.Order, res *Result) 
 		Qty: o.Qty, Price: o.Price, BrokerOrderID: o.BrokerOrderID,
 		SignalTS: o.SignalTS, SubmittedAt: o.SubmittedAt, FilledAt: o.FilledAt,
 		SlippageBp: o.SlippageBp, FeeKRW: o.FeeKRW, ExitReason: o.ExitReason,
-		RealizedPct: o.RealizedPct, Detail: o.Detail,
+		RealizedPct: o.RealizedPct, Detail: o.Detail, Exec: o.Exec,
 	}
 	body, err := json.Marshal(ev)
 	if err != nil {

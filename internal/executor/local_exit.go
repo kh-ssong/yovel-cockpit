@@ -42,6 +42,9 @@ func (x *Executor) enforceLocalExits(ctx context.Context, now time.Time, res *Re
 		if pos.Pending || x.isWorking(pos.IntentID) {
 			continue // 아직 체결 확정 전이거나 청산 주문이 진행 중이다
 		}
+		if x.d.Engine.HandsOff(pos) {
+			continue // 사용자가 맡아 간 로트 (장부 exits "manual") — stop·시간청산을 콕핏이 집행하지 않는다
+		}
 		rules := guard.Rules{StopPrice: pos.StopArmed, TimeExitAt: x.effectiveTimeExit(pos)}
 		in := guard.Inputs{Now: now, MaxPriceAge: x.d.MaxPriceAge}
 

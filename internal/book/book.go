@@ -49,6 +49,11 @@ type Book struct {
 	Hold string `json:"hold,omitempty"`
 	// Enabled — 이 전략을 돌릴지. 생략하면 켬. 끄면 진입만 막고 청산은 계속한다.
 	Enabled *bool `json:"enabled,omitempty"`
+	// Exits — 남은 로트를 누가 파나. 생략 = 콕핏 (stop·시간청산·발행자 flat·derisk).
+	// "manual" = **콕핏은 이 장부 로트를 어떤 이유로도 팔지 않는다** — 사용자가 HTS 로 정리한다
+	// (팔면 지금처럼 «수동 매도» 로 닫힌다). 꺼진 장부(enabled: false)에만 쓴다 — 켜진 전략을 stop 없이
+	// 돌리는 실수를 막는다 (user 2026-11-05 «완전히 꺼 줘 · 잔고는 내가 정리» 인데 stop 이 두 로트를 팔았다).
+	Exits string `json:"exits,omitempty"`
 	// MaxQty — 진입 한 건의 수량 상한 (주·코인 개수). 0 = 없음.
 	//
 	// ★ 사이징(weight × seed ÷ 가격)이 정한 수량이 이보다 크면 **이 수량만** 산다 — 첫 실전을
@@ -75,6 +80,12 @@ type Fee struct {
 }
 
 func (b Book) On() bool { return b.Enabled == nil || *b.Enabled }
+
+// ExitsManual — Book.Exits: 콕핏은 팔지 않는다 (사용자가 정리).
+const ExitsManual = "manual"
+
+// HandsOff — 이 장부 로트는 콕핏이 팔지 않는다.
+func (b Book) HandsOff() bool { return b.Exits == ExitsManual }
 
 // 장부의 반 (Book.Hold).
 const (
@@ -195,6 +206,11 @@ func NewAlloc(books []Book, defaultBudget float64, a Alloc) (*Set, error) {
 			return nil, fmt.Errorf("장부 %s: seed 를 적은 고정 장부에 pct 를 줬다 — 둘 중 하나만", b.Name)
 		case b.Pct != nil && b.Share != nil:
 			return nil, fmt.Errorf("장부 %s: pct 와 share 를 같이 줬다 — 둘 중 하나만", b.Name)
+		case b.Exits != "" && b.Exits != ExitsManual:
+			return nil, fmt.Errorf("장부 %s: exits %q — 생략(콕핏이 청산) 또는 %q", b.Name, b.Exits, ExitsManual)
+		case b.HandsOff() && b.On():
+			return nil, fmt.Errorf("장부 %s: exits %q 는 꺼진 장부(enabled: false)에만 — 켜진 전략을 stop 없이 돌리게 된다",
+				b.Name, ExitsManual)
 		}
 		if b.MaxQty < 0 {
 			return nil, fmt.Errorf("장부 %s: max_qty 가 음수", b.Name)
@@ -409,6 +425,32 @@ func (s *Set) MaxQty(kid, scope string) float64 {
 		}
 	}
 	return 0
+}
+
+// AnyHandsOff — exits "manual" 장부가 하나라도 있나.
+func (s *Set) AnyHandsOff() bool {
+	if s == nil {
+		return false
+	}
+	for _, b := range s.books {
+		if b.HandsOff() {
+			return true
+		}
+	}
+	return false
+}
+
+// HandsOff — 이 소스의 로트를 콕핏이 팔지 않는가 (장부 exits "manual"). 장부가 없으면 false.
+func (s *Set) HandsOff(kid, scope string) bool {
+	if s == nil {
+		return false
+	}
+	for _, b := range s.books {
+		if b.Scope == scope && (b.Kid == "" || b.Kid == kid) {
+			return b.HandsOff()
+		}
+	}
+	return false
 }
 
 // Weight — 소스의 진입 비중 덮어쓰기 (0 = 목표의 weight 그대로). 장부가 없거나 그 소스가 장부에 없으면 0.

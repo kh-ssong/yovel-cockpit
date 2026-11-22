@@ -28,7 +28,81 @@
     "exit_reason": { "enum": ["stop", "tp", "time", "derisk", "manual", "broker"] },
     "realized_pct": { "type": "number" },
     "broker_code": { "type": "string", "maxLength": 64 },
-    "detail": { "type": "string", "maxLength": 500 }
+    "detail": { "type": "string", "maxLength": 500 },
+    "exec": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "집행 방식 sweep 의 내역 (그 외엔 없음). qty·price 는 모든 조각의 합·평단 (protocol.md §4.1.3).",
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["sweep"] },
+        "cap_price": { "type": "number", "exclusiveMinimum": 0, "description": "매수 — 받은 값 그대로." },
+        "floor_price": { "type": "number", "exclusiveMinimum": 0, "description": "매도 — 받은 값 그대로." },
+        "sweep_until": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp", "description": "콕핏이 실제로 쓴 창 끝." },
+        "ref_ask1": { "type": "number", "minimum": 0, "description": "집행을 시작한 순간 콕핏이 본 매도1." },
+        "ref_bid1": { "type": "number", "minimum": 0, "description": "집행을 시작한 순간 콕핏이 본 매수1." },
+        "ref_at": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp" },
+        "fills": {
+          "type": "array",
+          "description": "체결된 조각 (주문번호 단위 합).",
+          "items": {
+            "type": "object",
+            "required": ["order_id", "kind", "at", "price", "qty"],
+            "properties": {
+              "order_id": { "type": "string" },
+              "kind": { "enum": ["ioc", "rest"] },
+              "at": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp" },
+              "price": { "type": "number", "minimum": 0 },
+              "qty": { "type": "number", "minimum": 0 },
+              "fee_krw": { "type": "number", "minimum": 0 }
+            }
+          }
+        },
+        "order_ids": { "type": "array", "items": { "type": "string" }, "description": "낸 증권사 주문번호 전부 (0 체결 IOC 포함)." },
+        "ioc_orders": { "type": "integer", "minimum": 0 },
+        "rest_qty": { "type": "number", "minimum": 0, "description": "창 끝 시장가로 산/판 수량." },
+        "rest_price": { "type": "number", "minimum": 0, "description": "창 끝 시장가 평단." },
+        "ended": {
+          "enum": ["all", "window", "stop", "time", "session", "slip", "short", "unknown", "error"],
+          "description": "창을 닫은 사유."
+        },
+        "detail": { "type": "string" },
+        "tries": {
+          "type": "array",
+          "description": "관측 기록 (2026-11-05 · 집행 판단엔 안 씀) — 낸 조각마다 하나, 0 체결·거부 포함. protocol.md §4.1.3.",
+          "items": {
+            "type": "object",
+            "required": ["kind", "qty", "sent_at", "filled_qty"],
+            "properties": {
+              "kind": { "enum": ["ioc", "rest"] },
+              "order_id": { "type": "string", "description": "거부면 없음." },
+              "price": { "type": "number", "minimum": 0, "description": "IOC 지정가 (cap·floor). rest 는 없음 (시장가)." },
+              "qty": { "type": "number", "minimum": 0, "description": "낸 수량." },
+              "book": {
+                "type": "object",
+                "description": "내기 전 마지막으로 본 최우선 호가. IOC = 그 IOC 를 내게 한 호가 · rest = 창 끝 직전 호가.",
+                "required": ["ask1", "ask1_qty", "bid1", "bid1_qty", "as_of", "req_at", "recv_at"],
+                "properties": {
+                  "ask1": { "type": "number", "minimum": 0 },
+                  "ask1_qty": { "type": "number", "minimum": 0 },
+                  "bid1": { "type": "number", "minimum": 0 },
+                  "bid1_qty": { "type": "number", "minimum": 0 },
+                  "as_of": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp", "description": "증권사 호가 시각 (키움 = 초 단위)." },
+                  "req_at": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp", "description": "콕핏이 호가 조회를 부른 시각." },
+                  "recv_at": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp", "description": "콕핏이 호가 응답을 받은 시각." }
+                }
+              },
+              "sent_at": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp", "description": "주문 API 직전 (키움 매수는 kt00011 확인 뒤)." },
+              "ack_at": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp", "description": "주문번호를 받은 시각." },
+              "filled_qty": { "type": "number", "minimum": 0 },
+              "fill_price": { "type": "number", "minimum": 0 },
+              "filled_at": { "$ref": "urn:yovel:v1:common#/$defs/Timestamp", "description": "증권사 체결 시각 (모르면 없음)." },
+              "error": { "type": "string", "description": "거부·결과 미상 사유." }
+            }
+          }
+        }
+      }
+    }
   },
   "allOf": [
     {

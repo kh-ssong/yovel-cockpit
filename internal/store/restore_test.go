@@ -18,7 +18,8 @@ func TestMigrateV4FillsIntentModeFromOrders(t *testing.T) {
 	// v4 로 되돌린다 — mode 칸이 없고 버전이 4.
 	for _, q := range []string{
 		`ALTER TABLE intents DROP COLUMN mode`,
-		`DELETE FROM schema_version WHERE version = 5`,
+		`ALTER TABLE orders DROP COLUMN exec`,
+		`DELETE FROM schema_version WHERE version >= 5`,
 		`INSERT INTO schema_version(version) VALUES (4)`,
 	} {
 		if _, err := s.DB().Exec(q); err != nil {
@@ -31,9 +32,12 @@ func TestMigrateV4FillsIntentModeFromOrders(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// v4 원장 행 — 그때의 칸으로 직접 넣는다 (RecordOrder 는 지금 칸(exec)을 쓴다).
 	for id, m := range map[string]protocol.Mode{"LIVE": protocol.ModeLive, "PAPER": protocol.ModePaper} {
-		if err := s.RecordOrder(ctx, Order{ID: "o-" + id, IntentID: id, Phase: "filled", Symbol: sym("005930"),
-			Side: "buy", Qty: 1, Price: 1000, Mode: m, Source: SourceBot}); err != nil {
+		if _, err := s.DB().Exec(`INSERT INTO orders (id, intent_id, phase, exchange, code, side, qty, price,
+			slippage_bp, fee_krw, realized_pct, mode, source, created_at)
+			VALUES (?, ?, 'filled', 'KRX', '005930', 'buy', 1, 1000, 0, 0, 0, ?, 'bot', ?)`,
+			"o-"+id, id, string(m), nowStr()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -105,5 +109,62 @@ func TestPaperCashFlow(t *testing.T) {
 	}
 	if want := -(10*1000 + 15.0) + (10*1100 - 20.0); net != want || seq != 7 {
 		t.Fatalf("net %v (기대 %v) seq %d", net, want, seq)
+	}
+}
+
+// v5 → v6: 원장 exec 칸이 생기고, 옛 행은 그대로 (exec 없음 = 단일 주문) 읽힌다.
+func TestMigrateV5AddsExec(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "cockpit.db")
+	s, err := OpenPath(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`ALTER TABLE orders DROP COLUMN exec`,
+		`DELETE FROM schema_version WHERE version >= 6`,
+		`INSERT INTO schema_version(version) VALUES (5)`,
+		`INSERT INTO orders (id, intent_id, phase, exchange, code, side, qty, price, slippage_bp, fee_krw,
+		   realized_pct, mode, source, created_at)
+		 VALUES ('old', 'A', 'filled', 'KRX', '005930', 'buy', 1, 1000, 0, 0, 0, 'live', 'bot', '2026-11-04T00:00:00Z')`,
+	} {
+		if _, err := s.DB().Exec(q); err != nil {
+			t.Fatal(q, err)
+		}
+	}
+	s.Close()
+
+	s, err = OpenPath(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rep := &protocol.ExecReport{Mode: protocol.ExecSweep, CapPrice: 1000, IOCOrders: 2,
+		OrderIDs: []string{"c1", "c2"}, Fills: []protocol.SweepFill{{OrderID: "c1", Kind: "ioc", Price: 995, Qty: 1}}}
+	if err := s.RecordOrder(ctx, Order{ID: "new", IntentID: "B", Phase: "filled", Symbol: sym("005930"),
+		Side: "buy", Qty: 1, Price: 995, Mode: protocol.ModeLive, Source: SourceBot, BrokerOrderID: "c1",
+		Exec: rep}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Ledger(ctx, LedgerQuery{Mode: protocol.ModeLive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Order{}
+	for _, o := range rows {
+		got[o.ID] = o
+	}
+	if got["old"].Exec != nil {
+		t.Fatalf("옛 행에 exec 가 생겼다 %+v", got["old"].Exec)
+	}
+	if e := got["new"].Exec; e == nil || e.CapPrice != 1000 || len(e.Fills) != 1 || e.IOCOrders != 2 {
+		t.Fatalf("exec 왕복 %+v", e)
+	}
+	// ★ 조각 주문번호는 전부 «콕핏이 낸 주문» 이다 (0 체결 c2 포함) — 콕핏 밖 매도로 읽으면 형제 로트를 닫는다.
+	known, err := s.KnownOrderIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !known["c1"] || !known["c2"] {
+		t.Fatalf("조각 주문번호를 모른다 %v", known)
 	}
 }

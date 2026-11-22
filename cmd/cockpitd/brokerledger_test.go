@@ -82,6 +82,25 @@ func TestCheckLedgerMatchesByOrderNo(t *testing.T) {
 	}
 }
 
+// ★ sweep 은 원장 한 줄에 증권사 주문이 여럿이다 — 조각 번호로 맞대야 «콕핏에만 1 · 장부 밖 2» 가 안 생긴다.
+func TestCheckLedgerExpandsSweepFills(t *testing.T) {
+	at := time.Date(2026, 10, 23, 10, 0, 0, 0, session.KST)
+	o := row("0094019", "filled", "buy", "293490", 2, 11770, 0, at)
+	o.Exec = &protocol.ExecReport{Mode: protocol.ExecSweep, Fills: []protocol.SweepFill{
+		{OrderID: "0094019", Kind: "ioc", Price: 11770, Qty: 2},
+	}, OrderIDs: []string{"0094019", "0999999"}} // 0999999 = 0 체결 IOC (증권사 쪽에도 체결 0 이라 안 나온다)
+	sell := row("0585361", "exit_filled", "sell", "293490", 2, 11580, 46, at)
+	sell.BrokerOrderID = "sweep-exit-x" // 조각이 있으면 이 값은 대조에 쓰지 않는다
+	sell.Exec = &protocol.ExecReport{Mode: protocol.ExecSweep, Fills: []protocol.SweepFill{
+		{OrderID: "0585361", Kind: "rest", Price: 11580, Qty: 2, FeeKRW: 46},
+	}}
+	l := fakeLedger()
+	c := checkLedger("20261023", []store.Order{o, sell}, l)
+	if c.Matched != 2 || len(c.CockpitOnly) != 0 || len(c.Mismatch) != 0 {
+		t.Fatalf("조각 대조 %+v", c)
+	}
+}
+
 func TestLedgerSummaryClean(t *testing.T) {
 	fee, gap, pl := 1576.0, 280.0, -4641.0
 	c := ledgerCheck{OrdersFrom: "ka10076", Matched: 40, CockpitFeeKRW: 1296,

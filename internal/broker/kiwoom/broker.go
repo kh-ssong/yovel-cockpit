@@ -44,11 +44,13 @@ const (
 	apiBuyableQt = "kt00011" // 증거금율별 주문가능수량
 	apiFills     = "ka10076" // 체결요청
 	apiQuote     = "ka10007" // 시세표성정보요청
+	apiBook      = "ka10004" // 주식호가요청
 
-	// trde_tp — 거래구분. ★ 3=시장가 / 0=보통(지정가).
+	// trde_tp — 거래구분. ★ 3=시장가 / 0=보통(지정가) / 10=보통(IOC).
 	// 진단 스크립트에 1 을 지정가로 쓴 흔적이 있으나 라이브 경로는 0 이다.
-	tradeMarket = "3"
-	tradeLimit  = "0"
+	tradeMarket   = "3"
+	tradeLimit    = "0"
+	tradeLimitIOC = "10"
 )
 
 type Config struct {
@@ -80,7 +82,8 @@ type Config struct {
 	// FillPoll — 체결 조회 간격.
 	FillPoll time.Duration
 
-	// IsETP — ETF/ETN 여부. 호가단위가 다르다.
+	// IsETP — ETF/ETN 이라고 미리 아는 종목 (선택). 비워 두면 호가로 판정한다 (etp.go).
+	// ★ 2026-11-11 까지 이 칸만 있고 아무도 안 채워서 ETF 지정가가 주식 단위로 깎였다.
 	IsETP func(protocol.Symbol) bool
 
 	// QueryTimeout — 조회(주문·취소 아닌 것) 한 번의 상한. 기본 4초.
@@ -99,6 +102,7 @@ type Broker struct {
 	tokens *tokenStore
 	pace   pacer
 	status statusCache
+	etps   etpCache
 }
 
 func New(cfg Config) (*Broker, error) {
@@ -135,7 +139,7 @@ func New(cfg Config) (*Broker, error) {
 		}
 	}
 
-	b := &Broker{cfg: cfg, apiURL: url, http: cfg.HTTP, now: cfg.Now, sleep: cfg.Sleep}
+	b := &Broker{cfg: cfg, apiURL: url, http: cfg.HTTP, now: cfg.Now, sleep: cfg.Sleep, etps: newETPCache()}
 	tokenPath := cfg.TokenFile
 	if tokenPath == "" {
 		tokenPath = filepath.Join(cfg.DataDir, "kiwoom_token.json")
@@ -149,10 +153,6 @@ func New(cfg Config) (*Broker, error) {
 var kst = time.FixedZone("KST", 9*3600)
 
 func (b *Broker) Name() string { return "kiwoom" }
-
-func (b *Broker) etp(s protocol.Symbol) bool {
-	return b.cfg.IsETP != nil && b.cfg.IsETP(s)
-}
 
 // ── 잔고 ────────────────────────────────────────────────────────────────────
 
@@ -247,6 +247,37 @@ func (b *Broker) Quote(ctx context.Context, s protocol.Symbol) (broker.Quote, er
 	return broker.Quote{Symbol: s, Price: p, AsOf: asOf}, nil
 }
 
+// Book — 최우선 호가 (ka10004 주식호가요청).
+//
+// ★ 가격은 부호가 붙어 온다("+60850" = 상승 · "-60850" = 하락) — 절대값이 가격이다 (Quote 와 같다).
+// ★ 한쪽이 비면(상·하한가·호가 공백) 그쪽은 0 이다 — 0 을 «그 값에 살 수 있다» 로 읽지 말 것.
+// 시각 = 호가잔량기준시간(bid_req_base_tm, HHMMSS · 오늘). 못 읽으면 조회 시각.
+func (b *Broker) Book(ctx context.Context, s protocol.Symbol) (broker.Book, error) {
+	var out struct {
+		BaseTm  string `json:"bid_req_base_tm"`
+		Ask1    string `json:"sel_fpr_bid"` // 매도최우선호가
+		Ask1Qty string `json:"sel_fpr_req"` // 매도최우선잔량
+		Bid1    string `json:"buy_fpr_bid"` // 매수최우선호가
+		Bid1Qty string `json:"buy_fpr_req"` // 매수최우선잔량
+	}
+	if err := b.call(ctx, apiBook, pathCond, map[string]string{"stk_cd": s.Code}, &out); err != nil {
+		return broker.Book{}, err
+	}
+	bk := broker.Book{
+		Ask1: math.Abs(num(out.Ask1)), Ask1Qty: math.Abs(num(out.Ask1Qty)),
+		Bid1: math.Abs(num(out.Bid1)), Bid1Qty: math.Abs(num(out.Bid1Qty)),
+		AsOf: b.now().UTC(),
+	}
+	if bk.Ask1 <= 0 && bk.Bid1 <= 0 {
+		return broker.Book{}, fmt.Errorf("%w: %s 호가가 비었다 (매도1 %q · 매수1 %q)", broker.ErrUnknownSymbol, s.Code, out.Ask1, out.Bid1)
+	}
+	if t, ok := parseOrdTime(strings.TrimSpace(out.BaseTm), b.now()); ok {
+		bk.AsOf = t
+	}
+	b.noteBook(s.Code, bk) // ★ ETF/ETN 판정 — 주식 단위 밖 호가 (etp.go)
+	return bk, nil
+}
+
 func (b *Broker) LotSize(protocol.Symbol) float64       { return 1 }
 func (b *Broker) MinOrderValue(protocol.Symbol) float64 { return 0 }
 
@@ -312,9 +343,15 @@ func (b *Broker) SubmitBuy(ctx context.Context, req broker.OrderRequest) (broker
 		"trde_tp":      tradeMarket,
 		"cond_uv":      "",
 	}
+	if req.IOC && req.LimitPrice <= 0 {
+		return broker.Submitted{}, fmt.Errorf("IOC 인데 지정가가 없다 — 시장가 IOC 는 내지 않는다")
+	}
 	if req.LimitPrice > 0 {
 		body["trde_tp"] = tradeLimit
-		body["ord_uv"] = strconv.Itoa(int(FloorToTick(req.LimitPrice, b.etp(req.Symbol))))
+		if req.IOC {
+			body["trde_tp"] = tradeLimitIOC
+		}
+		body["ord_uv"] = strconv.Itoa(int(FloorToTick(req.LimitPrice, b.etp(ctx, req.Symbol, req.LimitPrice))))
 	}
 
 	submitted := b.now().UTC()
@@ -369,9 +406,15 @@ func (b *Broker) SubmitSell(ctx context.Context, req broker.OrderRequest) (broke
 		"trde_tp":      tradeMarket,
 		"cond_uv":      "",
 	}
+	if req.IOC && req.LimitPrice <= 0 {
+		return broker.Submitted{}, fmt.Errorf("IOC 인데 지정가가 없다 — 시장가 IOC 는 내지 않는다")
+	}
 	if req.LimitPrice > 0 {
 		body["trde_tp"] = tradeLimit
-		body["ord_uv"] = strconv.Itoa(int(CeilToTick(req.LimitPrice, b.etp(req.Symbol))))
+		if req.IOC {
+			body["trde_tp"] = tradeLimitIOC
+		}
+		body["ord_uv"] = strconv.Itoa(int(CeilToTick(req.LimitPrice, b.etp(ctx, req.Symbol, req.LimitPrice))))
 	}
 
 	submitted := b.now().UTC()
@@ -400,7 +443,7 @@ func (b *Broker) PlaceTP(ctx context.Context, s protocol.Symbol, qty, price floa
 		"stk_cd":       s.Code,
 		"ord_qty":      strconv.FormatFloat(math.Floor(qty), 'f', -1, 64),
 		// ★ 매도 지정가는 호가단위로 **올린다**. 내리면 의도보다 싸게 팔린다.
-		"ord_uv":  strconv.Itoa(int(CeilToTick(price, b.etp(s)))),
+		"ord_uv":  strconv.Itoa(int(CeilToTick(price, b.etp(ctx, s, price)))),
 		"trde_tp": tradeLimit,
 		"cond_uv": "",
 	}

@@ -150,16 +150,42 @@ type Target struct {
 	// 청산이면 매수1호가(내가 팔 수 있는 값), 보유면 현재가를 싣는다.
 	MarkPrice float64    `json:"mark_price,omitempty"`
 	MarkAt    *time.Time `json:"mark_at,omitempty"`
+
+	// ExitExec — 이 로트를 **want=flat 으로** 팔 때의 집행 방식 (선택, 2026-11-04). 없으면 시장가.
+	// ★ stop·시간청산(콕핏 로컬 층)은 이 값과 무관하게 즉시 시장가다 — 안전망은 기다리지 않는다.
+	ExitExec *ExitExec `json:"exit_exec,omitempty"`
 }
 
+// 집행 방식 (entry.mode · exit_exec.mode).
+const (
+	ExecMarket = "market"
+	ExecLimit  = "limit"
+	// ExecSweep — 창(sweep_until) 안에서 매도1 ≤ cap_price (매도면 매수1 ≥ floor_price) 일 때마다
+	// 그 값으로 IOC 지정가를 내 조금씩 담고, 창이 끝나면 잔량을 시장가로 낸다 (protocol.md §4.1.3).
+	// ★ 호가에 남는 지정가(maker)가 아니다 — 미체결분은 바로 취소된다.
+	ExecSweep = "sweep"
+)
+
 type Entry struct {
-	Mode       string    `json:"mode"` // market | limit
+	Mode       string    `json:"mode"` // market | limit | sweep
 	LimitPrice float64   `json:"limit_price,omitempty"`
 	NotAfter   time.Time `json:"not_after"` // ★ 필수. 넘으면 진입만 포기한다.
 	// RefPrice — 사이징 기준가. ★ 신호를 낸 쪽이 아는 값을 실어 보내면
 	// "신호를 낸 가격" 과 "사이징한 가격" 이 갈리지 않는다 (그리고 시세 왕복이 사라진다).
-	RefPrice  float64 `json:"ref_price,omitempty"`
-	MaxSlipBp int     `json:"max_slip_bp,omitempty"`
+	RefPrice float64 `json:"ref_price,omitempty"`
+	// MaxSlipBp — sweep 이면 창 끝 잔량 시장가의 상한 (cap_price 대비). 매도1 이 이걸 넘으면 잔량을 포기한다.
+	MaxSlipBp int `json:"max_slip_bp,omitempty"`
+	// CapPrice · SweepUntil — mode=sweep 의 상한가와 창 끝 (둘 다 필수 · sweep_until ≤ not_after).
+	// ★ 값은 신호원이 정한다 (stop 과 같은 원칙 — 콕핏은 산식을 모른다).
+	CapPrice   float64    `json:"cap_price,omitempty"`
+	SweepUntil *time.Time `json:"sweep_until,omitempty"`
+}
+
+// ExitExec — want=flat 청산의 집행 방식. 지금은 sweep 하나다 (매수1 ≥ floor_price 면 IOC 매도 · 창 끝 잔량 시장가).
+type ExitExec struct {
+	Mode       string    `json:"mode"` // sweep
+	FloorPrice float64   `json:"floor_price"`
+	SweepUntil time.Time `json:"sweep_until"`
 }
 
 type Exit struct {
@@ -312,6 +338,78 @@ type EventOrder struct {
 	RealizedPct   float64    `json:"realized_pct,omitempty"`
 	BrokerCode    string     `json:"broker_code,omitempty"`
 	Detail        string     `json:"detail,omitempty"`
+	// Exec — 집행 방식이 sweep 이었던 체결의 내역 (그 외엔 없음). qty·price 는 모든 조각을 합친 값이다.
+	Exec *ExecReport `json:"exec,omitempty"`
+}
+
+// ExecReport — sweep 한 번의 집행 내역 (원장 orders.exec · event.order.exec).
+//
+// ★ 이게 없으면 «sweep 이 바탕(즉시 시장가)보다 나았나» 를 실전 체결로 잴 수 없다 — 그게 이 집행의 존재 이유다.
+type ExecReport struct {
+	Mode       string     `json:"mode"`                  // sweep
+	CapPrice   float64    `json:"cap_price,omitempty"`   // 매수 — 받은 값 그대로
+	FloorPrice float64    `json:"floor_price,omitempty"` // 매도 — 받은 값 그대로
+	SweepUntil *time.Time `json:"sweep_until,omitempty"` // 콕핏이 실제로 쓴 창 끝 (상한으로 당겼으면 그 값)
+	// RefAsk1 · RefBid1 — 집행을 시작한 순간 콕핏이 본 매도1 · 매수1 (바탕 «즉시 시장가» 와의 차를 재는 기준).
+	RefAsk1 float64    `json:"ref_ask1,omitempty"`
+	RefBid1 float64    `json:"ref_bid1,omitempty"`
+	RefAt   *time.Time `json:"ref_at,omitempty"`
+	// Fills — 체결된 조각 (IOC 와 창 끝 잔량). 0 체결 IOC 는 OrderIDs 에만 있다.
+	Fills []SweepFill `json:"fills,omitempty"`
+	// OrderIDs — 이 집행이 낸 증권사 주문번호 전부 (0 체결 포함). 콕핏 밖 매도 판별·증권사 원장 대조에 쓴다.
+	OrderIDs []string `json:"order_ids,omitempty"`
+	// IOCOrders — 낸 IOC 수 (0 체결 포함). RestQty · RestPrice — 창 끝 시장가로 산/판 수량과 평단.
+	IOCOrders int     `json:"ioc_orders,omitempty"`
+	RestQty   float64 `json:"rest_qty,omitempty"`
+	RestPrice float64 `json:"rest_price,omitempty"`
+	// Ended — 창을 닫은 사유: all(다 참) · window(창 끝) · stop · time · session · slip · short(돈 부족) ·
+	// unknown(조각 결과 미상) · error.
+	Ended  string `json:"ended,omitempty"`
+	Detail string `json:"detail,omitempty"`
+	// Tries — 낸 조각마다 그때 콕핏이 본 호가와 시각 (0 체결·거부 포함 · 관측 기록 — 집행 판단엔 안 쓴다).
+	// IOC 가 왜 안 닿았는지(호가가 낡았나 · 보내는 사이에 사라졌나)를 실전 체결로 재려고 남긴다 (2026-11-05).
+	Tries []SweepTry `json:"tries,omitempty"`
+}
+
+// SweepTry — 조각 주문 하나를 낸 기록.
+type SweepTry struct {
+	Kind    string  `json:"kind"`               // ioc | rest
+	OrderID string  `json:"order_id,omitempty"` // 거부면 비었다
+	Price   float64 `json:"price,omitempty"`    // IOC 지정가 (= cap · floor) · rest 는 0 (시장가)
+	Qty     float64 `json:"qty"`                // 낸 수량
+	// Book — 내기 전 마지막으로 본 최우선 호가. IOC 는 이 호가가 닿아서 냈다. rest 는 창 끝 직전 호가
+	// (매수 max_slip_bp 확인이면 그때 새로 읽은 것 · 아니면 창 안 마지막 조회 — 나이는 sent_at − book.recv_at).
+	Book *SweepBook `json:"book,omitempty"`
+	// SentAt — 주문 API 를 부르기 직전 (키움 매수는 kt00011 매수가능 확인 뒤). AckAt — 주문번호를 받은 시각.
+	SentAt time.Time  `json:"sent_at"`
+	AckAt  *time.Time `json:"ack_at,omitempty"`
+	// FilledQty · FillPrice — 이 조각의 체결 (0 체결 IOC 는 0). FilledAt — 증권사 체결 시각 (키움 = 초 단위) · 모르면 없다.
+	FilledQty float64    `json:"filled_qty"`
+	FillPrice float64    `json:"fill_price,omitempty"`
+	FilledAt  *time.Time `json:"filled_at,omitempty"`
+	Error     string     `json:"error,omitempty"` // 거부·결과 미상 사유
+}
+
+// SweepBook — 콕핏이 읽은 최우선 호가 한 번.
+type SweepBook struct {
+	Ask1    float64 `json:"ask1"`
+	Ask1Qty float64 `json:"ask1_qty"`
+	Bid1    float64 `json:"bid1"`
+	Bid1Qty float64 `json:"bid1_qty"`
+	// AsOf — 증권사가 준 호가 시각 (키움 ka10004 호가잔량기준시간 · 초 단위). ReqAt · RecvAt — 콕핏이 조회를 부른·받은 시각.
+	AsOf   time.Time `json:"as_of"`
+	ReqAt  time.Time `json:"req_at"`
+	RecvAt time.Time `json:"recv_at"`
+}
+
+// SweepFill — 조각 하나의 체결 (주문번호 단위 합).
+type SweepFill struct {
+	OrderID string    `json:"order_id"`
+	Kind    string    `json:"kind"` // ioc | rest
+	At      time.Time `json:"at"`
+	Price   float64   `json:"price"`
+	Qty     float64   `json:"qty"`
+	FeeKRW  float64   `json:"fee_krw,omitempty"`
 }
 
 type Heartbeat struct {

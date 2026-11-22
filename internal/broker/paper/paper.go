@@ -237,7 +237,48 @@ func (b *Broker) refPrice(req broker.OrderRequest) (float64, error) {
 	return q.Price, nil
 }
 
+// Book — paper 의 호가 = 시세 한 값 (매도1 = 매수1 = 기준가 · 잔량 모름).
+func (b *Broker) Book(ctx context.Context, s protocol.Symbol) (broker.Book, error) {
+	q, err := b.Quote(ctx, s)
+	if err != nil {
+		return broker.Book{}, err
+	}
+	return broker.Book{Ask1: q.Price, Bid1: q.Price, AsOf: q.AsOf}, nil
+}
+
+// iocMiss — IOC 지정가가 지금 시세에 닿지 않는다 (매수는 시세 > 지정가, 매도는 시세 < 지정가).
+// ★ 닿으면 지정가 그대로 체결한다 — «그 값 이하 체결이 찍혔으면 우리도 그 값에 샀다» (CAPSWEEP 모델과 같은
+// 낙관 가정 · 실전은 한 칸 위일 수 있다). 시세를 모르면 닿지 않은 것으로 본다 (모르는 걸 체결로 만들지 않는다).
+func (b *Broker) iocMiss(req broker.OrderRequest, side string) bool {
+	if !req.IOC {
+		return false
+	}
+	if req.LimitPrice <= 0 || b.cfg.Price == nil {
+		return true
+	}
+	px, ok := b.cfg.Price(req.Symbol)
+	if !ok || px <= 0 {
+		return true
+	}
+	if side == "buy" {
+		return px > req.LimitPrice
+	}
+	return px < req.LimitPrice
+}
+
+// noFill — IOC 가 닿지 않아 0 체결로 끝난 주문.
+func (b *Broker) noFill() broker.Fill {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.cfg.Now()
+	b.seq++
+	return broker.Fill{BrokerOrderID: fmt.Sprintf("paper-%d", b.seq), SubmittedAt: now, FilledAt: now}
+}
+
 func (b *Broker) Buy(_ context.Context, req broker.OrderRequest) (broker.Fill, error) {
+	if b.iocMiss(req, "buy") {
+		return b.noFill(), nil
+	}
 	ref, err := b.refPrice(req)
 	if err != nil {
 		return broker.Fill{}, err
@@ -289,6 +330,9 @@ func (b *Broker) Buy(_ context.Context, req broker.OrderRequest) (broker.Fill, e
 // paper 의 가격은 어차피 시뮬레이션이다. ★ 대신 조용히 넘어가지 않는다 — `Detail` 에 남겨
 // 원장에서 «시세 없이 닫은 건» 을 구분할 수 있게 한다 (그 건의 실현손익은 근사다).
 func (b *Broker) Sell(_ context.Context, req broker.OrderRequest) (broker.Fill, error) {
+	if b.iocMiss(req, "sell") {
+		return b.noFill(), nil
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

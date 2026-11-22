@@ -460,6 +460,16 @@ func (e *Engine) recentClosesLocked(now time.Time) []protocol.ClosedLot {
 	return out
 }
 
+// DropPending — 대기 로트(Pending)를 지운다. ★ 종결이 아니다 — 같은 목표로 다시 살 수 있다
+// (sweep 진입이 계좌 돈이 모자라 한 주도 못 산 경우 · 진행 중 주문 없이 대기 로트만 남지 않게).
+func (e *Engine) DropPending(intentID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if p, ok := e.positions[intentID]; ok && p.Pending {
+		delete(e.positions, intentID)
+	}
+}
+
 // MarkClosed 는 목표를 종결 처리한다 (청산 체결 후 호출).
 func (e *Engine) MarkClosed(intentID string) {
 	e.mu.Lock()
@@ -519,9 +529,12 @@ func (e *Engine) planLocked(now time.Time) reconcile.Plan {
 	}
 
 	if e.liquidateAll {
-		// de-risk liquidate 는 목표와 무관하게 전량 청산이다.
+		// de-risk liquidate 는 목표와 무관하게 전량 청산이다 — 사용자가 맡아 간 로트(exits manual)만 빼고.
 		plan := reconcile.Plan{}
 		for _, p := range actual {
+			if e.handsOffLocked(p) {
+				continue
+			}
 			plan.Exits = append(plan.Exits, reconcile.ExitOrder{Position: p, Reason: "derisk"})
 		}
 		return plan
@@ -564,9 +577,54 @@ func (e *Engine) planLocked(now time.Time) reconcile.Plan {
 	if gate != nil {
 		plan.Alloc = append(plan.Alloc, gate.Events()...)
 	}
+	e.dropHandsOffLocked(&plan)
 	// 상한은 계좌 전체의 폭주 차단이라 합친 뒤 한 번 더 건다.
 	reconcile.ApplyOrderCap(&plan, e.cfg.MaxOrders)
 	return plan
+}
+
+// HandsOff — 이 로트는 사용자가 맡아 갔다 (장부 exits "manual"). 콕핏은 팔지도, stop·시간청산·TP 를
+// 고치지도 않는다 — 로컬 청산 층(executor.enforceLocalExits)도 이걸 보고 건너뛴다.
+// ★ 사용자가 HTS 로 판 것을 «수동 매도» 로 닫는 대조(syncPositions)는 그대로 돈다.
+func (e *Engine) HandsOff(p protocol.Position) bool { return e.handsOffLocked(p) }
+
+func (e *Engine) handsOffLocked(p protocol.Position) bool {
+	return e.cfg.Books.HandsOff(p.Kid, p.Scope)
+}
+
+// dropHandsOffLocked — 목표가 무엇을 말하든 맡아 간 로트에는 손대지 않는다 (발행자 flat·reduce 도).
+func (e *Engine) dropHandsOffLocked(plan *reconcile.Plan) {
+	if !e.cfg.Books.AnyHandsOff() {
+		return
+	}
+	exits := plan.Exits[:0]
+	for _, x := range plan.Exits {
+		if !e.handsOffLocked(x.Position) {
+			exits = append(exits, x)
+		}
+	}
+	plan.Exits = exits
+	stops := plan.StopUpdates[:0]
+	for _, u := range plan.StopUpdates {
+		if !e.handsOffLocked(u.Position) {
+			stops = append(stops, u)
+		}
+	}
+	plan.StopUpdates = stops
+	tps := plan.TpUpdates[:0]
+	for _, u := range plan.TpUpdates {
+		if !e.handsOffLocked(u.Position) {
+			tps = append(tps, u)
+		}
+	}
+	plan.TpUpdates = tps
+	tes := plan.TimeExitUpdates[:0]
+	for _, u := range plan.TimeExitUpdates {
+		if !e.handsOffLocked(u.Position) {
+			tes = append(tes, u)
+		}
+	}
+	plan.TimeExitUpdates = tes
 }
 
 // planSourceLocked — 한 소스의 목표를 **그 소스가 만든 포지션**하고만 맞춘다.
